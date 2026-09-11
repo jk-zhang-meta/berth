@@ -93,6 +93,7 @@ func RegisterAdminRoutes(
 
 		// 使用记录管理
 		registerUsageRoutes(admin, h)
+		registerRentalRoutes(admin, h)
 
 		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
@@ -689,10 +690,26 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.GET("/users/:id/subscriptions", h.Admin.Subscription.ListByUser)
 }
 
+func registerRentalRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	rentals := admin.Group("/rentals")
+	{
+		rentals.GET("", h.Usage.ListRentals)
+		rentals.POST("", h.Usage.CreateRental)
+		rentals.POST("/:id/request", h.Usage.RequestRental)
+		rentals.POST("/:id/approve", h.Usage.ApproveRental)
+		rentals.POST("/:id/reject", h.Usage.RejectRental)
+		rentals.POST("/:id/revoke", h.Usage.RevokeRental)
+	}
+}
+
 func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	usage := admin.Group("/usage")
 	{
 		usage.GET("", h.Admin.Usage.List)
+		usage.GET("/sessions", h.Admin.Usage.ListSessions)
+		usage.PATCH("/sessions/:id", h.Admin.Usage.PatchSession)
+		usage.PUT("/sessions/:id/queue", h.Usage.ReplaceSessionQueue)
+		usage.GET("/sessions/:id/requests", h.Admin.Usage.ListSessionRequests)
 		usage.GET("/stats", h.Admin.Usage.Stats)
 		usage.GET("/search-users", h.Admin.Usage.SearchUsers)
 		usage.GET("/search-api-keys", h.Admin.Usage.SearchAPIKeys)

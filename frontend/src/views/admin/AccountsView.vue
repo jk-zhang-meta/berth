@@ -192,22 +192,8 @@
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <DataTable
-          ref="dataTableRef"
-          :columns="cols"
-          :data="accounts"
-          :loading="loading"
-          row-key="id"
-          :server-side-sort="true"
-          @sort="handleSort"
-          default-sort-key="name"
-          default-sort-order="asc"
-          :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="156"
-          :overscan="5"
-          :virtualize-threshold="50"
-        >
-          <template #header-select>
+        <div class="account-card-toolbar">
+          <label class="inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
             <input
               type="checkbox"
               class="h-4 w-4 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
@@ -215,237 +201,176 @@
               @click.stop
               @change="toggleSelectAllVisible($event)"
             />
-          </template>
-          <template #cell-select="{ row }">
-            <input type="checkbox" :checked="isSelected(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-          </template>
-          <template #cell-id="{ value }">
-            <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
-          </template>
-          <template #cell-name="{ row, value }">
-            <div class="flex flex-col">
-              <HelpTooltip
-                v-if="accountHomepageUrl(row)"
-                :content="accountHomepageUrl(row)"
-                width-class="w-max max-w-sm break-all"
-                class="-ml-1 self-start"
-              >
-                <template #trigger>
-                  <a
-                    :href="accountHomepageUrl(row)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
+            {{ t('common.selectAll') }}
+          </label>
+          <span class="text-xs text-gray-400">{{ pagination.total }} · p{{ pagination.page }}/{{ pagination.pages || 1 }}</span>
+        </div>
+        <div v-if="loading && accounts.length === 0" class="flex flex-1 items-center justify-center text-sm text-gray-400">
+          {{ t('common.loading') }}
+        </div>
+        <div v-else-if="!loading && accounts.length === 0" class="flex flex-1 items-center justify-center text-sm text-gray-400">
+          {{ t('admin.accounts.noAccountsYet') }}
+        </div>
+        <div v-else class="accounts-grid-wrap" @scroll.passive="handleGridScroll">
+          <div class="accounts-grid">
+            <article
+              v-for="row in accounts"
+              :key="row.id"
+              class="account-card"
+              :class="'is-' + cardStatus(row)"
+            >
+              <div class="card-top">
+                <input
+                  type="checkbox"
+                  :checked="isSelected(row.id)"
+                  @change="toggleSel(row.id)"
+                  class="mt-1 h-4 w-4 flex-none cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <div class="min-w-0 flex-1">
+                  <HelpTooltip
+                    v-if="accountHomepageUrl(row)"
+                    :content="accountHomepageUrl(row)"
+                    width-class="w-max max-w-sm break-all"
+                    class="self-start"
                   >
-                    {{ value }}
-                  </a>
-                </template>
-              </HelpTooltip>
-              <span v-else class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
-              <span
-                v-if="accountDisplayEmail(row)"
-                class="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]"
-                :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
-              >
-                {{ accountDisplayEmail(row) }}
-              </span>
-            </div>
-          </template>
-          <template #cell-notes="{ value }">
-            <span v-if="value" :title="value" class="block max-w-xs truncate text-sm text-gray-600 dark:text-gray-300">{{ value }}</span>
-            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-          </template>
-          <template #cell-platform_type="{ row }">
-            <div class="flex min-w-0 flex-col gap-1">
-              <div class="flex flex-wrap items-center gap-1">
-                <PlatformTypeBadge :platform="row.platform" :type="row.type"
+                    <template #trigger>
+                      <a
+                        :href="accountHomepageUrl(row)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="block truncate font-medium text-gray-900 dark:text-white"
+                      >{{ row.name }}</a>
+                    </template>
+                  </HelpTooltip>
+                  <div v-else class="truncate font-medium text-gray-900 dark:text-white">{{ row.name }}</div>
+                  <div
+                    v-if="accountDisplayEmail(row)"
+                    class="truncate text-xs text-gray-500 dark:text-gray-400"
+                    :title="accountDisplayEmail(row)"
+                  >{{ accountDisplayEmail(row) }}</div>
+                </div>
+                <span class="font-mono text-[10px] text-gray-400">#{{ row.id }}</span>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <PlatformTypeBadge
+                  :platform="row.platform"
+                  :type="row.type"
                   :auth-mode="getOpenAIAuthMode(row)"
                   :plan-type="getAccountPlanType(row)"
-                  :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode"
-                  :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at" />
+                  :privacy-mode="accountPrivacyMode(row)"
+                  :subscription-expires-at="accountSubscriptionExpiresAt(row)"
+                />
                 <span
                   v-if="getAntigravityTierLabel(row)"
                   :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
-                >
-                  {{ getAntigravityTierLabel(row) }}
-                </span>
-              </div>
-              <div
-                v-if="getOpenAICompactMeta(row)"
-                :class="[
-                  'inline-flex items-center gap-1.5 pl-0.5 text-[11px] font-medium leading-4',
-                  getOpenAICompactMeta(row)?.className
-                ]"
-                :title="getOpenAICompactTitle(row)"
-              >
-                <span :class="['h-1.5 w-1.5 rounded-full', getOpenAICompactMeta(row)?.dotClass]" />
-                <span>{{ getOpenAICompactMeta(row)?.label }}</span>
-              </div>
-            </div>
-          </template>
-          <template #cell-capacity="{ row }">
-            <AccountCapacityCell :account="row" />
-          </template>
-          <template #cell-status="{ row }">
-            <div class="flex items-center gap-1.5">
-              <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
-            </div>
-          </template>
-          <template #cell-schedulable="{ row }">
-            <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
-              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
-            </button>
-          </template>
-          <template #cell-today_stats="{ row }">
-            <AccountTodayStatsCell
-              :stats="todayStatsByAccountId[String(row.id)] ?? null"
-              :loading="todayStatsLoading"
-              :error="todayStatsError"
-            />
-          </template>
-          <template #cell-groups="{ row }">
-            <AccountGroupsCell :groups="accountGroupsForRow(row)" :max-display="4" />
-          </template>
-          <template #header-usage="{ column }">
-            <div class="flex items-center">
-              <span>{{ column.label }}</span>
-              <HelpTooltip :content="t('admin.accounts.usageWindowsHint')" width-class="w-72" />
-            </div>
-          </template>
-          <template #cell-usage="{ row }">
-            <AccountUsageCell
-              :account="row"
-              :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
-              :today-stats-loading="todayStatsLoading"
-              :manual-refresh-token="usageManualRefreshToken"
-              :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
-              :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
-              :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
-              :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
-              @account-updated="handleAccountUpdated"
-              @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
-            />
-          </template>
-          <template #cell-proxy="{ row }">
-            <div class="flex flex-col gap-1">
-              <div v-if="row.proxy" class="flex items-center gap-2">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
-                <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
-                  ({{ row.proxy.country_code }})
-                </span>
-              </div>
-              <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-              <div v-if="row.proxy && row.proxy.expires_at" class="flex items-center gap-2 text-xs">
-                <span class="text-gray-600 dark:text-gray-300">{{ formatDateTime(row.proxy.expires_at) }}</span>
-                <span :class="proxyExpiryBadge(row.proxy)">{{ proxyExpiryText(row.proxy) }}</span>
-              </div>
-              <div v-if="row.proxy_fallback_origin_id" class="flex items-center gap-1">
-                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" :title="t('admin.accounts.fallbackActiveTip', { origin: row.proxy_fallback_origin_name })">
-                  {{ t('admin.accounts.fallbackActive') }}
-                </span>
-                <button class="text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-dark-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-700" @click="onRevertFallback(row)">{{ t('admin.accounts.revertProxy') }}</button>
-              </div>
-            </div>
-          </template>
-          <template #cell-rate_multiplier="{ row }">
-            <span class="inline-flex items-center gap-1 text-sm font-mono text-gray-700 dark:text-gray-300">
-              <span>{{ formatMultiplier(row.rate_multiplier ?? 1) }}x</span>
-              <span
-                v-if="row.extra?.upstream_billing_rate_sync_enabled === true"
-                class="inline-flex cursor-help text-emerald-600 dark:text-emerald-400"
-                :aria-label="t('admin.accounts.upstreamBilling.syncedRateTooltip')"
-                :title="t('admin.accounts.upstreamBilling.syncedRateTooltip')"
-                data-testid="account-rate-sync-indicator"
-              >
-                <Icon name="sync" size="xs" />
-              </span>
-            </span>
-          </template>
-          <template #header-upstream_billing_rate="{ column }">
-            <div class="flex items-center gap-1">
-              <span>{{ column.label }}</span>
-              <span @click.stop>
-                <HelpTooltip :content="t('admin.accounts.upstreamBilling.trustWarning')" width-class="w-80" />
-              </span>
-            </div>
-          </template>
-          <template #cell-upstream_billing_rate="{ row }">
-            <UpstreamBillingRateCell
-              :account="row"
-              :global-probe-enabled="upstreamBillingProbeGloballyEnabled"
-              :now="upstreamBillingNow"
-              :probing="probingUpstreamBilling.has(row.id)"
-              @probe="handleProbeUpstreamBilling(row)"
-            />
-          </template>
-          <template #cell-priority="{ value }">
-            <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
-          </template>
-          <template #header-scheduler_score="{ column }">
-            <div class="flex items-center">
-              <span>{{ column.label }}</span>
-              <HelpTooltip :content="t('admin.accounts.schedulerScore.hint')" width-class="w-80" />
-            </div>
-          </template>
-          <template #cell-scheduler_score="{ row }">
-            <div v-if="getSchedulerScoreRows(row).length" class="flex min-w-[7rem] flex-col gap-0.5 font-mono text-[11px] leading-4">
-              <div
-                v-for="score in getSchedulerScoreRows(row)"
-                :key="String(score.group_id)"
-                class="flex items-center gap-1 whitespace-nowrap text-gray-700 dark:text-gray-300"
-                :title="`${formatSchedulerScoreGroup(score)} / ${formatSchedulerScore(score.base_score)} / ${formatStickySchedulerScore(score)}`"
-              >
-                <span class="max-w-[4.75rem] truncate text-gray-500 dark:text-dark-400">{{ formatSchedulerScoreGroup(score) }}</span>
-                <span class="text-gray-300 dark:text-gray-600">/</span>
-                <span>{{ formatSchedulerScore(score.base_score) }}</span>
-                <span class="text-gray-300 dark:text-gray-600">/</span>
-                <span class="text-primary-700 dark:text-primary-300">{{ formatStickySchedulerScore(score) }}</span>
-              </div>
-            </div>
-            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-          </template>
-          <template #cell-last_used_at="{ value }">
-            <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatRelativeTime(value) }}</span>
-          </template>
-          <template #cell-created_at="{ value }">
-            <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatDateTime(value) }}</span>
-          </template>
-          <template #cell-expires_at="{ row, value }">
-            <div class="flex flex-col items-start gap-1">
-              <span class="text-sm text-gray-500 dark:text-dark-400">{{ formatExpiresAt(value) }}</span>
-              <div v-if="isExpired(value) || (row.auto_pause_on_expired && value)" class="flex items-center gap-1">
+                >{{ getAntigravityTierLabel(row) }}</span>
                 <span
-                  v-if="isExpired(value)"
-                  class="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                  v-if="getOpenAICompactMeta(row)"
+                  class="text-[11px] text-gray-500"
+                  :title="getOpenAICompactTitle(row)"
+                >{{ getOpenAICompactMeta(row)?.label }}</span>
+                <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+                <button
+                  @click="handleToggleSchedulable(row)"
+                  :disabled="togglingSchedulable === row.id"
+                  class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  :class="[row.schedulable ? 'bg-primary-500' : 'bg-gray-200 dark:bg-dark-600']"
+                  :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')"
                 >
-                  {{ t('admin.accounts.expired') }}
-                </span>
-                <span
-                  v-if="row.auto_pause_on_expired && value"
-                  class="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                >
-                  {{ t('admin.accounts.autoPauseOnExpired') }}
-                </span>
+                  <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
+                </button>
+                <span class="text-[10px] font-semibold text-gray-400">P{{ row.priority }}</span>
               </div>
-            </div>
-          </template>
-          <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
-                <span class="text-xs">{{ t('common.edit') }}</span>
-              </button>
-              <button @click="handleDelete(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
-                <span class="text-xs">{{ t('common.delete') }}</span>
-              </button>
-              <button @click="openMenu(row, $event)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white">
-                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" /></svg>
-                <span class="text-xs">{{ t('common.more') }}</span>
-              </button>
-            </div>
-          </template>
-        </DataTable>
+
+              <div v-if="isColumnVisible('usage')" class="card-panel">
+                <AccountUsageCell
+                  :account="row"
+                  :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
+                  :today-stats-loading="todayStatsLoading"
+                  :manual-refresh-token="usageManualRefreshToken"
+                  :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
+                  :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
+                  :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
+                  :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
+                  @account-updated="handleAccountUpdated"
+                  @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
+                />
+              </div>
+
+              <div class="card-metrics">
+                <div v-if="isColumnVisible('capacity')">
+                  <small>{{ t('admin.accounts.columns.capacity') }}</small>
+                  <AccountCapacityCell :account="row" />
+                </div>
+                <div v-if="isColumnVisible('today_stats')">
+                  <small>{{ t('admin.accounts.columns.todayStats') }}</small>
+                  <AccountTodayStatsCell
+                    :stats="todayStatsByAccountId[String(row.id)] ?? null"
+                    :loading="todayStatsLoading"
+                    :error="todayStatsError"
+                  />
+                </div>
+                <div v-if="!authStore.isSimpleMode && isColumnVisible('groups')">
+                  <small>{{ t('admin.accounts.columns.groups') }}</small>
+                  <AccountGroupsCell :groups="accountGroupsForRow(row)" :max-display="4" />
+                </div>
+                <div v-if="isColumnVisible('proxy')">
+                  <small>{{ t('admin.accounts.columns.proxy') }}</small>
+                  <div v-if="row.proxy" class="text-xs text-gray-600 dark:text-gray-300">
+                    {{ row.proxy.name }}
+                    <span v-if="row.proxy.expires_at" :class="proxyExpiryBadge(row.proxy)">{{ proxyExpiryText(row.proxy) }}</span>
+                  </div>
+                  <span v-else class="text-xs text-gray-400">-</span>
+                </div>
+                <div v-if="isColumnVisible('last_used_at')">
+                  <small>{{ t('admin.accounts.columns.lastUsed') }}</small>
+                  <span class="text-xs text-gray-500">{{ formatRelativeTime(row.last_used_at) }}</span>
+                </div>
+                <div v-if="isColumnVisible('expires_at')">
+                  <small>{{ t('admin.accounts.columns.expiresAt') }}</small>
+                  <span class="text-xs text-gray-500">{{ formatExpiresAt(row.expires_at) }}</span>
+                </div>
+                <div v-if="isColumnVisible('rate_multiplier')">
+                  <small>{{ t('admin.accounts.columns.billingRateMultiplier') }}</small>
+                  <span class="font-mono text-xs">{{ formatMultiplier(row.rate_multiplier ?? 1) }}x</span>
+                </div>
+                <div v-if="isColumnVisible('upstream_billing_rate')">
+                  <small>{{ t('admin.accounts.columns.upstreamBillingRate') }}</small>
+                  <UpstreamBillingRateCell
+                    :account="row"
+                    :global-probe-enabled="upstreamBillingProbeGloballyEnabled"
+                    :now="upstreamBillingNow"
+                    :probing="probingUpstreamBilling.has(row.id)"
+                    @probe="handleProbeUpstreamBilling(row)"
+                  />
+                </div>
+                <div v-if="isColumnVisible('scheduler_score')">
+                  <small>{{ t('admin.accounts.columns.schedulerScore') }}</small>
+                  <div v-if="getSchedulerScoreRows(row).length" class="font-mono text-[11px] text-gray-600">
+                    <div v-for="score in getSchedulerScoreRows(row)" :key="String(score.group_id)">
+                      {{ formatSchedulerScoreGroup(score) }} / {{ formatSchedulerScore(score.base_score) }} / {{ formatStickySchedulerScore(score) }}
+                    </div>
+                  </div>
+                  <span v-else class="text-xs text-gray-400">-</span>
+                </div>
+              </div>
+              <button
+                v-if="row.proxy_fallback_origin_id"
+                class="self-start text-xs text-amber-700"
+                @click="onRevertFallback(row)"
+              >{{ t('admin.accounts.revertProxy') }}</button>
+
+              <p v-if="isColumnVisible('notes') && row.notes" class="truncate text-xs text-gray-500" :title="row.notes">{{ row.notes }}</p>
+
+              <div class="card-footer">
+                <button @click="handleEdit(row)" class="card-op" :title="t('common.edit')">{{ t('common.edit') }}</button>
+                <button @click="handleDelete(row)" class="card-op card-op-danger" :title="t('common.delete')">{{ t('common.delete') }}</button>
+                <button @click="openMenu(row, $event)" class="card-op" :title="t('common.more')">{{ t('common.more') }}</button>
+              </div>
+            </article>
+          </div>
+        </div>
         </div>
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
@@ -499,7 +424,6 @@ import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
-import DataTable from '@/components/common/DataTable.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -547,7 +471,6 @@ const accountGroupsForRow = (account: Pick<AccountListItem, 'group_ids'>): Admin
   return groupIDs.map(id => groupsByID.value.get(id)).filter((group): group is AdminGroup => Boolean(group))
 }
 const accountTableRef = ref<HTMLElement | null>(null)
-const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
 type AccountBulkEditTarget =
   | {
       mode: 'selected'
@@ -1132,9 +1055,35 @@ const selectPage = () => {
 }
 
 const swipeVirtualContext: SwipeSelectVirtualContext = {
-  getVirtualizer: () => dataTableRef.value?.virtualizer ?? null,
-  getSortedData: () => dataTableRef.value?.sortedData ?? accounts.value,
+  getVirtualizer: () => null,
+  getSortedData: () => accounts.value,
   getRowId: (row: any) => row.id,
+}
+
+function accountPrivacyMode(row: AccountListItem): string | undefined {
+  const extra = row.extra?.privacy_mode
+  if (typeof extra === 'string') return extra
+  const parent = (row as { parent_privacy_mode?: unknown }).parent_privacy_mode
+  return typeof parent === 'string' ? parent : undefined
+}
+
+function accountSubscriptionExpiresAt(row: AccountListItem): string | undefined {
+  const cred = row.credentials?.subscription_expires_at
+  if (typeof cred === 'string') return cred
+  const parent = (row as { parent_subscription_expires_at?: unknown }).parent_subscription_expires_at
+  return typeof parent === 'string' ? parent : undefined
+}
+
+function cardStatus(row: AccountListItem): string {
+  if (row.status === 'error') return 'error'
+  if (row.status === 'inactive') return 'inactive'
+  if (!row.schedulable) return 'paused'
+  if (isExpired(row.expires_at)) return 'expired'
+  return 'active'
+}
+
+function handleGridScroll(event: Event) {
+  handleScroll(event)
 }
 
 useSwipeSelect(accountTableRef, {
@@ -1815,11 +1764,7 @@ const toggleableColumns = computed(() =>
 )
 
 // Filtered columns based on visibility
-const cols = computed(() =>
-  allColumns.value.filter(col =>
-    col.key === 'select' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
-  )
-)
+void handleSort
 
 const accountDetailLoading = new Set<number>()
 const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise<Account | null> => {
@@ -2588,5 +2533,89 @@ onUnmounted(() => {
 
 .account-tools-menu-icon {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
+}
+
+.account-card-toolbar {
+  @apply flex flex-none items-center justify-between gap-3 border-b border-gray-100 px-4 py-2 dark:border-dark-700;
+}
+
+.accounts-grid-wrap {
+  @apply min-h-0 flex-1 overflow-y-auto p-4;
+}
+
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.account-card {
+  @apply flex min-h-[240px] flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800;
+}
+
+.account-card.is-active { border-left: 3px solid rgb(16 185 129); }
+.account-card.is-error { border-left: 3px solid rgb(239 68 68); }
+.account-card.is-inactive { border-left: 3px solid rgb(156 163 175); }
+.account-card.is-paused { border-left: 3px solid rgb(245 158 11); }
+.account-card.is-expired { border-left: 3px solid rgb(249 115 22); }
+
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.card-panel {
+  padding: 8px;
+  border-radius: 10px;
+  background: rgb(249 250 251);
+}
+
+.dark .card-panel {
+  background: rgb(17 24 39);
+}
+
+.card-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.card-metrics small {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgb(156 163 175);
+}
+
+.card-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.card-op {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgb(209 213 219);
+  border-radius: 7px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 650;
+  color: rgb(75 85 99);
+}
+
+.dark .card-op {
+  border-color: rgb(75 85 99);
+  background: rgb(31 41 55);
+  color: rgb(209 213 219);
+}
+
+.card-op-danger:hover {
+  border-color: rgb(252 165 165);
+  color: rgb(220 38 38);
 }
 </style>

@@ -797,6 +797,50 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	workSessions          *WorkSessionStore
+	rentals               *RentalStore
+	stewards              *StewardStore
+}
+
+func (s *GatewayService) SetWorkSessions(store *WorkSessionStore) {
+	if s == nil {
+		return
+	}
+	s.workSessions = store
+}
+
+func (s *GatewayService) SetRentals(store *RentalStore) {
+	if s == nil {
+		return
+	}
+	s.rentals = store
+}
+
+func (s *GatewayService) SetStewards(store *StewardStore) {
+	if s == nil {
+		return
+	}
+	s.stewards = store
+}
+
+func (s *GatewayService) PrepareWorkSession(ctx context.Context, userID, apiKeyID int64, clientSessionID, platform string) context.Context {
+	if s == nil || s.workSessions == nil {
+		return ctx
+	}
+	ctx, _ = s.workSessions.Prepare(ctx, userID, apiKeyID, clientSessionID, platform)
+	bindBerthPref(ctx, userID, s.rentals, s.stewards)
+	return ctx
+}
+
+func (s *GatewayService) BindWorkSessionAccount(ctx context.Context, accountID int64) {
+	if s == nil || s.workSessions == nil {
+		return
+	}
+	pref := WorkSessionPrefFromContext(ctx)
+	if pref == nil {
+		return
+	}
+	s.workSessions.BindAccount(ctx, pref.UserID, pref.ClientSessionID, pref.Platform, accountID)
 }
 
 // NewGatewayService creates a new GatewayService

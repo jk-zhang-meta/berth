@@ -5,6 +5,7 @@ import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import AdminComplianceDialog from '@/components/admin/AdminComplianceDialog.vue'
 import { resolveRouteDocumentTitle } from '@/router/title'
+import { SHOW_LEGACY_SAAS_CHROME } from '@/productSurface'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
 import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminComplianceStore, useAdminSettingsStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
@@ -140,6 +141,6 @@ onMounted(async () => {
   <NavigationProgress />
   <RouterView />
   <Toast />
-  <AnnouncementPopup />
-  <AdminComplianceDialog />
+  <AnnouncementPopup v-if="SHOW_LEGACY_SAAS_CHROME" />
+  <AdminComplianceDialog v-if="SHOW_LEGACY_SAAS_CHROME" />
 </template>

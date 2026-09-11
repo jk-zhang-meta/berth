@@ -464,6 +464,17 @@
           />
         </div>
 
+        <div v-if="showCreateModal">
+          <label class="input-label">{{ t('keys.issueToUser') }}</label>
+          <Select
+            v-model="formData.for_user_id"
+            :options="issueUserOptions"
+            :placeholder="t('keys.issueToSelf')"
+            :searchable="true"
+          />
+          <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('keys.issueToUserHint') }}</p>
+        </div>
+
         <div>
           <label class="input-label">{{ t('keys.groupLabel') }}</label>
           <Select
@@ -1126,6 +1137,7 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
+import { list as listUsers } from '@/api/admin/users'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import DataTable from '@/components/common/DataTable.vue'
@@ -1346,8 +1358,15 @@ const formData = ref({
   rate_limit_7d: null as number | null,
   enable_expiration: false,
   expiration_preset: '30' as '7' | '30' | '90' | 'custom',
-  expiration_date: ''
+  expiration_date: '',
+  for_user_id: null as number | null
 })
+
+const peerUsers = ref<{ id: number; email: string }[]>([])
+const issueUserOptions = computed(() => [
+  { value: null, label: t('keys.issueToSelf') },
+  ...peerUsers.value.map((user) => ({ value: user.id, label: user.email })),
+])
 
 // 自定义Key验证
 const customKeyError = computed(() => {
@@ -1578,7 +1597,8 @@ const editKey = (key: ApiKey) => {
     rate_limit_7d: key.rate_limit_7d || null,
     enable_expiration: hasExpiration,
     expiration_preset: 'custom',
-    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : ''
+    expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : '',
+    for_user_id: null
   }
   showEditModal.value = true
 }
@@ -1744,7 +1764,8 @@ const handleSubmit = async () => {
         ipBlacklist,
         quota,
         expiresInDays,
-        rateLimitData
+        rateLimitData,
+        formData.value.for_user_id || undefined
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1804,7 +1825,8 @@ const closeModals = () => {
     rate_limit_7d: null,
     enable_expiration: false,
     expiration_preset: '30',
-    expiration_date: ''
+    expiration_date: '',
+    for_user_id: null
   }
 }
 
@@ -1953,12 +1975,22 @@ function formatResetTime(resetAt: string | null): string {
   return `${mins}m`
 }
 
+async function loadPeerUsers() {
+  try {
+    const result = await listUsers(1, 200, { status: 'active' })
+    peerUsers.value = (result.items || []).map((user) => ({ id: user.id, email: user.email }))
+  } catch {
+    peerUsers.value = []
+  }
+}
+
 onMounted(() => {
   loadSavedColumns()
   loadApiKeys()
   loadGroups()
   loadUserGroupRates()
   loadPublicSettings()
+  void loadPeerUsers()
   document.addEventListener('click', closeGroupSelector)
   resetTimer = setInterval(() => { now.value = new Date() }, 60000)
 })

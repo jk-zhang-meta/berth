@@ -607,6 +607,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
+		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), "openai",
+	))
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}

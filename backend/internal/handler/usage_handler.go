@@ -50,6 +50,7 @@ type UsageHandler struct {
 	apiKeyService  *service.APIKeyService
 	opsService     *service.OpsService
 	settingService *service.SettingService
+	adminService   service.AdminService
 }
 
 // NewUsageHandler creates a new UsageHandler
@@ -722,3 +723,209 @@ func (h *UsageHandler) GetMyAPIKeyDailyUsage(c *gin.Context) {
 		"end_date":   endTime.AddDate(0, 0, -1).Format("2006-01-02"),
 	})
 }
+
+func (h *UsageHandler) ListSessions(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	items, err := h.usageService.ListWorkSessions(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if items == nil {
+		items = []service.WorkSession{}
+	}
+	response.Success(c, gin.H{"items": items})
+}
+
+func (h *UsageHandler) PatchSession(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid session id")
+		return
+	}
+	var body struct {
+		Title             *string `json:"title"`
+		Importance        *int    `json:"importance"`
+		AssignedAccountID *int64  `json:"assigned_account_id"`
+		ClearAssignment   bool    `json:"clear_assignment"`
+		Status            *string `json:"status"`
+		CWD               *string `json:"cwd"`
+		AgsID             *string `json:"ags_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+	if err := h.usageService.PatchWorkSession(c.Request.Context(), id, subject.UserID, service.WorkSessionPatch{
+		Title:             body.Title,
+		Importance:        body.Importance,
+		AssignedAccountID: body.AssignedAccountID,
+		ClearAssignment:   body.ClearAssignment,
+		Status:            body.Status,
+		CWD:               body.CWD,
+		AgsID:             body.AgsID,
+	}); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"ok": true})
+}
+
+func (h *UsageHandler) ListSessionRequests(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid session id")
+		return
+	}
+	items, err := h.usageService.ListWorkSessionRequests(c.Request.Context(), id, subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if items == nil {
+		items = []service.WorkSessionRequest{}
+	}
+	response.Success(c, gin.H{"items": items})
+}
+
+func (h *UsageHandler) ReplaceSessionQueue(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid session id")
+		return
+	}
+	var body struct {
+		AccountIDs []int64 `json:"account_ids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+	scope := subject.UserID
+	if strings.Contains(c.Request.URL.Path, "/admin/") {
+		scope = 0
+	}
+	if err := h.usageService.ReplaceWorkSessionQueue(c.Request.Context(), id, scope, body.AccountIDs); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"ok": true})
+}
+
+func (h *UsageHandler) ListRentals(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	scope := strings.TrimSpace(c.Query("scope"))
+	if scope == "" {
+		if strings.Contains(c.Request.URL.Path, "/admin/") {
+			scope = "all"
+		} else {
+			scope = "mine"
+		}
+	}
+	items, err := h.usageService.ListRentals(c.Request.Context(), subject.UserID, scope)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if items == nil {
+		items = []service.AccountRental{}
+	}
+	response.Success(c, gin.H{"items": items})
+}
+
+func (h *UsageHandler) CreateRental(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	var body struct {
+		AccountID     int64  `json:"account_id"`
+		TokenQuota    *int64 `json:"token_quota"`
+		DurationHours *int   `json:"duration_hours"`
+		Concurrency   *int   `json:"concurrency"`
+		Exclusive     *bool  `json:"exclusive"`
+		Note          string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.AccountID <= 0 {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+	exclusive := true
+	if body.Exclusive != nil {
+		exclusive = *body.Exclusive
+	}
+	item, err := h.usageService.CreateRental(c.Request.Context(), service.CreateRentalInput{
+		AccountID:     body.AccountID,
+		OwnerUserID:   subject.UserID,
+		TokenQuota:    body.TokenQuota,
+		DurationHours: body.DurationHours,
+		Concurrency:   body.Concurrency,
+		Exclusive:     exclusive,
+		Note:          body.Note,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, item)
+}
+
+func (h *UsageHandler) rentalAction(c *gin.Context, action string) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid rental id")
+		return
+	}
+	switch action {
+	case "request":
+		err = h.usageService.RequestRental(c.Request.Context(), id, subject.UserID)
+	case "approve":
+		err = h.usageService.ApproveRental(c.Request.Context(), id, subject.UserID)
+	case "reject":
+		err = h.usageService.RejectRental(c.Request.Context(), id, subject.UserID)
+	case "revoke":
+		err = h.usageService.RevokeRental(c.Request.Context(), id, subject.UserID)
+	default:
+		response.BadRequest(c, "Unknown action")
+		return
+	}
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"ok": true})
+}
+
+func (h *UsageHandler) RequestRental(c *gin.Context) { h.rentalAction(c, "request") }
+func (h *UsageHandler) ApproveRental(c *gin.Context) { h.rentalAction(c, "approve") }
+func (h *UsageHandler) RejectRental(c *gin.Context)  { h.rentalAction(c, "reject") }
+func (h *UsageHandler) RevokeRental(c *gin.Context)  { h.rentalAction(c, "revoke") }

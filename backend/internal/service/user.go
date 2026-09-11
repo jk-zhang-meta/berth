@@ -68,7 +68,14 @@ type User struct {
 	Subscriptions []UserSubscription
 }
 
+func IsPeerAdmin(role string) bool {
+	return role == RoleAdmin
+}
+
 func (u *User) IsAdmin() bool {
+	if u == nil {
+		return false
+	}
 	return u.Role == RoleAdmin
 }
 

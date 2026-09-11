@@ -60,6 +60,152 @@ type UsageService struct {
 	userRepo             UserRepository
 	entClient            *dbent.Client
 	authCacheInvalidator APIKeyAuthCacheInvalidator
+	workSessions         *WorkSessionStore
+	rentals              *RentalStore
+	stewards             *StewardStore
+}
+
+func (s *UsageService) SetWorkSessions(store *WorkSessionStore) {
+	if s == nil {
+		return
+	}
+	s.workSessions = store
+}
+
+func (s *UsageService) ListWorkSessions(ctx context.Context, userID int64) ([]WorkSession, error) {
+	if s == nil || s.workSessions == nil {
+		return nil, nil
+	}
+	return s.workSessions.List(ctx, userID)
+}
+
+func (s *UsageService) PatchWorkSession(ctx context.Context, id, userID int64, patch WorkSessionPatch) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.Patch(ctx, id, userID, patch)
+}
+
+func (s *UsageService) ListWorkSessionRequests(ctx context.Context, id, userID int64) ([]WorkSessionRequest, error) {
+	if s == nil || s.workSessions == nil {
+		return nil, nil
+	}
+	return s.workSessions.ListRequests(ctx, id, userID)
+}
+
+func (s *UsageService) ReplaceWorkSessionQueue(ctx context.Context, id, userID int64, accountIDs []int64) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.ReplaceQueue(ctx, id, userID, accountIDs)
+}
+
+func (s *UsageService) SetRentals(store *RentalStore) {
+	if s == nil {
+		return
+	}
+	s.rentals = store
+}
+
+func (s *UsageService) SetStewards(store *StewardStore) {
+	if s == nil {
+		return
+	}
+	s.stewards = store
+}
+
+func (s *UsageService) ListRentals(ctx context.Context, userID int64, scope string) ([]AccountRental, error) {
+	if s == nil || s.rentals == nil {
+		return nil, nil
+	}
+	return s.rentals.List(ctx, userID, scope)
+}
+
+func (s *UsageService) CreateRental(ctx context.Context, in CreateRentalInput) (*AccountRental, error) {
+	if s == nil || s.rentals == nil {
+		return nil, fmt.Errorf("rentals unavailable")
+	}
+	if s.stewards != nil && !s.stewards.OwnsAccount(ctx, in.AccountID, in.OwnerUserID) {
+		return nil, fmt.Errorf("not your account")
+	}
+	return s.rentals.Create(ctx, in)
+}
+
+func (s *UsageService) RequestRental(ctx context.Context, id, userID int64) error {
+	if s == nil || s.rentals == nil {
+		return fmt.Errorf("rentals unavailable")
+	}
+	return s.rentals.Request(ctx, id, userID)
+}
+
+func (s *UsageService) ApproveRental(ctx context.Context, id, userID int64) error {
+	if s == nil || s.rentals == nil {
+		return fmt.Errorf("rentals unavailable")
+	}
+	return s.rentals.Approve(ctx, id, userID)
+}
+
+func (s *UsageService) RejectRental(ctx context.Context, id, userID int64) error {
+	if s == nil || s.rentals == nil {
+		return fmt.Errorf("rentals unavailable")
+	}
+	return s.rentals.Reject(ctx, id, userID)
+}
+
+func (s *UsageService) RevokeRental(ctx context.Context, id, userID int64) error {
+	if s == nil || s.rentals == nil {
+		return fmt.Errorf("rentals unavailable")
+	}
+	return s.rentals.Revoke(ctx, id, userID)
+}
+
+func (s *UsageService) StewardAccountIDs(ctx context.Context, userID int64) []int64 {
+	if s == nil || s.stewards == nil {
+		return nil
+	}
+	return s.stewards.ListAccountIDs(ctx, userID)
+}
+
+func (s *UsageService) StewardProxyIDs(ctx context.Context, userID int64) []int64 {
+	if s == nil || s.stewards == nil {
+		return nil
+	}
+	return s.stewards.ListProxyIDs(ctx, userID)
+}
+
+func (s *UsageService) ClaimAccount(ctx context.Context, accountID, userID int64) error {
+	if s == nil || s.stewards == nil {
+		return nil
+	}
+	return s.stewards.ClaimAccount(ctx, accountID, userID)
+}
+
+func (s *UsageService) ClaimProxy(ctx context.Context, proxyID, userID int64) error {
+	if s == nil || s.stewards == nil {
+		return nil
+	}
+	return s.stewards.ClaimProxy(ctx, proxyID, userID)
+}
+
+func (s *UsageService) OwnsProxy(ctx context.Context, proxyID, userID int64) bool {
+	if s == nil || s.stewards == nil {
+		return false
+	}
+	return s.stewards.OwnsProxy(ctx, proxyID, userID)
+}
+
+func (s *UsageService) ListedAccountMap(ctx context.Context, userID int64) map[int64]int64 {
+	if s == nil || s.rentals == nil {
+		return map[int64]int64{}
+	}
+	return s.rentals.ListedAccountIDs(ctx, userID)
+}
+
+func (s *UsageService) BorrowedAccountIDs(ctx context.Context, userID int64) []int64 {
+	if s == nil || s.rentals == nil {
+		return nil
+	}
+	return s.rentals.BorrowedAccountIDs(ctx, userID)
 }
 
 // NewUsageService 创建使用统计服务实例

@@ -293,26 +293,30 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
+		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), platform,
+	))
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64
-	if sessionKey != "" {
+	if pref := service.WorkSessionPrefFromContext(c.Request.Context()); pref != nil && pref.AssignedAccountID > 0 {
+		sessionBoundAccountID = pref.AssignedAccountID
+	} else if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
-		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
 			zap.String("session_key", sessionKey),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
-		if sessionBoundAccountID > 0 {
+	} else {
+		reqLog.Info("sticky.no_session_key", zap.String("session_hash", sessionHash))
+	}
+	if sessionBoundAccountID > 0 {
 			prefetchedGroupID := int64(0)
 			if apiKey.GroupID != nil {
 				prefetchedGroupID = *apiKey.GroupID
 			}
 			ctx := service.WithPrefetchedStickySession(c.Request.Context(), sessionBoundAccountID, prefetchedGroupID, h.metadataBridgeEnabled())
 			c.Request = c.Request.WithContext(ctx)
-		}
-	} else {
-		reqLog.Info("sticky.no_session_key", zap.String("session_hash", sessionHash))
 	}
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0

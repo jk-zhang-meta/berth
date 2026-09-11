@@ -764,6 +764,7 @@ export interface CreateApiKeyRequest {
   rate_limit_5h?: number
   rate_limit_1d?: number
   rate_limit_7d?: number
+  for_user_id?: number
 }
 
 export interface UpdateApiKeyRequest {

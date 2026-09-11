@@ -110,6 +110,14 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		"excluded_ids", excludedIDsList)
 
 	cfg := s.schedulingConfig()
+	if pref := WorkSessionPrefFromContext(ctx); pref != nil {
+		if excludedIDs == nil {
+			excludedIDs = map[int64]struct{}{}
+		}
+		for id := range pref.BlockedAccountIDs {
+			excludedIDs[id] = struct{}{}
+		}
+	}
 
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
@@ -133,6 +141,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if prefetch := prefetchedStickyAccountIDFromContext(ctx, groupID); prefetch > 0 {
 		stickyAccountID = prefetch
 		stickySource = "prefetch"
+	} else if pref := WorkSessionPrefFromContext(ctx); pref != nil && pref.AssignedAccountID > 0 && berthAllowsAccount(pref, pref.AssignedAccountID) {
+		stickyAccountID = pref.AssignedAccountID
+		stickySource = "work_session"
 	} else if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash); err == nil {
 			stickyAccountID = accountID
@@ -1015,7 +1026,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
-			accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
+			accounts = FilterAccountsForBerth(ctx, s.filterAccountsBySchedulingThreshold(ctx, accounts))
 			if platform == PlatformGrok || strings.EqualFold(platform, PlatformGrok) {
 				accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
 			}
@@ -1080,7 +1091,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 			}
 		}
-		return s.filterAccountsBySchedulingThreshold(ctx, filtered), useMixed, nil
+		return FilterAccountsForBerth(ctx, s.filterAccountsBySchedulingThreshold(ctx, filtered)), useMixed, nil
 	}
 
 	var accounts []Account
@@ -1115,7 +1126,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 		}
 	}
-	accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
+	accounts = FilterAccountsForBerth(ctx, s.filterAccountsBySchedulingThreshold(ctx, accounts))
 	if platform == PlatformGrok || strings.EqualFold(platform, PlatformGrok) {
 		accounts = s.filterGrokFreeQuotaAccountsForGateway(ctx, accounts)
 	}
@@ -1576,6 +1587,9 @@ func (s *GatewayService) newSelectionResult(ctx context.Context, account *Accoun
 	hydrated, err := s.hydrateSelectedAccount(ctx, account)
 	if err != nil {
 		return nil, err
+	}
+	if hydrated != nil {
+		s.BindWorkSessionAccount(ctx, hydrated.ID)
 	}
 	return attachSelectionProfitGate(ctx, &AccountSelectionResult{
 		Account:     hydrated,

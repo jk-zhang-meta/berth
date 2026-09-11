@@ -125,6 +125,131 @@ export interface UsageDashboardSnapshotV2Response {
  * @param apiKeyId - Filter by API key ID
  * @returns Paginated list of usage logs
  */
+export interface WorkSession {
+  id: number
+  user_id: number
+  api_key_id?: number | null
+  client_session_id: string
+  platform: string
+  title?: string
+  cwd?: string
+  host?: string
+  ags_id?: string
+  importance: number
+  assigned_account_id?: number | null
+  last_account_id?: number | null
+  account_name?: string
+  account_platform?: string
+  status: string
+  last_seen_at: string
+  created_at: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  total_tokens: number
+  total_cost: number
+  queue: SessionQueueMember[]
+}
+
+export interface WorkSessionRequest {
+  id: number
+  request_id: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  total_cost: number
+  created_at: string
+  account_id: number
+}
+
+export async function listSessions(admin = false): Promise<WorkSession[]> {
+  const path = admin ? '/admin/usage/sessions' : '/usage/sessions'
+  const { data } = await apiClient.get<{ items?: WorkSession[] }>(path)
+  return data.items ?? []
+}
+
+export async function patchSession(
+  id: number,
+  body: {
+    title?: string
+    importance?: number
+    assigned_account_id?: number | null
+    clear_assignment?: boolean
+    status?: string
+    ags_id?: string
+  },
+  admin = false
+): Promise<void> {
+  const path = admin ? `/admin/usage/sessions/${id}` : `/usage/sessions/${id}`
+  await apiClient.patch(path, body)
+}
+
+export interface SessionQueueMember {
+  account_id: number
+  account_name?: string
+  platform?: string
+  priority: number
+}
+
+export interface AccountRental {
+  id: number
+  account_id: number
+  account_name?: string
+  account_platform?: string
+  owner_user_id: number
+  borrower_user_id?: number | null
+  status: string
+  token_quota?: number | null
+  tokens_used: number
+  duration_hours?: number | null
+  concurrency?: number | null
+  exclusive: boolean
+  note?: string
+  requested_at?: string | null
+  starts_at?: string | null
+  ends_at?: string | null
+  created_at: string
+}
+
+export async function replaceSessionQueue(id: number, accountIds: number[], admin = false): Promise<void> {
+  const path = admin ? `/admin/usage/sessions/${id}/queue` : `/usage/sessions/${id}/queue`
+  await apiClient.put(path, { account_ids: accountIds })
+}
+
+export async function listRentals(scope: 'mine' | 'market' | 'all' = 'mine'): Promise<AccountRental[]> {
+  const path = scope === 'all' ? '/admin/rentals' : '/rentals'
+  const { data } = await apiClient.get<{ items?: AccountRental[] }>(path, {
+    params: scope === 'all' ? undefined : { scope }
+  })
+  return data.items ?? []
+}
+
+export async function createRental(body: {
+  account_id: number
+  token_quota?: number
+  duration_hours?: number
+  concurrency?: number
+  exclusive?: boolean
+  note?: string
+}): Promise<AccountRental> {
+  const { data } = await apiClient.post<AccountRental>('/rentals', body)
+  return data
+}
+
+export async function rentalAction(id: number, action: 'request' | 'approve' | 'reject' | 'revoke'): Promise<void> {
+  await apiClient.post(`/rentals/${id}/${action}`)
+}
+
+export async function listSessionRequests(id: number, admin = false): Promise<WorkSessionRequest[]> {
+  const path = admin
+    ? `/admin/usage/sessions/${id}/requests`
+    : `/usage/sessions/${id}/requests`
+  const { data } = await apiClient.get<{ items?: WorkSessionRequest[] }>(path)
+  return data.items ?? []
+}
+
 export async function list(
   page: number = 1,
   pageSize: number = 20,

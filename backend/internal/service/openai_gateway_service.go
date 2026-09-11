@@ -453,6 +453,9 @@ type OpenAIGatewayService struct {
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
+	workSessions          *WorkSessionStore
+	rentals               *RentalStore
+	stewards              *StewardStore
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -491,6 +494,47 @@ type OpenAIGatewayService struct {
 	// 剥离跨账号回带（openai_codex_turn_state.go）。
 	openaiCodexTurnStateOrigins sync.Map
 	openaiCodexTurnStateWrites  atomic.Uint64
+}
+
+func (s *OpenAIGatewayService) SetWorkSessions(store *WorkSessionStore) {
+	if s == nil {
+		return
+	}
+	s.workSessions = store
+}
+
+func (s *OpenAIGatewayService) SetRentals(store *RentalStore) {
+	if s == nil {
+		return
+	}
+	s.rentals = store
+}
+
+func (s *OpenAIGatewayService) SetStewards(store *StewardStore) {
+	if s == nil {
+		return
+	}
+	s.stewards = store
+}
+
+func (s *OpenAIGatewayService) PrepareWorkSession(ctx context.Context, userID, apiKeyID int64, clientSessionID, platform string) context.Context {
+	if s == nil || s.workSessions == nil {
+		return ctx
+	}
+	ctx, _ = s.workSessions.Prepare(ctx, userID, apiKeyID, clientSessionID, platform)
+	bindBerthPref(ctx, userID, s.rentals, s.stewards)
+	return ctx
+}
+
+func (s *OpenAIGatewayService) BindWorkSessionAccount(ctx context.Context, accountID int64) {
+	if s == nil || s.workSessions == nil {
+		return
+	}
+	pref := WorkSessionPrefFromContext(ctx)
+	if pref == nil {
+		return
+	}
+	s.workSessions.BindAccount(ctx, pref.UserID, pref.ClientSessionID, pref.Platform, accountID)
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService

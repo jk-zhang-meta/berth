@@ -77,14 +77,6 @@ vi.mock('@/composables/useRoutePrefetch', () => ({
   }),
 }))
 
-function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise
-  })
-  return { promise, resolve }
-}
-
 function runGuard(meta: Record<string, unknown>, path: string) {
   if (!routerHarness.guard) {
     throw new Error('router guard was not registered')
@@ -119,57 +111,13 @@ describe('feature route guard', () => {
     appStore.fetchPublicSettings.mockReset()
   })
 
-  it('waits for the first public-settings request before deciding payment access', async () => {
-    const deferred = createDeferred<{ payment_enabled: boolean }>()
-    appStore.fetchPublicSettings.mockImplementation(async () => {
-      const settings = await deferred.promise
-      appStore.cachedPublicSettings = settings
-      appStore.publicSettingsLoaded = true
-      return settings
-    })
-
-    const { navigation, next } = runGuard({ requiresPayment: true }, '/purchase')
-
-    await vi.waitFor(() => expect(appStore.fetchPublicSettings).toHaveBeenCalledTimes(1))
-    expect(next).not.toHaveBeenCalled()
-
-    deferred.resolve({ payment_enabled: true })
-    await navigation
-    expect(next).toHaveBeenCalledOnce()
-    expect(next).toHaveBeenCalledWith()
-  })
-
   it.each([
-    ['payment', { requiresPayment: true }, '/purchase'],
-    ['risk control', { requiresRiskControl: true }, '/admin/risk-control'],
-  ])('does not treat a failed %s settings load as explicitly disabled', async (_name, meta, path) => {
-    authStore.isAdmin = meta.requiresRiskControl === true
-    appStore.fetchPublicSettings.mockResolvedValue(null)
-
+    ['risk control', { requiresRiskControl: true }, '/admin/risk-control', '/admin/dashboard'],
+    ['settings', { requiresAdmin: true }, '/admin/settings', '/admin/dashboard'],
+  ])('sends retired %s pages to the product fallback', async (_name, meta, path, target) => {
+    authStore.isAdmin = Boolean(meta.requiresRiskControl || meta.requiresAdmin)
     const { navigation, next } = runGuard(meta, path)
     await navigation
-
-    expect(appStore.publicSettingsLoaded).toBe(false)
-    expect(next).toHaveBeenCalledOnce()
-    expect(next).toHaveBeenCalledWith()
-  })
-
-  it.each([
-    ['payment', { requiresPayment: true }, { payment_enabled: false }, '/dashboard'],
-    [
-      'risk control',
-      { requiresRiskControl: true },
-      { risk_control_enabled: false },
-      '/admin/settings',
-    ],
-  ])('redirects when loaded settings explicitly disable %s', async (_name, meta, settings, target) => {
-    authStore.isAdmin = meta.requiresRiskControl === true
-    appStore.cachedPublicSettings = settings
-    appStore.publicSettingsLoaded = true
-
-    const { navigation, next } = runGuard(meta, '/feature')
-    await navigation
-
     expect(appStore.fetchPublicSettings).not.toHaveBeenCalled()
     expect(next).toHaveBeenCalledOnce()
     expect(next).toHaveBeenCalledWith(target)

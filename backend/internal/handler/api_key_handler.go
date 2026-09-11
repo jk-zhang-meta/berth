@@ -39,6 +39,7 @@ type CreateAPIKeyRequest struct {
 	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
 	Quota         *float64 `json:"quota"`           // 配额限制 (USD)
 	ExpiresInDays *int     `json:"expires_in_days"` // 过期天数
+	ForUserID     *int64   `json:"for_user_id"`     // 发给别人用的钥匙；空则发给自己
 
 	// Rate limit fields (0 = unlimited)
 	RateLimit5h *float64 `json:"rate_limit_5h"`
@@ -217,8 +218,13 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		svcReq.RateLimit7d = *req.RateLimit7d
 	}
 
+	targetUserID := subject.UserID
+	if req.ForUserID != nil && *req.ForUserID > 0 {
+		targetUserID = *req.ForUserID
+	}
+
 	executeUserIdempotentJSON(c, "user.api_keys.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		key, err := h.apiKeyService.Create(ctx, subject.UserID, svcReq)
+		key, err := h.apiKeyService.Create(ctx, targetUserID, svcReq)
 		if err != nil {
 			return nil, err
 		}

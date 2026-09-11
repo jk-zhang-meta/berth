@@ -1,8 +1,18 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="Sub2API Logo" width="128" />
+<img src="assets/logo.svg" alt="Berth Logo" width="128" />
 
-# Sub2API
+# Berth
+
+**Dock your own accounts. Use them, list them, take them back.**
+
+Berth is a private-account marketplace on top of [Sub2API](https://github.com/Wei-Shaw/sub2api): self-service accounts, rental market, sessions (with AGS id), proxies, usage logs, and wallet balance.
+
+The upstream Sub2API tree stays in this repository so new gateway features can still be absorbed. Local product code lives in new files plus thin hooks.
+
+---
+
+# Sub2API (upstream base)
 
 [![Go](https://img.shields.io/badge/Go-1.27.0-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)

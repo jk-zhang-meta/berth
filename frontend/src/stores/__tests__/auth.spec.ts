@@ -327,7 +327,7 @@ describe('useAuthStore', () => {
       expect(store.isAdmin).toBe(true)
     })
 
-    it('普通用户返回 false', async () => {
+    it('普通用户不是管理员', async () => {
       mockLogin.mockResolvedValue(fakeAuthResponse)
       const store = useAuthStore()
 

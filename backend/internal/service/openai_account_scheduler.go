@@ -384,7 +384,28 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
 		s.metrics.recordSelect(decision)
+		if decision.SelectedAccountID > 0 && s.service != nil {
+			s.service.BindWorkSessionAccount(ctx, decision.SelectedAccountID)
+		}
 	}()
+
+	if pref := WorkSessionPrefFromContext(ctx); pref != nil {
+		if req.ExcludedIDs == nil {
+			req.ExcludedIDs = map[int64]struct{}{}
+		}
+		for id := range pref.BlockedAccountIDs {
+			req.ExcludedIDs[id] = struct{}{}
+		}
+		if picked := pickQueueAccount(pref.QueueAccountIDs, pref.Occupancy, req.ExcludedIDs); picked > 0 && berthAllowsAccount(pref, picked) {
+			req.StickyAccountID = picked
+			req.PreserveStickyBinding = true
+		} else if pref.AssignedAccountID > 0 && berthAllowsAccount(pref, pref.AssignedAccountID) {
+			if _, blocked := pref.BlockedAccountIDs[pref.AssignedAccountID]; !blocked {
+				req.StickyAccountID = pref.AssignedAccountID
+				req.PreserveStickyBinding = true
+			}
+		}
+	}
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
 	if previousResponseID != "" && NormalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI &&
@@ -1026,6 +1047,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 				item.score += weights.SessionSticky
 			}
 		}
+		if pref := WorkSessionPrefFromContext(ctx); pref != nil && item.account != nil {
+			item.score -= occupancyPenalty(pref.Occupancy[item.account.ID], pref.Importance) * 12
+		}
 	}
 	plan.candidates = candidates
 
@@ -1396,6 +1420,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
+	accounts = FilterAccountsForBerth(ctx, accounts)
 	if len(accounts) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary(""))
 	}

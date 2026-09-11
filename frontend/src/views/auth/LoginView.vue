@@ -7,7 +7,7 @@
           {{ t('auth.welcomeBack') }}
         </h2>
         <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
-          {{ t('auth.signInToAccount') }}
+          泊位 · 把自己的号停进来，自用或挂到市场上。
         </p>
       </div>
       <!-- Login Form -->

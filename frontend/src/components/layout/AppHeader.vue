@@ -24,11 +24,11 @@
       <!-- Right: Announcements + Docs + Language + Subscriptions + Balance + User Dropdown -->
       <div class="flex min-w-0 items-center gap-1 sm:gap-3">
         <!-- Announcement Bell -->
-        <AnnouncementBell v-if="user" />
+        <AnnouncementBell v-if="SHOW_LEGACY_SAAS_CHROME && user" />
 
         <!-- Docs Link -->
         <a
-          v-if="docUrl"
+          v-if="SHOW_LEGACY_SAAS_CHROME && docUrl"
           :href="docUrl"
           target="_blank"
           rel="noopener noreferrer"
@@ -40,7 +40,7 @@
 
         <!-- Model Plaza Entry -->
         <router-link
-          v-if="user && modelPlazaEnabled"
+          v-if="SHOW_LEGACY_SAAS_CHROME && user && modelPlazaEnabled"
           :to="{ path: '/model-plaza', query: { embedded: '1' } }"
           class="hidden items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-white sm:flex"
         >
@@ -52,11 +52,12 @@
         <LocaleSwitcher />
 
         <!-- Subscription Progress (for users with active subscriptions) -->
-        <SubscriptionProgressMini v-if="user" />
+        <SubscriptionProgressMini v-if="SHOW_LEGACY_SAAS_CHROME && user" />
 
         <!-- Balance Display -->
-        <div
+        <router-link
           v-if="user"
+          to="/purchase"
           class="group relative hidden items-center gap-2 rounded-xl bg-primary-50 px-3 py-1.5 dark:bg-primary-900/20 sm:flex"
         >
           <svg
@@ -99,7 +100,7 @@
               </div>
             </div>
           </div>
-        </div>
+        </router-link>
 
         <!-- User Dropdown -->
         <div v-if="user" class="relative" ref="dropdownRef">
@@ -140,7 +141,7 @@
               </div>
 
               <!-- Balance (mobile only) -->
-              <div class="border-b border-gray-100 px-4 py-2 dark:border-dark-700 sm:hidden">
+              <div v-if="SHOW_LEGACY_SAAS_CHROME" class="border-b border-gray-100 px-4 py-2 dark:border-dark-700 sm:hidden">
                 <div class="text-xs text-gray-500 dark:text-dark-400">
                   {{ t('common.balance') }}
                 </div>
@@ -153,18 +154,13 @@
               </div>
 
               <div class="py-1">
-                <router-link to="/profile" @click="closeDropdown" class="dropdown-item">
-                  <Icon name="user" size="sm" />
-                  {{ t('nav.profile') }}
-                </router-link>
-
                 <router-link to="/keys" @click="closeDropdown" class="dropdown-item">
                   <Icon name="key" size="sm" />
                   {{ t('nav.apiKeys') }}
                 </router-link>
 
                 <a
-                  v-if="authStore.isAdmin"
+                  v-if="SHOW_LEGACY_SAAS_CHROME && authStore.isAdmin"
                   href="https://github.com/Wei-Shaw/sub2api"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -185,7 +181,7 @@
 
               <!-- Contact Support (only show if configured) -->
               <div
-                v-if="contactInfo"
+                v-if="SHOW_LEGACY_SAAS_CHROME && contactInfo"
                 class="border-t border-gray-100 px-4 py-2.5 dark:border-dark-700"
               >
                 <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -209,7 +205,7 @@
                 </div>
               </div>
 
-              <div v-if="showOnboardingButton" class="border-t border-gray-100 py-1 dark:border-dark-700">
+              <div v-if="SHOW_LEGACY_SAAS_CHROME && showOnboardingButton" class="border-t border-gray-100 py-1 dark:border-dark-700">
                 <button @click="handleReplayGuide" class="dropdown-item w-full">
                   <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                     <path
@@ -261,6 +257,7 @@ import AnnouncementBell from '@/components/common/AnnouncementBell.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
+import { SHOW_LEGACY_SAAS_CHROME } from '@/productSurface'
 
 const router = useRouter()
 const route = useRoute()

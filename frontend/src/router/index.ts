@@ -13,6 +13,7 @@ import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
 import { resolveRouteDocumentTitle } from './title'
+import { isProductSurfacePath, productFallbackPath } from '@/productSurface'
 
 /**
  * Route definitions with lazy loading
@@ -226,6 +227,50 @@ const routes: RouteRecordRaw[] = [
       title: 'Batch Image Guide',
       titleKey: 'batchImageGuide.title',
       descriptionKey: 'batchImageGuide.description'
+    }
+  },
+  {
+    path: '/sessions',
+    name: 'Sessions',
+    component: () => import('@/views/SessionsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Sessions',
+      titleKey: 'nav.sessions'
+    }
+  },
+  {
+    path: '/accounts',
+    name: 'MyAccounts',
+    component: () => import('@/views/MyAccountsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Accounts',
+      titleKey: 'nav.accounts'
+    }
+  },
+  {
+    path: '/market',
+    name: 'Market',
+    component: () => import('@/views/RentalsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Market',
+      titleKey: 'nav.market'
+    }
+  },
+  {
+    path: '/proxies',
+    name: 'MyProxies',
+    component: () => import('@/views/MyProxiesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Proxies',
+      titleKey: 'nav.proxies'
     }
   },
   {
@@ -623,16 +668,23 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/admin/usage',
-    name: 'AdminUsage',
-    component: () => import('@/views/admin/UsageView.vue'),
+    path: '/admin/rentals',
+    redirect: '/market',
+  },
+  {
+    path: '/admin/sessions',
+    name: 'AdminSessions',
+    component: () => import('@/views/SessionsView.vue'),
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
-      title: 'Usage Records',
-      titleKey: 'admin.usage.title',
-      descriptionKey: 'admin.usage.description'
+      title: 'Sessions',
+      titleKey: 'nav.sessions'
     }
+  },
+  {
+    path: '/admin/usage',
+    redirect: '/usage',
   },
   {
     path: '/admin/affiliates',
@@ -815,6 +867,11 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
+  if (!isProductSurfacePath(to.path)) {
+    next(productFallbackPath(authStore.isAuthenticated, authStore.isAdmin))
+    return
+  }
+
   // If route doesn't require auth, allow access
   if (!requiresAuth) {
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
@@ -931,7 +988,7 @@ router.beforeEach(async (to, _from, next) => {
     appStore.publicSettingsLoaded &&
     appStore.cachedPublicSettings?.risk_control_enabled === false
   ) {
-    next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
     return
   }
 

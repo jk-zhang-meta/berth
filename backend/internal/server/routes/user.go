@@ -102,6 +102,10 @@ func RegisterUserRoutes(
 			usage.GET("", h.Usage.List)
 			usage.GET("/errors", h.Usage.ListErrors)
 			usage.GET("/errors/:id", h.Usage.GetErrorDetail)
+			usage.GET("/sessions", h.Usage.ListSessions)
+			usage.PATCH("/sessions/:id", h.Usage.PatchSession)
+			usage.PUT("/sessions/:id/queue", h.Usage.ReplaceSessionQueue)
+			usage.GET("/sessions/:id/requests", h.Usage.ListSessionRequests)
 			usage.GET("/:id", h.Usage.GetByID)
 			usage.GET("/stats", h.Usage.Stats)
 			// User dashboard endpoints
@@ -110,6 +114,27 @@ func RegisterUserRoutes(
 			usage.GET("/dashboard/models", h.Usage.DashboardModels)
 			usage.GET("/dashboard/snapshot-v2", h.Usage.DashboardSnapshotV2)
 			usage.POST("/dashboard/api-keys-usage", h.Usage.DashboardAPIKeysUsage)
+		}
+
+		rentals := authenticated.Group("/rentals")
+		{
+			rentals.GET("", h.Usage.ListRentals)
+			rentals.POST("", h.Usage.CreateRental)
+			rentals.POST("/:id/request", h.Usage.RequestRental)
+			rentals.POST("/:id/approve", h.Usage.ApproveRental)
+			rentals.POST("/:id/reject", h.Usage.RejectRental)
+			rentals.POST("/:id/revoke", h.Usage.RevokeRental)
+		}
+
+		accounts := authenticated.Group("/accounts")
+		{
+			accounts.GET("", h.Usage.ListBerthAccounts)
+			accounts.POST("", h.Usage.CreateBerthAccount)
+		}
+		proxies := authenticated.Group("/proxies")
+		{
+			proxies.GET("", h.Usage.ListBerthProxies)
+			proxies.POST("", h.Usage.CreateBerthProxy)
 		}
 
 		// 公告（用户可见）

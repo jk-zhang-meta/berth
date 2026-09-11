@@ -35,7 +35,7 @@
       <ProfilePasswordForm />
 
       <ProfileBalanceNotifyCard
-        v-if="user && balanceLowNotifyEnabled"
+        v-if="SHOW_LEGACY_SAAS_CHROME && user && balanceLowNotifyEnabled"
         :enabled="user.balance_notify_enabled ?? true"
         :threshold="user.balance_notify_threshold"
         :extra-emails="user.balance_notify_extra_emails ?? []"
@@ -62,6 +62,7 @@ import ProfilePasskeyCard from '@/components/user/profile/ProfilePasskeyCard.vue
 import { isWeChatWebOAuthEnabled } from '@/api/auth'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { SHOW_LEGACY_SAAS_CHROME } from '@/productSurface'
 
 const { t } = useI18n()
 const appStore = useAppStore()
