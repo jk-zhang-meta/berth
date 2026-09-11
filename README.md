@@ -8,7 +8,7 @@
 
 Berth is a private-account marketplace on top of [Sub2API](https://github.com/Wei-Shaw/sub2api): self-service accounts, rental market, sessions (with AGS id), proxies, usage logs, and wallet balance.
 
-The upstream Sub2API tree stays in this repository so new gateway features can still be absorbed. Local product code lives in new files plus thin hooks.
+This GitHub repository is a **fork of Wei-Shaw/sub2api**. Product work lives on the `berth` branch. Merge upstream with `git fetch upstream && git merge upstream/main` into `berth`. Local product code lives in new files plus thin hooks.
 
 ---
 
