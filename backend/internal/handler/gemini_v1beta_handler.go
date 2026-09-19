@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jk-zhang-meta/berth/internal/domain"
 	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
 	"github.com/jk-zhang-meta/berth/internal/pkg/gemini"
@@ -21,7 +22,6 @@ import (
 	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/google/uuid"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -544,7 +544,16 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				googleError(c, http.StatusTooManyRequests, err.Error())
 				return
 			}
-			accountReleaseFunc = geminiConcurrency.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
+			accountReleaseFunc, err = geminiConcurrency.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+			if err != nil {
+				reqLog.Warn("gemini.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				if accountWaitCounted {
+					geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+					accountWaitCounted = false
+				}
+				googleError(c, http.StatusTooManyRequests, err.Error())
+				return
+			}
 			if accountWaitCounted {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false

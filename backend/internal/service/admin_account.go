@@ -586,7 +586,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			currentProxyID = *account.ProxyID
 		}
 		if *input.ProxyID != currentProxyID {
-			if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
+			additional, err := s.proxyBindingAdditionalAccounts(ctx, []*Account{account}, input.ProxyID)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.validateVerifiedProxyBindingCapacity(ctx, input.ProxyID, additional); err != nil {
 				return nil, err
 			}
 		}
@@ -1038,7 +1042,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					"spark shadow account %d proxy is inherited from its parent and cannot be set in bulk; manage it on the parent account", acc.ID)
 			}
 		}
-		if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
+		additional, err := s.proxyBindingAdditionalAccounts(ctx, cachedTargets, input.ProxyID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.validateVerifiedProxyBindingCapacity(ctx, input.ProxyID, additional); err != nil {
 			return nil, err
 		}
 	}
@@ -1478,6 +1486,35 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 // Calling this for a non-parent account is a harmless no-op.
 func (s *adminServiceImpl) propagateProxyToShadows(ctx context.Context, parentID int64, proxyID *int64) error {
 	return propagateAccountProxyToShadows(ctx, s.accountRepo, parentID, proxyID)
+}
+
+func (s *adminServiceImpl) proxyBindingAdditionalAccounts(ctx context.Context, accounts []*Account, proxyID *int64) (int64, error) {
+	if proxyID == nil || *proxyID == 0 {
+		return 0, nil
+	}
+	seen := make(map[int64]struct{})
+	addIfChanged := func(account *Account) {
+		if account == nil {
+			return
+		}
+		if account.ProxyID == nil || *account.ProxyID != *proxyID {
+			seen[account.ID] = struct{}{}
+		}
+	}
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		addIfChanged(account)
+		shadows, err := s.accountRepo.ListShadowsByParent(ctx, account.ID)
+		if err != nil {
+			return 0, fmt.Errorf("list spark shadows for proxy capacity: %w", err)
+		}
+		for _, shadow := range shadows {
+			addIfChanged(shadow)
+		}
+	}
+	return int64(len(seen)), nil
 }
 
 // propagateAccountProxyToShadows 把母账号的 proxy 同步到其所有 spark 影子(影子 proxy 恒继承母账号)。

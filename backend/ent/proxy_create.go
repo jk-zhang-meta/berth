@@ -187,6 +187,48 @@ func (_c *ProxyCreate) SetNillableExpiryWarnDays(v *int) *ProxyCreate {
 	return _c
 }
 
+// SetMaxAccounts sets the "max_accounts" field.
+func (_c *ProxyCreate) SetMaxAccounts(v int) *ProxyCreate {
+	_c.mutation.SetMaxAccounts(v)
+	return _c
+}
+
+// SetNillableMaxAccounts sets the "max_accounts" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableMaxAccounts(v *int) *ProxyCreate {
+	if v != nil {
+		_c.SetMaxAccounts(*v)
+	}
+	return _c
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (_c *ProxyCreate) SetMaxRpm(v int) *ProxyCreate {
+	_c.mutation.SetMaxRpm(v)
+	return _c
+}
+
+// SetNillableMaxRpm sets the "max_rpm" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableMaxRpm(v *int) *ProxyCreate {
+	if v != nil {
+		_c.SetMaxRpm(*v)
+	}
+	return _c
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (_c *ProxyCreate) SetMaxConcurrency(v int) *ProxyCreate {
+	_c.mutation.SetMaxConcurrency(v)
+	return _c
+}
+
+// SetNillableMaxConcurrency sets the "max_concurrency" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableMaxConcurrency(v *int) *ProxyCreate {
+	if v != nil {
+		_c.SetMaxConcurrency(*v)
+	}
+	return _c
+}
+
 // SetExitIP sets the "exit_ip" field.
 func (_c *ProxyCreate) SetExitIP(v string) *ProxyCreate {
 	_c.mutation.SetExitIP(v)
@@ -425,6 +467,18 @@ func (_c *ProxyCreate) defaults() error {
 		v := proxy.DefaultExpiryWarnDays
 		_c.mutation.SetExpiryWarnDays(v)
 	}
+	if _, ok := _c.mutation.MaxAccounts(); !ok {
+		v := proxy.DefaultMaxAccounts
+		_c.mutation.SetMaxAccounts(v)
+	}
+	if _, ok := _c.mutation.MaxRpm(); !ok {
+		v := proxy.DefaultMaxRpm
+		_c.mutation.SetMaxRpm(v)
+	}
+	if _, ok := _c.mutation.MaxConcurrency(); !ok {
+		v := proxy.DefaultMaxConcurrency
+		_c.mutation.SetMaxConcurrency(v)
+	}
 	return nil
 }
 
@@ -491,6 +545,30 @@ func (_c *ProxyCreate) check() error {
 	}
 	if _, ok := _c.mutation.ExpiryWarnDays(); !ok {
 		return &ValidationError{Name: "expiry_warn_days", err: errors.New(`ent: missing required field "Proxy.expiry_warn_days"`)}
+	}
+	if _, ok := _c.mutation.MaxAccounts(); !ok {
+		return &ValidationError{Name: "max_accounts", err: errors.New(`ent: missing required field "Proxy.max_accounts"`)}
+	}
+	if v, ok := _c.mutation.MaxAccounts(); ok {
+		if err := proxy.MaxAccountsValidator(v); err != nil {
+			return &ValidationError{Name: "max_accounts", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_accounts": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.MaxRpm(); !ok {
+		return &ValidationError{Name: "max_rpm", err: errors.New(`ent: missing required field "Proxy.max_rpm"`)}
+	}
+	if v, ok := _c.mutation.MaxRpm(); ok {
+		if err := proxy.MaxRpmValidator(v); err != nil {
+			return &ValidationError{Name: "max_rpm", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_rpm": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.MaxConcurrency(); !ok {
+		return &ValidationError{Name: "max_concurrency", err: errors.New(`ent: missing required field "Proxy.max_concurrency"`)}
+	}
+	if v, ok := _c.mutation.MaxConcurrency(); ok {
+		if err := proxy.MaxConcurrencyValidator(v); err != nil {
+			return &ValidationError{Name: "max_concurrency", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_concurrency": %w`, err)}
+		}
 	}
 	if v, ok := _c.mutation.ExitIP(); ok {
 		if err := proxy.ExitIPValidator(v); err != nil {
@@ -610,6 +688,18 @@ func (_c *ProxyCreate) createSpec() (*Proxy, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ExpiryWarnDays(); ok {
 		_spec.SetField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
 		_node.ExpiryWarnDays = value
+	}
+	if value, ok := _c.mutation.MaxAccounts(); ok {
+		_spec.SetField(proxy.FieldMaxAccounts, field.TypeInt, value)
+		_node.MaxAccounts = value
+	}
+	if value, ok := _c.mutation.MaxRpm(); ok {
+		_spec.SetField(proxy.FieldMaxRpm, field.TypeInt, value)
+		_node.MaxRpm = value
+	}
+	if value, ok := _c.mutation.MaxConcurrency(); ok {
+		_spec.SetField(proxy.FieldMaxConcurrency, field.TypeInt, value)
+		_node.MaxConcurrency = value
 	}
 	if value, ok := _c.mutation.ExitIP(); ok {
 		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)
@@ -947,6 +1037,60 @@ func (u *ProxyUpsert) UpdateExpiryWarnDays() *ProxyUpsert {
 // AddExpiryWarnDays adds v to the "expiry_warn_days" field.
 func (u *ProxyUpsert) AddExpiryWarnDays(v int) *ProxyUpsert {
 	u.Add(proxy.FieldExpiryWarnDays, v)
+	return u
+}
+
+// SetMaxAccounts sets the "max_accounts" field.
+func (u *ProxyUpsert) SetMaxAccounts(v int) *ProxyUpsert {
+	u.Set(proxy.FieldMaxAccounts, v)
+	return u
+}
+
+// UpdateMaxAccounts sets the "max_accounts" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateMaxAccounts() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldMaxAccounts)
+	return u
+}
+
+// AddMaxAccounts adds v to the "max_accounts" field.
+func (u *ProxyUpsert) AddMaxAccounts(v int) *ProxyUpsert {
+	u.Add(proxy.FieldMaxAccounts, v)
+	return u
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (u *ProxyUpsert) SetMaxRpm(v int) *ProxyUpsert {
+	u.Set(proxy.FieldMaxRpm, v)
+	return u
+}
+
+// UpdateMaxRpm sets the "max_rpm" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateMaxRpm() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldMaxRpm)
+	return u
+}
+
+// AddMaxRpm adds v to the "max_rpm" field.
+func (u *ProxyUpsert) AddMaxRpm(v int) *ProxyUpsert {
+	u.Add(proxy.FieldMaxRpm, v)
+	return u
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (u *ProxyUpsert) SetMaxConcurrency(v int) *ProxyUpsert {
+	u.Set(proxy.FieldMaxConcurrency, v)
+	return u
+}
+
+// UpdateMaxConcurrency sets the "max_concurrency" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateMaxConcurrency() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldMaxConcurrency)
+	return u
+}
+
+// AddMaxConcurrency adds v to the "max_concurrency" field.
+func (u *ProxyUpsert) AddMaxConcurrency(v int) *ProxyUpsert {
+	u.Add(proxy.FieldMaxConcurrency, v)
 	return u
 }
 
@@ -1409,6 +1553,69 @@ func (u *ProxyUpsertOne) AddExpiryWarnDays(v int) *ProxyUpsertOne {
 func (u *ProxyUpsertOne) UpdateExpiryWarnDays() *ProxyUpsertOne {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetMaxAccounts sets the "max_accounts" field.
+func (u *ProxyUpsertOne) SetMaxAccounts(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxAccounts(v)
+	})
+}
+
+// AddMaxAccounts adds v to the "max_accounts" field.
+func (u *ProxyUpsertOne) AddMaxAccounts(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxAccounts(v)
+	})
+}
+
+// UpdateMaxAccounts sets the "max_accounts" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateMaxAccounts() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxAccounts()
+	})
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (u *ProxyUpsertOne) SetMaxRpm(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxRpm(v)
+	})
+}
+
+// AddMaxRpm adds v to the "max_rpm" field.
+func (u *ProxyUpsertOne) AddMaxRpm(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxRpm(v)
+	})
+}
+
+// UpdateMaxRpm sets the "max_rpm" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateMaxRpm() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxRpm()
+	})
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (u *ProxyUpsertOne) SetMaxConcurrency(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxConcurrency(v)
+	})
+}
+
+// AddMaxConcurrency adds v to the "max_concurrency" field.
+func (u *ProxyUpsertOne) AddMaxConcurrency(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxConcurrency(v)
+	})
+}
+
+// UpdateMaxConcurrency sets the "max_concurrency" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateMaxConcurrency() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxConcurrency()
 	})
 }
 
@@ -2068,6 +2275,69 @@ func (u *ProxyUpsertBulk) AddExpiryWarnDays(v int) *ProxyUpsertBulk {
 func (u *ProxyUpsertBulk) UpdateExpiryWarnDays() *ProxyUpsertBulk {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetMaxAccounts sets the "max_accounts" field.
+func (u *ProxyUpsertBulk) SetMaxAccounts(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxAccounts(v)
+	})
+}
+
+// AddMaxAccounts adds v to the "max_accounts" field.
+func (u *ProxyUpsertBulk) AddMaxAccounts(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxAccounts(v)
+	})
+}
+
+// UpdateMaxAccounts sets the "max_accounts" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateMaxAccounts() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxAccounts()
+	})
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (u *ProxyUpsertBulk) SetMaxRpm(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxRpm(v)
+	})
+}
+
+// AddMaxRpm adds v to the "max_rpm" field.
+func (u *ProxyUpsertBulk) AddMaxRpm(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxRpm(v)
+	})
+}
+
+// UpdateMaxRpm sets the "max_rpm" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateMaxRpm() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxRpm()
+	})
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (u *ProxyUpsertBulk) SetMaxConcurrency(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetMaxConcurrency(v)
+	})
+}
+
+// AddMaxConcurrency adds v to the "max_concurrency" field.
+func (u *ProxyUpsertBulk) AddMaxConcurrency(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddMaxConcurrency(v)
+	})
+}
+
+// UpdateMaxConcurrency sets the "max_concurrency" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateMaxConcurrency() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateMaxConcurrency()
 	})
 }
 

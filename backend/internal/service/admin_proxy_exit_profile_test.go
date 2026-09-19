@@ -95,3 +95,19 @@ func TestValidateVerifiedProxyBindingRequiresPersistedExitProfile(t *testing.T) 
 	require.NoError(t, svc.validateVerifiedProxyBinding(context.Background(), &zero))
 	require.NoError(t, svc.validateVerifiedProxyBinding(context.Background(), nil))
 }
+
+func TestValidateVerifiedProxyBindingEnforcesAccountCapacity(t *testing.T) {
+	proxyID := int64(42)
+	repo := freshVerifiedBindingProxyRepo(proxyID)
+	repo.proxy.MaxAccounts = 3
+	repo.accountCount = 2
+	svc := &adminServiceImpl{proxyRepo: repo}
+
+	require.NoError(t, svc.validateVerifiedProxyBindingCapacity(context.Background(), &proxyID, 1))
+	err := svc.validateVerifiedProxyBindingCapacity(context.Background(), &proxyID, 2)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "proxy account capacity exceeded")
+
+	repo.proxy.MaxAccounts = 0
+	require.NoError(t, svc.validateVerifiedProxyBindingCapacity(context.Background(), &proxyID, 100))
+}

@@ -10,14 +10,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
 	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/jk-zhang-meta/berth/internal/pkg/websearch"
 	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
 	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -317,7 +317,10 @@ func (h *GatewayHandler) acquireWebSearchAccountSlot(
 	if err != nil {
 		return nil, false, err
 	}
-	slotRelease = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, slotRelease)
+	slotRelease, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, slotRelease)
+	if err != nil {
+		return nil, false, err
+	}
 	return slotRelease, true, nil
 }
 

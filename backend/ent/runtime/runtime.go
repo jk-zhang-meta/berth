@@ -1717,36 +1717,54 @@ func init() {
 	proxyDescExpiryWarnDays := proxyFields[10].Descriptor()
 	// proxy.DefaultExpiryWarnDays holds the default value on creation for the expiry_warn_days field.
 	proxy.DefaultExpiryWarnDays = proxyDescExpiryWarnDays.Default.(int)
+	// proxyDescMaxAccounts is the schema descriptor for max_accounts field.
+	proxyDescMaxAccounts := proxyFields[11].Descriptor()
+	// proxy.DefaultMaxAccounts holds the default value on creation for the max_accounts field.
+	proxy.DefaultMaxAccounts = proxyDescMaxAccounts.Default.(int)
+	// proxy.MaxAccountsValidator is a validator for the "max_accounts" field. It is called by the builders before save.
+	proxy.MaxAccountsValidator = proxyDescMaxAccounts.Validators[0].(func(int) error)
+	// proxyDescMaxRpm is the schema descriptor for max_rpm field.
+	proxyDescMaxRpm := proxyFields[12].Descriptor()
+	// proxy.DefaultMaxRpm holds the default value on creation for the max_rpm field.
+	proxy.DefaultMaxRpm = proxyDescMaxRpm.Default.(int)
+	// proxy.MaxRpmValidator is a validator for the "max_rpm" field. It is called by the builders before save.
+	proxy.MaxRpmValidator = proxyDescMaxRpm.Validators[0].(func(int) error)
+	// proxyDescMaxConcurrency is the schema descriptor for max_concurrency field.
+	proxyDescMaxConcurrency := proxyFields[13].Descriptor()
+	// proxy.DefaultMaxConcurrency holds the default value on creation for the max_concurrency field.
+	proxy.DefaultMaxConcurrency = proxyDescMaxConcurrency.Default.(int)
+	// proxy.MaxConcurrencyValidator is a validator for the "max_concurrency" field. It is called by the builders before save.
+	proxy.MaxConcurrencyValidator = proxyDescMaxConcurrency.Validators[0].(func(int) error)
 	// proxyDescExitIP is the schema descriptor for exit_ip field.
-	proxyDescExitIP := proxyFields[11].Descriptor()
+	proxyDescExitIP := proxyFields[14].Descriptor()
 	// proxy.ExitIPValidator is a validator for the "exit_ip" field. It is called by the builders before save.
 	proxy.ExitIPValidator = proxyDescExitIP.Validators[0].(func(string) error)
 	// proxyDescExitCountry is the schema descriptor for exit_country field.
-	proxyDescExitCountry := proxyFields[12].Descriptor()
+	proxyDescExitCountry := proxyFields[15].Descriptor()
 	// proxy.ExitCountryValidator is a validator for the "exit_country" field. It is called by the builders before save.
 	proxy.ExitCountryValidator = proxyDescExitCountry.Validators[0].(func(string) error)
 	// proxyDescExitCountryCode is the schema descriptor for exit_country_code field.
-	proxyDescExitCountryCode := proxyFields[13].Descriptor()
+	proxyDescExitCountryCode := proxyFields[16].Descriptor()
 	// proxy.ExitCountryCodeValidator is a validator for the "exit_country_code" field. It is called by the builders before save.
 	proxy.ExitCountryCodeValidator = proxyDescExitCountryCode.Validators[0].(func(string) error)
 	// proxyDescExitRegion is the schema descriptor for exit_region field.
-	proxyDescExitRegion := proxyFields[14].Descriptor()
+	proxyDescExitRegion := proxyFields[17].Descriptor()
 	// proxy.ExitRegionValidator is a validator for the "exit_region" field. It is called by the builders before save.
 	proxy.ExitRegionValidator = proxyDescExitRegion.Validators[0].(func(string) error)
 	// proxyDescExitCity is the schema descriptor for exit_city field.
-	proxyDescExitCity := proxyFields[15].Descriptor()
+	proxyDescExitCity := proxyFields[18].Descriptor()
 	// proxy.ExitCityValidator is a validator for the "exit_city" field. It is called by the builders before save.
 	proxy.ExitCityValidator = proxyDescExitCity.Validators[0].(func(string) error)
 	// proxyDescExitTimezone is the schema descriptor for exit_timezone field.
-	proxyDescExitTimezone := proxyFields[16].Descriptor()
+	proxyDescExitTimezone := proxyFields[19].Descriptor()
 	// proxy.ExitTimezoneValidator is a validator for the "exit_timezone" field. It is called by the builders before save.
 	proxy.ExitTimezoneValidator = proxyDescExitTimezone.Validators[0].(func(string) error)
 	// proxyDescExitAsn is the schema descriptor for exit_asn field.
-	proxyDescExitAsn := proxyFields[18].Descriptor()
+	proxyDescExitAsn := proxyFields[21].Descriptor()
 	// proxy.ExitAsnValidator is a validator for the "exit_asn" field. It is called by the builders before save.
 	proxy.ExitAsnValidator = proxyDescExitAsn.Validators[0].(func(string) error)
 	// proxyDescExitIsp is the schema descriptor for exit_isp field.
-	proxyDescExitIsp := proxyFields[19].Descriptor()
+	proxyDescExitIsp := proxyFields[22].Descriptor()
 	// proxy.ExitIspValidator is a validator for the "exit_isp" field. It is called by the builders before save.
 	proxy.ExitIspValidator = proxyDescExitIsp.Validators[0].(func(string) error)
 	redeemcodeFields := schema.RedeemCode{}.Fields()

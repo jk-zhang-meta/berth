@@ -12,6 +12,7 @@ const statusClientClosedRequest = 499
 const (
 	gatewayQueueFullCode        = "gateway_queue_full"
 	gatewayConcurrencyLimitCode = "gateway_concurrency_limit"
+	gatewayRateLimitCode        = "gateway_rate_limit"
 )
 
 func concurrencyErrorResponse(err error, slotType string) (int, string, string, string) {
@@ -28,6 +29,15 @@ func concurrencyErrorResponse(err error, slotType string) (int, string, string, 
 		}
 		return http.StatusTooManyRequests, "rate_limit_error", gatewayConcurrencyLimitCode,
 			fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType)
+	}
+
+	var rateLimitErr *RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		if rateLimitErr.SlotType != "" {
+			slotType = rateLimitErr.SlotType
+		}
+		return http.StatusTooManyRequests, "rate_limit_error", gatewayRateLimitCode,
+			fmt.Sprintf("RPM limit exceeded for %s, please retry later", slotType)
 	}
 
 	if errors.Is(err, context.Canceled) {

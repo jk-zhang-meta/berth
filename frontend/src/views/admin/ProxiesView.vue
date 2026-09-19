@@ -218,7 +218,7 @@
             </div>
           </template>
 
-          <template #cell-concurrency="{ value }">
+          <template #cell-concurrency="{ row, value }">
             <div class="inline-flex items-center gap-1.5">
               <span
                 class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium font-mono"
@@ -237,9 +237,15 @@
                   v-else
                   class="h-1.5 w-1.5 rounded-full bg-gray-400"
                 />
-                {{ value || 0 }}
+                {{ value || 0 }} / {{ row.max_concurrency || '∞' }}
               </span>
             </div>
+          </template>
+
+          <template #cell-current_rpm="{ row, value }">
+            <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium font-mono text-gray-700 dark:bg-dark-600 dark:text-gray-300">
+              {{ value || 0 }} / {{ row.max_rpm || '∞' }}
+            </span>
           </template>
 
           <template #cell-account_count="{ row, value }">
@@ -251,14 +257,14 @@
                 :title="t('admin.proxies.columns.accounts')"
                 @click="openAccountsModal(row)"
               >
-                {{ value }}
+                {{ value }} / {{ row.max_accounts || '∞' }}
               </button>
               <span
                 v-else
                 class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium font-mono text-gray-400 dark:bg-dark-600 dark:text-gray-400"
                 :title="t('admin.proxies.columns.accounts')"
               >
-                0
+                0 / {{ row.max_accounts || '∞' }}
               </span>
             </div>
           </template>
@@ -576,6 +582,22 @@
           <Select v-model="createForm.backup_proxy_id" :options="backupProxyOptions()" />
         </div>
 
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxAccounts') }}</label>
+            <input v-model.number="createForm.max_accounts" type="number" min="0" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxRPM') }}</label>
+            <input v-model.number="createForm.max_rpm" type="number" min="0" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxConcurrency') }}</label>
+            <input v-model.number="createForm.max_concurrency" type="number" min="0" class="input" />
+          </div>
+          <p class="input-hint sm:col-span-3">{{ t('admin.proxies.zeroUnlimited') }}</p>
+        </div>
+
       </form>
 
       <!-- Batch Add Form -->
@@ -807,6 +829,22 @@
         <div v-if="editForm.fallback_mode === 'proxy'">
           <label class="input-label">{{ t('admin.proxies.backupProxy') }}</label>
           <Select v-model="editForm.backup_proxy_id" :options="backupProxyOptions(editingProxy?.id)" />
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxAccounts') }}</label>
+            <input v-model.number="editForm.max_accounts" type="number" min="0" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxRPM') }}</label>
+            <input v-model.number="editForm.max_rpm" type="number" min="0" class="input" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.proxies.maxConcurrency') }}</label>
+            <input v-model.number="editForm.max_concurrency" type="number" min="0" class="input" />
+          </div>
+          <p class="input-hint sm:col-span-3">{{ t('admin.proxies.zeroUnlimited') }}</p>
         </div>
 
       </form>
@@ -1051,6 +1089,7 @@ const columns = computed<Column[]>(() => [
   { key: 'auth', label: t('admin.proxies.columns.auth'), sortable: false },
   { key: 'location', label: t('admin.proxies.columns.location'), sortable: false },
   { key: 'concurrency', label: t('admin.proxies.columns.concurrency'), sortable: true },
+  { key: 'current_rpm', label: t('admin.proxies.columns.rpm'), sortable: false },
   { key: 'account_count', label: t('admin.proxies.columns.accounts'), sortable: true },
   { key: 'latency', label: t('admin.proxies.columns.latency'), sortable: false },
   { key: 'expiry', label: t('admin.proxies.columns.expiry'), sortable: true },
@@ -1183,6 +1222,9 @@ const createForm = reactive({
   fallback_mode: 'none' as 'none' | 'proxy' | 'direct',
   backup_proxy_id: null as number | null,
   expiry_warn_days: 7 as number,
+  max_accounts: 0 as number,
+  max_rpm: 0 as number,
+  max_concurrency: 0 as number,
 })
 
 const editForm = reactive({
@@ -1197,6 +1239,9 @@ const editForm = reactive({
   fallback_mode: 'none' as 'none' | 'proxy' | 'direct',
   backup_proxy_id: null as number | null,
   expiry_warn_days: 7 as number,
+  max_accounts: 0 as number,
+  max_rpm: 0 as number,
+  max_concurrency: 0 as number,
 })
 
 const allProxiesForBackup = ref<Proxy[]>([])
@@ -1326,6 +1371,9 @@ const closeCreateModal = () => {
   createForm.fallback_mode = 'none'
   createForm.backup_proxy_id = null
   createForm.expiry_warn_days = 7
+  createForm.max_accounts = 0
+  createForm.max_rpm = 0
+  createForm.max_concurrency = 0
   createPasswordVisible.value = false
   batchInput.value = ''
   batchParseResult.total = 0
@@ -1462,6 +1510,9 @@ const handleCreateProxy = async () => {
       fallback_mode: createForm.fallback_mode,
       backup_proxy_id: createForm.fallback_mode === 'proxy' ? createForm.backup_proxy_id : null,
       expiry_warn_days: createForm.expiry_warn_days,
+      max_accounts: createForm.max_accounts,
+      max_rpm: createForm.max_rpm,
+      max_concurrency: createForm.max_concurrency,
     })
     appStore.showSuccess(t('admin.proxies.proxyCreated'))
     closeCreateModal()
@@ -1487,6 +1538,9 @@ const handleEdit = (proxy: Proxy) => {
   editForm.fallback_mode = proxy.fallback_mode || 'none'
   editForm.backup_proxy_id = proxy.backup_proxy_id ?? null
   editForm.expiry_warn_days = proxy.expiry_warn_days ?? 7
+  editForm.max_accounts = proxy.max_accounts ?? 0
+  editForm.max_rpm = proxy.max_rpm ?? 0
+  editForm.max_concurrency = proxy.max_concurrency ?? 0
   editPasswordVisible.value = false
   editPasswordDirty.value = false
   showEditModal.value = true
@@ -1527,6 +1581,9 @@ const handleUpdateProxy = async () => {
       fallback_mode: editForm.fallback_mode,
       backup_proxy_id: editForm.fallback_mode === 'proxy' ? editForm.backup_proxy_id : null,
       expiry_warn_days: editForm.expiry_warn_days,
+      max_accounts: editForm.max_accounts,
+      max_rpm: editForm.max_rpm,
+      max_concurrency: editForm.max_concurrency,
     }
 
     // Only include password if user actually modified the field

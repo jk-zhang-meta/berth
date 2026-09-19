@@ -62,6 +62,27 @@ const (
 )
 
 var (
+	acquireProxySlotScript = redis.NewScript(`
+		redis.replicate_commands()
+		local key = KEYS[1]
+		local maxConcurrency = tonumber(ARGV[1])
+		local ttl = tonumber(ARGV[2])
+		local requestID = ARGV[3]
+		local now = tonumber(redis.call('TIME')[1])
+		redis.call('ZREMRANGEBYSCORE', key, '-inf', now - ttl)
+		if redis.call('ZSCORE', key, requestID) ~= false then
+			redis.call('ZADD', key, now, requestID)
+			redis.call('EXPIRE', key, ttl)
+			return 1
+		end
+		if redis.call('ZCARD', key) >= maxConcurrency then
+			return 0
+		end
+		redis.call('ZADD', key, now, requestID)
+		redis.call('EXPIRE', key, ttl)
+		return 1
+	`)
+
 	// acquireScript 使用有序集合计数并在未达上限时添加槽位
 	// 使用 Redis TIME 命令获取服务器时间，避免多实例时钟不同步问题
 	// KEYS[1] = 普通槽位键，KEYS[2] = 对应 Live 槽位键
@@ -762,6 +783,17 @@ func (c *concurrencyCache) TrackProxySlot(ctx context.Context, proxyID int64, re
 	key := proxySlotKey(proxyID)
 	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, requestID).Result()
 	return err
+}
+
+func (c *concurrencyCache) AcquireProxySlot(ctx context.Context, proxyID int64, maxConcurrency int, requestID string) (bool, error) {
+	if c == nil || c.rdb == nil || proxyID <= 0 || maxConcurrency <= 0 || requestID == "" {
+		return false, nil
+	}
+	result, err := acquireProxySlotScript.Run(ctx, c.rdb, []string{proxySlotKey(proxyID)}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
 }
 
 func (c *concurrencyCache) ReleaseProxySlot(ctx context.Context, proxyID int64, requestID string) error {

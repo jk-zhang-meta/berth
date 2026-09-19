@@ -29,7 +29,8 @@ import (
 const (
 	// RPM 计数器键前缀
 	// 格式: rpm:{accountID}:{minuteTimestamp}
-	rpmKeyPrefix = "rpm:"
+	rpmKeyPrefix      = "rpm:"
+	proxyRPMKeyPrefix = "rpm:proxy:"
 
 	// RPM 计数器 TTL（120 秒，覆盖当前分钟窗口 + 冗余）
 	rpmKeyTTL = 120 * time.Second
@@ -59,12 +60,16 @@ func NewRPMCache(rdb *redis.Client) service.RPMCache {
 // currentMinuteKey 获取当前分钟的完整 Redis key
 // 使用 rdb.Time() 获取 Redis 服务端时间，避免多实例时钟偏差
 func (c *RPMCacheImpl) currentMinuteKey(ctx context.Context, accountID int64) (string, error) {
+	return c.currentMinuteKeyWithPrefix(ctx, rpmKeyPrefix, accountID)
+}
+
+func (c *RPMCacheImpl) currentMinuteKeyWithPrefix(ctx context.Context, prefix string, id int64) (string, error) {
 	serverTime, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return "", fmt.Errorf("redis TIME: %w", err)
 	}
 	minuteTS := serverTime.Unix() / 60
-	return fmt.Sprintf("%s%d:%d", rpmKeyPrefix, accountID, minuteTS), nil
+	return fmt.Sprintf("%s%d:%d", prefix, id, minuteTS), nil
 }
 
 // currentMinuteSuffix 获取当前分钟时间戳后缀（供批量操作使用）
@@ -90,6 +95,21 @@ func (c *RPMCacheImpl) ReserveRPM(ctx context.Context, accountID int64, maxRPM i
 		return 0, false, fmt.Errorf("rpm reserve: %w", err)
 	}
 
+	return c.reserveRPMKey(ctx, key, maxRPM)
+}
+
+func (c *RPMCacheImpl) ReserveProxyRPM(ctx context.Context, proxyID int64, maxRPM int) (int, bool, error) {
+	if maxRPM <= 0 {
+		return 0, false, fmt.Errorf("proxy rpm reserve: max rpm must be positive")
+	}
+	key, err := c.currentMinuteKeyWithPrefix(ctx, proxyRPMKeyPrefix, proxyID)
+	if err != nil {
+		return 0, false, fmt.Errorf("proxy rpm reserve: %w", err)
+	}
+	return c.reserveRPMKey(ctx, key, maxRPM)
+}
+
+func (c *RPMCacheImpl) reserveRPMKey(ctx context.Context, key string, maxRPM int) (int, bool, error) {
 	result, err := reserveRPMScript.Run(ctx, c.rdb, []string{key}, maxRPM, int(rpmKeyTTL/time.Second)).Slice()
 	if err != nil {
 		return 0, false, fmt.Errorf("rpm reserve: %w", err)
@@ -140,7 +160,15 @@ func (c *RPMCacheImpl) GetRPM(ctx context.Context, accountID int64) (int, error)
 
 // GetRPMBatch 批量获取多个账号的 RPM 计数（使用 Pipeline）
 func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error) {
-	if len(accountIDs) == 0 {
+	return c.getRPMBatch(ctx, accountIDs, rpmKeyPrefix)
+}
+
+func (c *RPMCacheImpl) GetProxyRPMBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error) {
+	return c.getRPMBatch(ctx, proxyIDs, proxyRPMKeyPrefix)
+}
+
+func (c *RPMCacheImpl) getRPMBatch(ctx context.Context, ids []int64, prefix string) (map[int64]int, error) {
+	if len(ids) == 0 {
 		return map[int64]int{}, nil
 	}
 
@@ -152,9 +180,9 @@ func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map
 
 	// 使用 Pipeline 批量 GET
 	pipe := c.rdb.Pipeline()
-	cmds := make(map[int64]*redis.StringCmd, len(accountIDs))
-	for _, id := range accountIDs {
-		key := fmt.Sprintf("%s%d:%s", rpmKeyPrefix, id, minuteSuffix)
+	cmds := make(map[int64]*redis.StringCmd, len(ids))
+	for _, id := range ids {
+		key := fmt.Sprintf("%s%d:%s", prefix, id, minuteSuffix)
 		cmds[id] = pipe.Get(ctx, key)
 	}
 
@@ -162,7 +190,7 @@ func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map
 		return nil, fmt.Errorf("rpm batch get: %w", err)
 	}
 
-	result := make(map[int64]int, len(accountIDs))
+	result := make(map[int64]int, len(ids))
 	for id, cmd := range cmds {
 		if val, err := cmd.Int(); err == nil {
 			result[id] = val

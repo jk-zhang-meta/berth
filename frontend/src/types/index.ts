@@ -937,6 +937,10 @@ export interface Proxy {
   status: 'active' | 'inactive' | 'expired'
   account_count?: number // Number of accounts using this proxy
   concurrency?: number // Real-time active requests/sessions count
+  current_rpm?: number // Current admitted requests in this minute
+  max_accounts: number // 0 = unlimited
+  max_rpm: number // 0 = unlimited
+  max_concurrency: number // 0 = unlimited
   latency_ms?: number
   latency_status?: 'success' | 'failed'
   latency_message?: string
@@ -1557,6 +1561,9 @@ export interface CreateProxyRequest {
   fallback_mode?: 'none' | 'proxy' | 'direct'
   backup_proxy_id?: number | null
   expiry_warn_days?: number
+  max_accounts?: number
+  max_rpm?: number
+  max_concurrency?: number
 }
 
 export interface UpdateProxyRequest {
@@ -1571,6 +1578,9 @@ export interface UpdateProxyRequest {
   fallback_mode?: 'none' | 'proxy' | 'direct'
   backup_proxy_id?: number | null
   expiry_warn_days?: number
+  max_accounts?: number
+  max_rpm?: number
+  max_concurrency?: number
 }
 
 export interface AdminDataPayload {
@@ -1592,6 +1602,9 @@ export interface AdminDataProxy {
   username?: string | null
   password?: string | null
   status: 'active' | 'inactive'
+  max_accounts?: number
+  max_rpm?: number
+  max_concurrency?: number
 }
 
 export interface AdminDataAccount {

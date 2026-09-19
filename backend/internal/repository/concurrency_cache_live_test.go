@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -70,4 +70,27 @@ func TestLiveLeaseExpiresWithoutRefresh(t *testing.T) {
 	refreshed, err := live.RefreshLiveLease(ctx, 10, 20, 30, "expired-live")
 	require.NoError(t, err)
 	require.False(t, refreshed)
+}
+
+func TestProxyConcurrencyHardLimit(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	cache := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	ctx := context.Background()
+
+	acquired, err := cache.AcquireProxySlot(ctx, 9, 2, "proxy-1")
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = cache.AcquireProxySlot(ctx, 9, 2, "proxy-2")
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = cache.AcquireProxySlot(ctx, 9, 2, "proxy-3")
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	require.NoError(t, cache.ReleaseProxySlot(ctx, 9, "proxy-1"))
+	acquired, err = cache.AcquireProxySlot(ctx, 9, 2, "proxy-3")
+	require.NoError(t, err)
+	require.True(t, acquired)
 }

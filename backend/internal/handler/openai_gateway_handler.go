@@ -2159,7 +2159,14 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 			}
 		}
 		h.gatewayService.BindWorkSessionAccount(ctx, account.ID)
-		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), openAISlotAcquireOK
+		proxyRelease, err := h.concurrencyHelper.WithProxySlot(ctx, account, selection.ReleaseFunc)
+		if err != nil {
+			reqLog.Warn("openai.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			status, errType, code, message := concurrencyErrorResponse(err, "proxy")
+			writeError(status, errType, code, message)
+			return nil, openAISlotAcquireFailed
+		}
+		return wrapReleaseOnDone(ctx, proxyRelease), openAISlotAcquireOK
 	}
 	if selection.WaitPlan == nil {
 		markOpsRoutingCapacityLimited(c)
@@ -2196,7 +2203,14 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 			reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 		h.gatewayService.BindWorkSessionAccount(ctx, account.ID)
-		return wrapReleaseOnDone(ctx, h.concurrencyHelper.WithProxySlot(ctx, account.ProxyID, fastReleaseFunc)), openAISlotAcquireOK
+		proxyRelease, err := h.concurrencyHelper.WithProxySlot(ctx, account, fastReleaseFunc)
+		if err != nil {
+			reqLog.Warn("openai.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			status, errType, code, message := concurrencyErrorResponse(err, "proxy")
+			writeError(status, errType, code, message)
+			return nil, openAISlotAcquireFailed
+		}
+		return wrapReleaseOnDone(ctx, proxyRelease), openAISlotAcquireOK
 	}
 
 	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
@@ -2254,7 +2268,14 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 		reqLog.Warn("openai.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 	h.gatewayService.BindWorkSessionAccount(ctx, account.ID)
-	return wrapReleaseOnDone(ctx, h.concurrencyHelper.WithProxySlot(ctx, account.ProxyID, accountReleaseFunc)), openAISlotAcquireOK
+	proxyRelease, err := h.concurrencyHelper.WithProxySlot(ctx, account, accountReleaseFunc)
+	if err != nil {
+		reqLog.Warn("openai.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		status, errType, code, message := concurrencyErrorResponse(err, "proxy")
+		writeError(status, errType, code, message)
+		return nil, openAISlotAcquireFailed
+	}
+	return wrapReleaseOnDone(ctx, proxyRelease), openAISlotAcquireOK
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
@@ -2713,7 +2734,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// Account selection starts a fresh upstream attempt. Clear any model
 		// captured by the previous failover account before credential lookup.
 		setOpsSelectedAccount(c, account.ID, account.Platform)
-		currentAccountRelease = wrapReleaseOnDone(ctx, h.concurrencyHelper.WithProxySlot(ctx, account.ProxyID, accountReleaseFunc))
+		proxyRelease, proxyErr := h.concurrencyHelper.WithProxySlot(ctx, account, accountReleaseFunc)
+		if proxyErr != nil {
+			reqLog.Warn("openai.websocket_proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(proxyErr))
+			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, proxyErr.Error())
+			return
+		}
+		currentAccountRelease = wrapReleaseOnDone(ctx, proxyRelease)
 		if err := h.gatewayService.BindStickySessionAfterProfitAdmission(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.websocket_bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
@@ -2898,7 +2925,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "account is busy, please retry later", nil)
 				}
 				currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
-				currentAccountRelease = wrapReleaseOnDone(ctx, h.concurrencyHelper.WithProxySlot(ctx, account.ProxyID, accountReleaseFunc))
+				proxyRelease, proxyErr := h.concurrencyHelper.WithProxySlot(ctx, account, accountReleaseFunc)
+				if proxyErr != nil {
+					if userReleaseFunc != nil {
+						userReleaseFunc()
+					}
+					currentUserRelease = nil
+					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, proxyErr.Error(), proxyErr)
+				}
+				currentAccountRelease = wrapReleaseOnDone(ctx, proxyRelease)
 				return nil
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
@@ -3076,7 +3111,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 							closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "account is busy, please retry later")
 							return
 						}
-						currentAccountRelease = wrapReleaseOnDone(ctx, h.concurrencyHelper.WithProxySlot(ctx, account.ProxyID, accountRelease))
+						proxyRelease, proxyErr := h.concurrencyHelper.WithProxySlot(ctx, account, accountRelease)
+						if proxyErr != nil {
+							reqLog.Warn("openai.websocket_same_account_retry_proxy_capacity_unavailable",
+								zap.Int64("account_id", account.ID), zap.Error(proxyErr))
+							closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, proxyErr.Error())
+							return
+						}
+						currentAccountRelease = wrapReleaseOnDone(ctx, proxyRelease)
 					}
 					wsFirstMessage = wsAttemptMessage
 					continue

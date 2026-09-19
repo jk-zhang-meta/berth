@@ -64,6 +64,18 @@ func (Proxy) Fields() []ent.Field {
 		field.Int("expiry_warn_days").
 			Default(7).
 			Comment("Days before expiry to flag as expiring-soon (per proxy)."),
+		field.Int("max_accounts").
+			Default(0).
+			Min(0).
+			Comment("Maximum accounts bound to this proxy; 0 means unlimited."),
+		field.Int("max_rpm").
+			Default(0).
+			Min(0).
+			Comment("Maximum admitted requests per minute through this proxy; 0 means unlimited."),
+		field.Int("max_concurrency").
+			Default(0).
+			Min(0).
+			Comment("Maximum concurrent requests through this proxy; 0 means unlimited."),
 		field.String("exit_ip").MaxLen(64).Optional().Nillable().
 			Comment("Last verified public egress IP observed through this proxy."),
 		field.String("exit_country").MaxLen(100).Optional().Nillable(),

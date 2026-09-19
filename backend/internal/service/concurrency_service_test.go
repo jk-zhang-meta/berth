@@ -36,6 +36,8 @@ type stubConcurrencyCacheForTest struct {
 	apiKeyConcurrencyErr error
 	proxyTrackErr        error
 	proxyReleaseErr      error
+	proxyAcquireResult   bool
+	proxyAcquireErr      error
 	proxyConcurrency     map[int64]int
 	proxyConcurrencyErr  error
 
@@ -51,6 +53,7 @@ type stubConcurrencyCacheForTest struct {
 	trackedProxyRequestIDs   []string
 	releasedProxyIDs         []int64
 	releasedProxyRequestIDs  []string
+	acquiredProxyIDs         []int64
 }
 
 type ingressLeaseCacheForTest struct {
@@ -158,6 +161,11 @@ func (c *stubConcurrencyCacheForTest) TrackProxySlot(_ context.Context, proxyID 
 	c.trackedProxyIDs = append(c.trackedProxyIDs, proxyID)
 	c.trackedProxyRequestIDs = append(c.trackedProxyRequestIDs, requestID)
 	return c.proxyTrackErr
+}
+func (c *stubConcurrencyCacheForTest) AcquireProxySlot(_ context.Context, proxyID int64, _ int, requestID string) (bool, error) {
+	c.acquiredProxyIDs = append(c.acquiredProxyIDs, proxyID)
+	c.trackedProxyRequestIDs = append(c.trackedProxyRequestIDs, requestID)
+	return c.proxyAcquireResult, c.proxyAcquireErr
 }
 func (c *stubConcurrencyCacheForTest) ReleaseProxySlot(_ context.Context, proxyID int64, requestID string) error {
 	c.releasedProxyIDs = append(c.releasedProxyIDs, proxyID)
@@ -379,6 +387,67 @@ func TestTrackProxySlot_FailOpen(t *testing.T) {
 
 	require.NotPanics(t, release)
 	require.Empty(t, cache.releasedProxyIDs)
+}
+
+type proxyRPMCacheForTest struct {
+	reserved bool
+	err      error
+	counts   map[int64]int
+}
+
+func (c *proxyRPMCacheForTest) ReserveRPM(context.Context, int64, int) (int, bool, error) {
+	return 0, false, nil
+}
+func (c *proxyRPMCacheForTest) GetRPM(context.Context, int64) (int, error) { return 0, nil }
+func (c *proxyRPMCacheForTest) GetRPMBatch(context.Context, []int64) (map[int64]int, error) {
+	return map[int64]int{}, nil
+}
+func (c *proxyRPMCacheForTest) ReserveProxyRPM(_ context.Context, proxyID int64, _ int) (int, bool, error) {
+	return c.counts[proxyID], c.reserved, c.err
+}
+func (c *proxyRPMCacheForTest) GetProxyRPMBatch(_ context.Context, proxyIDs []int64) (map[int64]int, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	result := make(map[int64]int, len(proxyIDs))
+	for _, id := range proxyIDs {
+		result[id] = c.counts[id]
+	}
+	return result, nil
+}
+
+func TestAcquireProxyCapacity(t *testing.T) {
+	t.Run("concurrency limit blocks", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{proxyAcquireResult: false}
+		svc := NewConcurrencyService(cache)
+		result, err := svc.AcquireProxyCapacity(context.Background(), 42, 1, 0)
+		require.NoError(t, err)
+		require.False(t, result.Acquired)
+		require.Equal(t, AcquireBlockConcurrency, result.BlockReason)
+	})
+
+	t.Run("rpm limit releases acquired slot", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{proxyAcquireResult: true}
+		svc := NewConcurrencyService(cache)
+		svc.SetRPMCache(&proxyRPMCacheForTest{reserved: false, counts: map[int64]int{42: 3}})
+		result, err := svc.AcquireProxyCapacity(context.Background(), 42, 2, 3)
+		require.NoError(t, err)
+		require.False(t, result.Acquired)
+		require.Equal(t, AcquireBlockRPM, result.BlockReason)
+		require.Equal(t, []int64{42}, cache.releasedProxyIDs)
+	})
+
+	t.Run("success releases proxy slot", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{proxyAcquireResult: true}
+		svc := NewConcurrencyService(cache)
+		svc.SetRPMCache(&proxyRPMCacheForTest{reserved: true, counts: map[int64]int{42: 1}})
+		result, err := svc.AcquireProxyCapacity(context.Background(), 42, 2, 3)
+		require.NoError(t, err)
+		require.True(t, result.Acquired)
+		require.NotNil(t, result.ReleaseFunc)
+		result.ReleaseFunc()
+		require.Equal(t, []int64{42}, cache.releasedProxyIDs)
+	})
 }
 
 func TestGetProxyConcurrencyBatch_Fallbacks(t *testing.T) {

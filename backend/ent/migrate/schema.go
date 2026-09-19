@@ -1413,6 +1413,9 @@ var (
 		{Name: "expires_at", Type: field.TypeTime, Nullable: true},
 		{Name: "fallback_mode", Type: field.TypeString, Size: 20, Default: "none"},
 		{Name: "expiry_warn_days", Type: field.TypeInt, Default: 7},
+		{Name: "max_accounts", Type: field.TypeInt, Default: 0},
+		{Name: "max_rpm", Type: field.TypeInt, Default: 0},
+		{Name: "max_concurrency", Type: field.TypeInt, Default: 0},
 		{Name: "exit_ip", Type: field.TypeString, Nullable: true, Size: 64},
 		{Name: "exit_country", Type: field.TypeString, Nullable: true, Size: 100},
 		{Name: "exit_country_code", Type: field.TypeString, Nullable: true, Size: 8},
@@ -1433,7 +1436,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "proxies_proxies_backup_proxy",
-				Columns:    []*schema.Column{ProxiesColumns[24]},
+				Columns:    []*schema.Column{ProxiesColumns[27]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1457,12 +1460,12 @@ var (
 			{
 				Name:    "proxy_backup_proxy_id",
 				Unique:  false,
-				Columns: []*schema.Column{ProxiesColumns[24]},
+				Columns: []*schema.Column{ProxiesColumns[27]},
 			},
 			{
 				Name:    "proxy_exit_ip",
 				Unique:  false,
-				Columns: []*schema.Column{ProxiesColumns[14]},
+				Columns: []*schema.Column{ProxiesColumns[17]},
 			},
 		},
 	}

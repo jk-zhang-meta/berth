@@ -67,6 +67,15 @@ type ProxyConcurrencyCache interface {
 	GetProxyConcurrencyBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error)
 }
 
+type ProxyCapacityCache interface {
+	AcquireProxySlot(ctx context.Context, proxyID int64, maxConcurrency int, requestID string) (bool, error)
+}
+
+type ProxyRPMCache interface {
+	ReserveProxyRPM(ctx context.Context, proxyID int64, maxRPM int) (count int, reserved bool, err error)
+	GetProxyRPMBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error)
+}
+
 // OpenAIWSIngressLeaseCache owns the short-lived distributed lease used to
 // bound live client WebSocket sessions. It is deliberately independent of the
 // request-slot namespace: idle ingress connections do not occupy turn slots.
@@ -574,6 +583,89 @@ func (s *ConcurrencyService) TrackProxySlot(ctx context.Context, proxyID int64) 
 			logger.LegacyPrintf("service.concurrency", "Warning: failed to release proxy slot for %d (req=%s): %v", proxyID, requestID, err)
 		}
 	}
+}
+
+// AcquireProxyCapacity tracks every proxied request and enforces optional
+// proxy-level concurrency/RPM caps. Zero limits keep tracking enabled without
+// restricting traffic.
+func (s *ConcurrencyService) AcquireProxyCapacity(ctx context.Context, proxyID int64, maxConcurrency, maxRPM int) (*AcquireResult, error) {
+	if maxConcurrency <= 0 && maxRPM <= 0 {
+		return &AcquireResult{Acquired: true, ReleaseFunc: s.TrackProxySlot(ctx, proxyID)}, nil
+	}
+	if s == nil || s.cache == nil || proxyID <= 0 {
+		return nil, errors.New("proxy capacity cache is unavailable")
+	}
+	cache, ok := s.cache.(ProxyConcurrencyCache)
+	if !ok {
+		return nil, errors.New("proxy capacity cache is unsupported")
+	}
+
+	requestID := generateRequestID()
+	var err error
+	if maxConcurrency > 0 {
+		capacityCache, supported := s.cache.(ProxyCapacityCache)
+		if !supported {
+			return nil, errors.New("proxy concurrency admission is unsupported")
+		}
+		var acquired bool
+		acquired, err = capacityCache.AcquireProxySlot(ctx, proxyID, maxConcurrency, requestID)
+		if err != nil {
+			return nil, err
+		}
+		if !acquired {
+			return &AcquireResult{Acquired: false, BlockReason: AcquireBlockConcurrency}, nil
+		}
+	} else if err = cache.TrackProxySlot(ctx, proxyID, requestID); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: failed to track proxy slot for %d (req=%s): %v", proxyID, requestID, err)
+	}
+
+	release := func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := cache.ReleaseProxySlot(bgCtx, proxyID, requestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release proxy slot for %d (req=%s): %v", proxyID, requestID, err)
+		}
+	}
+	if maxRPM <= 0 {
+		return &AcquireResult{Acquired: true, ReleaseFunc: release}, nil
+	}
+	rpmCache, supported := s.rpmCache.(ProxyRPMCache)
+	if !supported {
+		release()
+		return nil, errors.New("proxy rpm admission cache is unavailable")
+	}
+	_, reserved, err := rpmCache.ReserveProxyRPM(ctx, proxyID, maxRPM)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if !reserved {
+		release()
+		return &AcquireResult{Acquired: false, BlockReason: AcquireBlockRPM}, nil
+	}
+	return &AcquireResult{Acquired: true, ReleaseFunc: release}, nil
+}
+
+func (s *ConcurrencyService) GetProxyRPMBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error) {
+	result := make(map[int64]int, len(proxyIDs))
+	for _, id := range proxyIDs {
+		result[id] = 0
+	}
+	if len(proxyIDs) == 0 || s == nil || s.rpmCache == nil {
+		return result, nil
+	}
+	cache, ok := s.rpmCache.(ProxyRPMCache)
+	if !ok {
+		return result, nil
+	}
+	counts, err := cache.GetProxyRPMBatch(ctx, proxyIDs)
+	if err != nil {
+		return result, err
+	}
+	for _, id := range proxyIDs {
+		result[id] = counts[id]
+	}
+	return result, nil
 }
 
 // GetProxyConcurrencyBatch gets real-time active request counts for proxies.

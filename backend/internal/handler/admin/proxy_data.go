@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
 	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 // ExportData exports proxy-only data for migration.
@@ -84,6 +84,9 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 			FallbackMode:    p.FallbackMode,
 			BackupProxyName: backupProxyName,
 			ExpiryWarnDays:  p.ExpiryWarnDays,
+			MaxAccounts:     dataInt(p.MaxAccounts),
+			MaxRPM:          dataInt(p.MaxRPM),
+			MaxConcurrency:  dataInt(p.MaxConcurrency),
 		})
 	}
 
@@ -160,7 +163,10 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 		normalizedStatus := normalizeProxyStatus(item.Status)
 		if existing, ok := proxyByKey[key]; ok {
 			result.ProxyReused++
-			if normalizedStatus != "" && normalizedStatus != existing.Status {
+			if (normalizedStatus != "" && normalizedStatus != existing.Status) ||
+				(item.MaxAccounts != nil && *item.MaxAccounts != existing.MaxAccounts) ||
+				(item.MaxRPM != nil && *item.MaxRPM != existing.MaxRPM) ||
+				(item.MaxConcurrency != nil && *item.MaxConcurrency != existing.MaxConcurrency) {
 				// 已存在代理同步 status 时，同时保留/覆盖导入 item 的完整字段，
 				// 避免 UpdateProxy 零值覆盖有效期/fallback 配置。
 				var existingExpiresAt *time.Time
@@ -186,6 +192,9 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 					BackupProxyID:  existingBackupProxyID,
 					ClearBackupID:  existingBackupProxyID == nil,
 					ExpiryWarnDays: &item.ExpiryWarnDays,
+					MaxAccounts:    item.MaxAccounts,
+					MaxRPM:         item.MaxRPM,
+					MaxConcurrency: item.MaxConcurrency,
 					// 保留已存在代理的网络配置字段
 					Name:     existing.Name,
 					Protocol: existing.Protocol,
@@ -243,6 +252,9 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 			FallbackMode:   fallbackMode,
 			BackupProxyID:  backupProxyID,
 			ExpiryWarnDays: item.ExpiryWarnDays,
+			MaxAccounts:    dataProxyLimit(item.MaxAccounts),
+			MaxRPM:         dataProxyLimit(item.MaxRPM),
+			MaxConcurrency: dataProxyLimit(item.MaxConcurrency),
 		})
 		if err != nil {
 			result.ProxyFailed++
@@ -271,6 +283,9 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 				BackupProxyID:  backupProxyID,
 				ClearBackupID:  backupProxyID == nil,
 				ExpiryWarnDays: &item.ExpiryWarnDays,
+				MaxAccounts:    item.MaxAccounts,
+				MaxRPM:         item.MaxRPM,
+				MaxConcurrency: item.MaxConcurrency,
 				Name:           created.Name,
 				Protocol:       created.Protocol,
 				Host:           created.Host,

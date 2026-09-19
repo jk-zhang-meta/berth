@@ -125,6 +125,21 @@ func ExpiryWarnDays(v int) predicate.Proxy {
 	return predicate.Proxy(sql.FieldEQ(FieldExpiryWarnDays, v))
 }
 
+// MaxAccounts applies equality check predicate on the "max_accounts" field. It's identical to MaxAccountsEQ.
+func MaxAccounts(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxAccounts, v))
+}
+
+// MaxRpm applies equality check predicate on the "max_rpm" field. It's identical to MaxRpmEQ.
+func MaxRpm(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxRpm, v))
+}
+
+// MaxConcurrency applies equality check predicate on the "max_concurrency" field. It's identical to MaxConcurrencyEQ.
+func MaxConcurrency(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxConcurrency, v))
+}
+
 // ExitIP applies equality check predicate on the "exit_ip" field. It's identical to ExitIPEQ.
 func ExitIP(v string) predicate.Proxy {
 	return predicate.Proxy(sql.FieldEQ(FieldExitIP, v))
@@ -938,6 +953,126 @@ func ExpiryWarnDaysLT(v int) predicate.Proxy {
 // ExpiryWarnDaysLTE applies the LTE predicate on the "expiry_warn_days" field.
 func ExpiryWarnDaysLTE(v int) predicate.Proxy {
 	return predicate.Proxy(sql.FieldLTE(FieldExpiryWarnDays, v))
+}
+
+// MaxAccountsEQ applies the EQ predicate on the "max_accounts" field.
+func MaxAccountsEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxAccounts, v))
+}
+
+// MaxAccountsNEQ applies the NEQ predicate on the "max_accounts" field.
+func MaxAccountsNEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNEQ(FieldMaxAccounts, v))
+}
+
+// MaxAccountsIn applies the In predicate on the "max_accounts" field.
+func MaxAccountsIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldIn(FieldMaxAccounts, vs...))
+}
+
+// MaxAccountsNotIn applies the NotIn predicate on the "max_accounts" field.
+func MaxAccountsNotIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNotIn(FieldMaxAccounts, vs...))
+}
+
+// MaxAccountsGT applies the GT predicate on the "max_accounts" field.
+func MaxAccountsGT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGT(FieldMaxAccounts, v))
+}
+
+// MaxAccountsGTE applies the GTE predicate on the "max_accounts" field.
+func MaxAccountsGTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGTE(FieldMaxAccounts, v))
+}
+
+// MaxAccountsLT applies the LT predicate on the "max_accounts" field.
+func MaxAccountsLT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLT(FieldMaxAccounts, v))
+}
+
+// MaxAccountsLTE applies the LTE predicate on the "max_accounts" field.
+func MaxAccountsLTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLTE(FieldMaxAccounts, v))
+}
+
+// MaxRpmEQ applies the EQ predicate on the "max_rpm" field.
+func MaxRpmEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxRpm, v))
+}
+
+// MaxRpmNEQ applies the NEQ predicate on the "max_rpm" field.
+func MaxRpmNEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNEQ(FieldMaxRpm, v))
+}
+
+// MaxRpmIn applies the In predicate on the "max_rpm" field.
+func MaxRpmIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldIn(FieldMaxRpm, vs...))
+}
+
+// MaxRpmNotIn applies the NotIn predicate on the "max_rpm" field.
+func MaxRpmNotIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNotIn(FieldMaxRpm, vs...))
+}
+
+// MaxRpmGT applies the GT predicate on the "max_rpm" field.
+func MaxRpmGT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGT(FieldMaxRpm, v))
+}
+
+// MaxRpmGTE applies the GTE predicate on the "max_rpm" field.
+func MaxRpmGTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGTE(FieldMaxRpm, v))
+}
+
+// MaxRpmLT applies the LT predicate on the "max_rpm" field.
+func MaxRpmLT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLT(FieldMaxRpm, v))
+}
+
+// MaxRpmLTE applies the LTE predicate on the "max_rpm" field.
+func MaxRpmLTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLTE(FieldMaxRpm, v))
+}
+
+// MaxConcurrencyEQ applies the EQ predicate on the "max_concurrency" field.
+func MaxConcurrencyEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldMaxConcurrency, v))
+}
+
+// MaxConcurrencyNEQ applies the NEQ predicate on the "max_concurrency" field.
+func MaxConcurrencyNEQ(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNEQ(FieldMaxConcurrency, v))
+}
+
+// MaxConcurrencyIn applies the In predicate on the "max_concurrency" field.
+func MaxConcurrencyIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldIn(FieldMaxConcurrency, vs...))
+}
+
+// MaxConcurrencyNotIn applies the NotIn predicate on the "max_concurrency" field.
+func MaxConcurrencyNotIn(vs ...int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNotIn(FieldMaxConcurrency, vs...))
+}
+
+// MaxConcurrencyGT applies the GT predicate on the "max_concurrency" field.
+func MaxConcurrencyGT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGT(FieldMaxConcurrency, v))
+}
+
+// MaxConcurrencyGTE applies the GTE predicate on the "max_concurrency" field.
+func MaxConcurrencyGTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGTE(FieldMaxConcurrency, v))
+}
+
+// MaxConcurrencyLT applies the LT predicate on the "max_concurrency" field.
+func MaxConcurrencyLT(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLT(FieldMaxConcurrency, v))
+}
+
+// MaxConcurrencyLTE applies the LTE predicate on the "max_concurrency" field.
+func MaxConcurrencyLTE(v int) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLTE(FieldMaxConcurrency, v))
 }
 
 // ExitIPEQ applies the EQ predicate on the "exit_ip" field.

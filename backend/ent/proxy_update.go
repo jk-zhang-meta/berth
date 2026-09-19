@@ -247,6 +247,69 @@ func (_u *ProxyUpdate) AddExpiryWarnDays(v int) *ProxyUpdate {
 	return _u
 }
 
+// SetMaxAccounts sets the "max_accounts" field.
+func (_u *ProxyUpdate) SetMaxAccounts(v int) *ProxyUpdate {
+	_u.mutation.ResetMaxAccounts()
+	_u.mutation.SetMaxAccounts(v)
+	return _u
+}
+
+// SetNillableMaxAccounts sets the "max_accounts" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableMaxAccounts(v *int) *ProxyUpdate {
+	if v != nil {
+		_u.SetMaxAccounts(*v)
+	}
+	return _u
+}
+
+// AddMaxAccounts adds value to the "max_accounts" field.
+func (_u *ProxyUpdate) AddMaxAccounts(v int) *ProxyUpdate {
+	_u.mutation.AddMaxAccounts(v)
+	return _u
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (_u *ProxyUpdate) SetMaxRpm(v int) *ProxyUpdate {
+	_u.mutation.ResetMaxRpm()
+	_u.mutation.SetMaxRpm(v)
+	return _u
+}
+
+// SetNillableMaxRpm sets the "max_rpm" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableMaxRpm(v *int) *ProxyUpdate {
+	if v != nil {
+		_u.SetMaxRpm(*v)
+	}
+	return _u
+}
+
+// AddMaxRpm adds value to the "max_rpm" field.
+func (_u *ProxyUpdate) AddMaxRpm(v int) *ProxyUpdate {
+	_u.mutation.AddMaxRpm(v)
+	return _u
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (_u *ProxyUpdate) SetMaxConcurrency(v int) *ProxyUpdate {
+	_u.mutation.ResetMaxConcurrency()
+	_u.mutation.SetMaxConcurrency(v)
+	return _u
+}
+
+// SetNillableMaxConcurrency sets the "max_concurrency" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableMaxConcurrency(v *int) *ProxyUpdate {
+	if v != nil {
+		_u.SetMaxConcurrency(*v)
+	}
+	return _u
+}
+
+// AddMaxConcurrency adds value to the "max_concurrency" field.
+func (_u *ProxyUpdate) AddMaxConcurrency(v int) *ProxyUpdate {
+	_u.mutation.AddMaxConcurrency(v)
+	return _u
+}
+
 // SetExitIP sets the "exit_ip" field.
 func (_u *ProxyUpdate) SetExitIP(v string) *ProxyUpdate {
 	_u.mutation.SetExitIP(v)
@@ -621,6 +684,21 @@ func (_u *ProxyUpdate) check() error {
 			return &ValidationError{Name: "fallback_mode", err: fmt.Errorf(`ent: validator failed for field "Proxy.fallback_mode": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.MaxAccounts(); ok {
+		if err := proxy.MaxAccountsValidator(v); err != nil {
+			return &ValidationError{Name: "max_accounts", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_accounts": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxRpm(); ok {
+		if err := proxy.MaxRpmValidator(v); err != nil {
+			return &ValidationError{Name: "max_rpm", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_rpm": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxConcurrency(); ok {
+		if err := proxy.MaxConcurrencyValidator(v); err != nil {
+			return &ValidationError{Name: "max_concurrency", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_concurrency": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ExitIP(); ok {
 		if err := proxy.ExitIPValidator(v); err != nil {
 			return &ValidationError{Name: "exit_ip", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_ip": %w`, err)}
@@ -729,6 +807,24 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxAccounts(); ok {
+		_spec.SetField(proxy.FieldMaxAccounts, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxAccounts(); ok {
+		_spec.AddField(proxy.FieldMaxAccounts, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxRpm(); ok {
+		_spec.SetField(proxy.FieldMaxRpm, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxRpm(); ok {
+		_spec.AddField(proxy.FieldMaxRpm, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxConcurrency(); ok {
+		_spec.SetField(proxy.FieldMaxConcurrency, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxConcurrency(); ok {
+		_spec.AddField(proxy.FieldMaxConcurrency, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.ExitIP(); ok {
 		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)
@@ -1150,6 +1246,69 @@ func (_u *ProxyUpdateOne) AddExpiryWarnDays(v int) *ProxyUpdateOne {
 	return _u
 }
 
+// SetMaxAccounts sets the "max_accounts" field.
+func (_u *ProxyUpdateOne) SetMaxAccounts(v int) *ProxyUpdateOne {
+	_u.mutation.ResetMaxAccounts()
+	_u.mutation.SetMaxAccounts(v)
+	return _u
+}
+
+// SetNillableMaxAccounts sets the "max_accounts" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableMaxAccounts(v *int) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetMaxAccounts(*v)
+	}
+	return _u
+}
+
+// AddMaxAccounts adds value to the "max_accounts" field.
+func (_u *ProxyUpdateOne) AddMaxAccounts(v int) *ProxyUpdateOne {
+	_u.mutation.AddMaxAccounts(v)
+	return _u
+}
+
+// SetMaxRpm sets the "max_rpm" field.
+func (_u *ProxyUpdateOne) SetMaxRpm(v int) *ProxyUpdateOne {
+	_u.mutation.ResetMaxRpm()
+	_u.mutation.SetMaxRpm(v)
+	return _u
+}
+
+// SetNillableMaxRpm sets the "max_rpm" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableMaxRpm(v *int) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetMaxRpm(*v)
+	}
+	return _u
+}
+
+// AddMaxRpm adds value to the "max_rpm" field.
+func (_u *ProxyUpdateOne) AddMaxRpm(v int) *ProxyUpdateOne {
+	_u.mutation.AddMaxRpm(v)
+	return _u
+}
+
+// SetMaxConcurrency sets the "max_concurrency" field.
+func (_u *ProxyUpdateOne) SetMaxConcurrency(v int) *ProxyUpdateOne {
+	_u.mutation.ResetMaxConcurrency()
+	_u.mutation.SetMaxConcurrency(v)
+	return _u
+}
+
+// SetNillableMaxConcurrency sets the "max_concurrency" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableMaxConcurrency(v *int) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetMaxConcurrency(*v)
+	}
+	return _u
+}
+
+// AddMaxConcurrency adds value to the "max_concurrency" field.
+func (_u *ProxyUpdateOne) AddMaxConcurrency(v int) *ProxyUpdateOne {
+	_u.mutation.AddMaxConcurrency(v)
+	return _u
+}
+
 // SetExitIP sets the "exit_ip" field.
 func (_u *ProxyUpdateOne) SetExitIP(v string) *ProxyUpdateOne {
 	_u.mutation.SetExitIP(v)
@@ -1537,6 +1696,21 @@ func (_u *ProxyUpdateOne) check() error {
 			return &ValidationError{Name: "fallback_mode", err: fmt.Errorf(`ent: validator failed for field "Proxy.fallback_mode": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.MaxAccounts(); ok {
+		if err := proxy.MaxAccountsValidator(v); err != nil {
+			return &ValidationError{Name: "max_accounts", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_accounts": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxRpm(); ok {
+		if err := proxy.MaxRpmValidator(v); err != nil {
+			return &ValidationError{Name: "max_rpm", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_rpm": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MaxConcurrency(); ok {
+		if err := proxy.MaxConcurrencyValidator(v); err != nil {
+			return &ValidationError{Name: "max_concurrency", err: fmt.Errorf(`ent: validator failed for field "Proxy.max_concurrency": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ExitIP(); ok {
 		if err := proxy.ExitIPValidator(v); err != nil {
 			return &ValidationError{Name: "exit_ip", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_ip": %w`, err)}
@@ -1662,6 +1836,24 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxAccounts(); ok {
+		_spec.SetField(proxy.FieldMaxAccounts, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxAccounts(); ok {
+		_spec.AddField(proxy.FieldMaxAccounts, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxRpm(); ok {
+		_spec.SetField(proxy.FieldMaxRpm, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxRpm(); ok {
+		_spec.AddField(proxy.FieldMaxRpm, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.MaxConcurrency(); ok {
+		_spec.SetField(proxy.FieldMaxConcurrency, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedMaxConcurrency(); ok {
+		_spec.AddField(proxy.FieldMaxConcurrency, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.ExitIP(); ok {
 		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)

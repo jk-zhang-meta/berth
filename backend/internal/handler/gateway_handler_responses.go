@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
 	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -233,7 +233,12 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 		}
-		accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
+		accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+		if err != nil {
+			reqLog.Warn("gateway.responses.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			h.handleConcurrencyError(c, err, "proxy", streamStarted)
+			return
+		}
 		// 终检与准入后绑定必须使用选号结果携带的门：门安装在调度栈的局部
 		// ctx 上（composite/fallback 还可能解析出与入口分组不同的门），直接用
 		// requestCtx 会退化为空操作。

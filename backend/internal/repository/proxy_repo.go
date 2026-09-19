@@ -41,7 +41,10 @@ func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) er
 		SetPort(proxyIn.Port).
 		SetStatus(proxyIn.Status).
 		SetFallbackMode(proxyIn.FallbackMode).
-		SetExpiryWarnDays(proxyIn.ExpiryWarnDays)
+		SetExpiryWarnDays(proxyIn.ExpiryWarnDays).
+		SetMaxAccounts(proxyIn.MaxAccounts).
+		SetMaxRpm(proxyIn.MaxRPM).
+		SetMaxConcurrency(proxyIn.MaxConcurrency)
 	if proxyIn.Username != "" {
 		builder.SetUsername(proxyIn.Username)
 	}
@@ -162,6 +165,12 @@ type proxyProbeIdentity struct {
 	status   string
 }
 
+type proxyCapacityConfig struct {
+	maxAccounts    int
+	maxRPM         int
+	maxConcurrency int
+}
+
 func proxyProbeIdentityFromService(proxyIn *service.Proxy) proxyProbeIdentity {
 	return proxyProbeIdentity{
 		protocol: proxyIn.Protocol,
@@ -173,8 +182,16 @@ func proxyProbeIdentityFromService(proxyIn *service.Proxy) proxyProbeIdentity {
 	}
 }
 
+func proxyCapacityConfigFromService(proxyIn *service.Proxy) proxyCapacityConfig {
+	return proxyCapacityConfig{
+		maxAccounts:    proxyIn.MaxAccounts,
+		maxRPM:         proxyIn.MaxRPM,
+		maxConcurrency: proxyIn.MaxConcurrency,
+	}
+}
+
 func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.Client, proxyIn *service.Proxy) (*dbent.Proxy, error) {
-	currentIdentity, err := lockProxyProbeIdentity(ctx, client, proxyIn.ID)
+	currentIdentity, currentCapacity, err := lockProxyProbeIdentity(ctx, client, proxyIn.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +202,10 @@ func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.C
 		SetPort(proxyIn.Port).
 		SetStatus(proxyIn.Status).
 		SetFallbackMode(proxyIn.FallbackMode).
-		SetExpiryWarnDays(proxyIn.ExpiryWarnDays)
+		SetExpiryWarnDays(proxyIn.ExpiryWarnDays).
+		SetMaxAccounts(proxyIn.MaxAccounts).
+		SetMaxRpm(proxyIn.MaxRPM).
+		SetMaxConcurrency(proxyIn.MaxConcurrency)
 	if proxyIn.Username != "" {
 		builder.SetUsername(proxyIn.Username)
 	} else {
@@ -262,12 +282,24 @@ func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.C
 	if err != nil {
 		return nil, err
 	}
-	if currentIdentity == proxyProbeIdentityFromService(proxyIn) {
+	identityChanged := currentIdentity != proxyProbeIdentityFromService(proxyIn)
+	capacityChanged := currentCapacity != proxyCapacityConfigFromService(proxyIn)
+	if !identityChanged && !capacityChanged {
 		return updated, nil
 	}
-	accountIDs, err := invalidateProxyProbeSnapshots(ctx, client, proxyIn.ID)
-	if err != nil {
-		return nil, err
+	var accountIDs []int64
+	if identityChanged {
+		accountIDs, err = invalidateProxyProbeSnapshots(ctx, client, proxyIn.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if capacityChanged {
+		capacityAccountIDs, listErr := listProxyAccountIDs(ctx, client, proxyIn.ID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		accountIDs = append(accountIDs, capacityAccountIDs...)
 	}
 	if err := enqueueProxyProbeAccountChanges(ctx, client, accountIDs); err != nil {
 		return nil, err
@@ -275,28 +307,52 @@ func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.C
 	return updated, nil
 }
 
-func lockProxyProbeIdentity(ctx context.Context, client *dbent.Client, proxyID int64) (proxyProbeIdentity, error) {
+func lockProxyProbeIdentity(ctx context.Context, client *dbent.Client, proxyID int64) (proxyProbeIdentity, proxyCapacityConfig, error) {
 	rows, err := client.QueryContext(ctx, `
-		SELECT protocol, host, port, COALESCE(username, ''), COALESCE(password, ''), status
+		SELECT protocol, host, port, COALESCE(username, ''), COALESCE(password, ''), status,
+		       max_accounts, max_rpm, max_concurrency
 		FROM proxies
 		WHERE id = $1 AND deleted_at IS NULL
 		FOR NO KEY UPDATE
 	`, proxyID)
 	if err != nil {
-		return proxyProbeIdentity{}, err
+		return proxyProbeIdentity{}, proxyCapacityConfig{}, err
 	}
 	defer func() { _ = rows.Close() }()
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return proxyProbeIdentity{}, err
+			return proxyProbeIdentity{}, proxyCapacityConfig{}, err
 		}
-		return proxyProbeIdentity{}, service.ErrProxyNotFound
+		return proxyProbeIdentity{}, proxyCapacityConfig{}, service.ErrProxyNotFound
 	}
 	var identity proxyProbeIdentity
-	if err := rows.Scan(&identity.protocol, &identity.host, &identity.port, &identity.username, &identity.password, &identity.status); err != nil {
-		return proxyProbeIdentity{}, err
+	var capacity proxyCapacityConfig
+	if err := rows.Scan(
+		&identity.protocol, &identity.host, &identity.port, &identity.username, &identity.password, &identity.status,
+		&capacity.maxAccounts, &capacity.maxRPM, &capacity.maxConcurrency,
+	); err != nil {
+		return proxyProbeIdentity{}, proxyCapacityConfig{}, err
 	}
-	return identity, rows.Err()
+	return identity, capacity, rows.Err()
+}
+
+func listProxyAccountIDs(ctx context.Context, exec sqlExecutor, proxyID int64) ([]int64, error) {
+	rows, err := exec.QueryContext(ctx, `
+		SELECT id FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL ORDER BY id
+	`, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func invalidateProxyProbeSnapshots(ctx context.Context, exec sqlExecutor, proxyID int64) ([]int64, error) {
@@ -674,6 +730,9 @@ func proxyEntityToService(m *dbent.Proxy) *service.Proxy {
 		FallbackMode:   m.FallbackMode,
 		BackupProxyID:  m.BackupProxyID,
 		ExpiryWarnDays: m.ExpiryWarnDays,
+		MaxAccounts:    m.MaxAccounts,
+		MaxRPM:         m.MaxRpm,
+		MaxConcurrency: m.MaxConcurrency,
 	}
 	if m.Username != nil {
 		out.Username = *m.Username

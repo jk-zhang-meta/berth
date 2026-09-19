@@ -542,6 +542,9 @@ func proxyFromServiceUnredacted(p *service.Proxy) *Proxy {
 		FallbackMode:   p.FallbackMode,
 		BackupProxyID:  p.BackupProxyID,
 		ExpiryWarnDays: p.ExpiryWarnDays,
+		MaxAccounts:    p.MaxAccounts,
+		MaxRPM:         p.MaxRPM,
+		MaxConcurrency: p.MaxConcurrency,
 		ExitVerified:   p.HasVerifiedExitProfile(),
 	}
 }

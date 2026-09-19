@@ -31,6 +31,9 @@ type Proxy struct {
 	FallbackMode   string
 	BackupProxyID  *int64
 	ExpiryWarnDays int
+	MaxAccounts    int
+	MaxRPM         int
+	MaxConcurrency int
 
 	// Verified proxy egress profile. These fields describe the network exit,
 	// never the end user's physical/device location.

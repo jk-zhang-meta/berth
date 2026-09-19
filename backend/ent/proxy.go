@@ -45,6 +45,12 @@ type Proxy struct {
 	BackupProxyID *int64 `json:"backup_proxy_id,omitempty"`
 	// Days before expiry to flag as expiring-soon (per proxy).
 	ExpiryWarnDays int `json:"expiry_warn_days,omitempty"`
+	// Maximum accounts bound to this proxy; 0 means unlimited.
+	MaxAccounts int `json:"max_accounts,omitempty"`
+	// Maximum admitted requests per minute through this proxy; 0 means unlimited.
+	MaxRpm int `json:"max_rpm,omitempty"`
+	// Maximum concurrent requests through this proxy; 0 means unlimited.
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
 	// Last verified public egress IP observed through this proxy.
 	ExitIP *string `json:"exit_ip,omitempty"`
 	// ExitCountry holds the value of the "exit_country" field.
@@ -118,7 +124,7 @@ func (*Proxy) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays, proxy.FieldExitUtcOffsetSeconds:
+		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays, proxy.FieldMaxAccounts, proxy.FieldMaxRpm, proxy.FieldMaxConcurrency, proxy.FieldExitUtcOffsetSeconds:
 			values[i] = new(sql.NullInt64)
 		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode, proxy.FieldExitIP, proxy.FieldExitCountry, proxy.FieldExitCountryCode, proxy.FieldExitRegion, proxy.FieldExitCity, proxy.FieldExitTimezone, proxy.FieldExitAsn, proxy.FieldExitIsp:
 			values[i] = new(sql.NullString)
@@ -233,6 +239,24 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field expiry_warn_days", values[i])
 			} else if value.Valid {
 				_m.ExpiryWarnDays = int(value.Int64)
+			}
+		case proxy.FieldMaxAccounts:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field max_accounts", values[i])
+			} else if value.Valid {
+				_m.MaxAccounts = int(value.Int64)
+			}
+		case proxy.FieldMaxRpm:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field max_rpm", values[i])
+			} else if value.Valid {
+				_m.MaxRpm = int(value.Int64)
+			}
+		case proxy.FieldMaxConcurrency:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field max_concurrency", values[i])
+			} else if value.Valid {
+				_m.MaxConcurrency = int(value.Int64)
 			}
 		case proxy.FieldExitIP:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -406,6 +430,15 @@ func (_m *Proxy) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("expiry_warn_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ExpiryWarnDays))
+	builder.WriteString(", ")
+	builder.WriteString("max_accounts=")
+	builder.WriteString(fmt.Sprintf("%v", _m.MaxAccounts))
+	builder.WriteString(", ")
+	builder.WriteString("max_rpm=")
+	builder.WriteString(fmt.Sprintf("%v", _m.MaxRpm))
+	builder.WriteString(", ")
+	builder.WriteString("max_concurrency=")
+	builder.WriteString(fmt.Sprintf("%v", _m.MaxConcurrency))
 	builder.WriteString(", ")
 	if v := _m.ExitIP; v != nil {
 		builder.WriteString("exit_ip=")

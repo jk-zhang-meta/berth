@@ -10,12 +10,12 @@ import (
 
 	"log/slog"
 
+	"github.com/gin-gonic/gin"
 	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
 	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -49,6 +49,18 @@ type DataProxy struct {
 	FallbackMode    string `json:"fallback_mode,omitempty"`     // none/direct/proxy
 	BackupProxyName string `json:"backup_proxy_name,omitempty"` // 备用代理 name（跨实例按 name 反查）
 	ExpiryWarnDays  int    `json:"expiry_warn_days,omitempty"`
+	MaxAccounts     *int   `json:"max_accounts,omitempty"`
+	MaxRPM          *int   `json:"max_rpm,omitempty"`
+	MaxConcurrency  *int   `json:"max_concurrency,omitempty"`
+}
+
+func dataInt(v int) *int { return &v }
+
+func dataProxyLimit(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // DataAccount 是管理员显式备份导出使用的账号结构，故意不走 dto.Account 的脱敏路径，
@@ -187,6 +199,9 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			FallbackMode:    p.FallbackMode,
 			BackupProxyName: backupProxyName,
 			ExpiryWarnDays:  p.ExpiryWarnDays,
+			MaxAccounts:     dataInt(p.MaxAccounts),
+			MaxRPM:          dataInt(p.MaxRPM),
+			MaxConcurrency:  dataInt(p.MaxConcurrency),
 		})
 	}
 
@@ -297,8 +312,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		if existingID, ok := proxyKeyToID[key]; ok {
 			proxyKeyToID[key] = existingID
 			result.ProxyReused++
-			if normalizedStatus != "" {
-				if proxy, getErr := h.adminService.GetProxy(ctx, existingID); getErr == nil && proxy != nil && proxy.Status != normalizedStatus {
+			if normalizedStatus != "" || item.MaxAccounts != nil || item.MaxRPM != nil || item.MaxConcurrency != nil {
+				if proxy, getErr := h.adminService.GetProxy(ctx, existingID); getErr == nil && proxy != nil && (proxy.Status != normalizedStatus ||
+					(item.MaxAccounts != nil && proxy.MaxAccounts != *item.MaxAccounts) ||
+					(item.MaxRPM != nil && proxy.MaxRPM != *item.MaxRPM) ||
+					(item.MaxConcurrency != nil && proxy.MaxConcurrency != *item.MaxConcurrency)) {
 					// 同步 status 时传入完整字段，避免零值覆盖已存在代理的有效期/fallback 配置。
 					var existingExpiresAt *time.Time
 					if item.ExpiresAt != nil {
@@ -323,6 +341,9 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 						BackupProxyID:  existingBackupProxyID,
 						ClearBackupID:  existingBackupProxyID == nil,
 						ExpiryWarnDays: &item.ExpiryWarnDays,
+						MaxAccounts:    item.MaxAccounts,
+						MaxRPM:         item.MaxRPM,
+						MaxConcurrency: item.MaxConcurrency,
 						Name:           proxy.Name,
 						Protocol:       proxy.Protocol,
 						Host:           proxy.Host,
@@ -371,6 +392,9 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			FallbackMode:   fallbackMode,
 			BackupProxyID:  backupProxyID,
 			ExpiryWarnDays: item.ExpiryWarnDays,
+			MaxAccounts:    dataProxyLimit(item.MaxAccounts),
+			MaxRPM:         dataProxyLimit(item.MaxRPM),
+			MaxConcurrency: dataProxyLimit(item.MaxConcurrency),
 		})
 		if createErr != nil {
 			result.ProxyFailed++
@@ -399,6 +423,9 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				BackupProxyID:  backupProxyID,
 				ClearBackupID:  backupProxyID == nil,
 				ExpiryWarnDays: &item.ExpiryWarnDays,
+				MaxAccounts:    item.MaxAccounts,
+				MaxRPM:         item.MaxRPM,
+				MaxConcurrency: item.MaxConcurrency,
 				Name:           created.Name,
 				Protocol:       created.Protocol,
 				Host:           created.Host,
@@ -683,6 +710,15 @@ func validateDataProxy(item DataProxy) error {
 		normalizedStatus := normalizeProxyStatus(item.Status)
 		if normalizedStatus != service.StatusActive && normalizedStatus != "inactive" {
 			return fmt.Errorf("proxy status is invalid: %s", item.Status)
+		}
+	}
+	for name, value := range map[string]*int{
+		"max_accounts":    item.MaxAccounts,
+		"max_rpm":         item.MaxRPM,
+		"max_concurrency": item.MaxConcurrency,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%s must be >= 0", name)
 		}
 	}
 	return nil

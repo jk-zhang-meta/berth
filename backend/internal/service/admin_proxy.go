@@ -61,6 +61,9 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 	if !isJSONTimeInRange(input.ExpiresAt) {
 		return nil, infraerrors.BadRequest("PROXY_EXPIRY_INVALID", "proxy expiry year must be between 0 and 9999")
 	}
+	if input.MaxAccounts < 0 || input.MaxRPM < 0 || input.MaxConcurrency < 0 {
+		return nil, infraerrors.BadRequest("PROXY_CAPACITY_INVALID", "proxy capacity limits must be >= 0")
+	}
 	// 规范化 fallback_mode
 	mode := input.FallbackMode
 	if mode == "" {
@@ -86,6 +89,9 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 		FallbackMode:   mode,
 		BackupProxyID:  input.BackupProxyID,
 		ExpiryWarnDays: input.ExpiryWarnDays,
+		MaxAccounts:    input.MaxAccounts,
+		MaxRPM:         input.MaxRPM,
+		MaxConcurrency: input.MaxConcurrency,
 	}
 	exitInfo, latencyMs, checkedAt, err := s.probeVerifiedProxyExit(ctx, proxy)
 	if err != nil {
@@ -110,6 +116,16 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	if input.MaxAccounts != nil && *input.MaxAccounts > 0 {
+		count, countErr := s.proxyRepo.CountAccountsByProxyID(ctx, id)
+		if countErr != nil {
+			return nil, countErr
+		}
+		if count > int64(*input.MaxAccounts) {
+			return nil, infraerrors.BadRequest("PROXY_ACCOUNT_CAPACITY_TOO_LOW",
+				fmt.Sprintf("max_accounts cannot be below current account count (%d)", count))
+		}
+	}
 	originalConnection := proxyConnectionIdentity(proxy)
 
 	// Merge only supplied fields, then validate the resulting fallback configuration.
@@ -126,6 +142,11 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	}
 	if input.ExpiryWarnDays != nil && *input.ExpiryWarnDays < 0 {
 		return nil, infraerrors.BadRequest("PROXY_WARN_DAYS_INVALID", "expiry_warn_days must be >= 0")
+	}
+	if (input.MaxAccounts != nil && *input.MaxAccounts < 0) ||
+		(input.MaxRPM != nil && *input.MaxRPM < 0) ||
+		(input.MaxConcurrency != nil && *input.MaxConcurrency < 0) {
+		return nil, infraerrors.BadRequest("PROXY_CAPACITY_INVALID", "proxy capacity limits must be >= 0")
 	}
 
 	if input.Name != "" {
@@ -156,6 +177,15 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	proxy.BackupProxyID = backupID
 	if input.ExpiryWarnDays != nil {
 		proxy.ExpiryWarnDays = *input.ExpiryWarnDays
+	}
+	if input.MaxAccounts != nil {
+		proxy.MaxAccounts = *input.MaxAccounts
+	}
+	if input.MaxRPM != nil {
+		proxy.MaxRPM = *input.MaxRPM
+	}
+	if input.MaxConcurrency != nil {
+		proxy.MaxConcurrency = *input.MaxConcurrency
 	}
 
 	var exitInfo *ProxyExitInfo
@@ -231,6 +261,10 @@ func (s *adminServiceImpl) CheckProxyExists(ctx context.Context, host string, po
 }
 
 func (s *adminServiceImpl) validateVerifiedProxyBinding(ctx context.Context, proxyID *int64) error {
+	return s.validateVerifiedProxyBindingCapacity(ctx, proxyID, 1)
+}
+
+func (s *adminServiceImpl) validateVerifiedProxyBindingCapacity(ctx context.Context, proxyID *int64, additional int64) error {
 	if proxyID == nil || *proxyID == 0 {
 		return nil
 	}
@@ -246,6 +280,16 @@ func (s *adminServiceImpl) validateVerifiedProxyBinding(ctx context.Context, pro
 	}
 	if !proxy.HasFreshVerifiedExitProfile(time.Now()) {
 		return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
+	}
+	if proxy.MaxAccounts > 0 && additional > 0 {
+		count, err := s.proxyRepo.CountAccountsByProxyID(ctx, *proxyID)
+		if err != nil {
+			return err
+		}
+		if count+additional > int64(proxy.MaxAccounts) {
+			return infraerrors.BadRequest("PROXY_ACCOUNT_CAPACITY_EXCEEDED",
+				fmt.Sprintf("proxy account capacity exceeded: %d current + %d new > %d max", count, additional, proxy.MaxAccounts))
+		}
 	}
 	return nil
 }

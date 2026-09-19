@@ -439,7 +439,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
-				accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
+				accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+				if err != nil {
+					reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+					releaseWait()
+					h.handleConcurrencyError(c, err, "proxy", streamStarted)
+					return
+				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 			}
@@ -774,7 +780,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
-				accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
+				accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+				if err != nil {
+					reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+					releaseWait()
+					h.handleConcurrencyError(c, err, "proxy", streamStarted)
+					return
+				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 			}

@@ -35,6 +35,21 @@ func (h *ProxyHandler) SetConcurrencyService(cs *service.ConcurrencyService) {
 	h.concurrencyService = cs
 }
 
+func (h *ProxyHandler) proxyRuntimeUsage(ctx context.Context, ids []int64) (map[int64]int, map[int64]int) {
+	concurrency := make(map[int64]int, len(ids))
+	rpm := make(map[int64]int, len(ids))
+	if h == nil || h.concurrencyService == nil || len(ids) == 0 {
+		return concurrency, rpm
+	}
+	if values, err := h.concurrencyService.GetProxyConcurrencyBatch(ctx, ids); err == nil {
+		concurrency = values
+	}
+	if values, err := h.concurrencyService.GetProxyRPMBatch(ctx, ids); err == nil {
+		rpm = values
+	}
+	return concurrency, rpm
+}
+
 // NewProxyHandler creates a new admin proxy handler
 func NewProxyHandler(adminService service.AdminService) *ProxyHandler {
 	return &ProxyHandler{
@@ -54,6 +69,9 @@ type CreateProxyRequest struct {
 	FallbackMode   string `json:"fallback_mode" binding:"omitempty,oneof=none proxy direct"`
 	BackupProxyID  *int64 `json:"backup_proxy_id"`
 	ExpiryWarnDays int    `json:"expiry_warn_days" binding:"omitempty,min=0"`
+	MaxAccounts    int    `json:"max_accounts" binding:"omitempty,min=0"`
+	MaxRPM         int    `json:"max_rpm" binding:"omitempty,min=0"`
+	MaxConcurrency int    `json:"max_concurrency" binding:"omitempty,min=0"`
 }
 
 // UpdateProxyRequest represents update proxy request
@@ -69,6 +87,9 @@ type UpdateProxyRequest struct {
 	FallbackMode   string                 `json:"fallback_mode" binding:"omitempty,oneof=none proxy direct"`
 	BackupProxyID  dto.NullableInt64Field `json:"backup_proxy_id"`
 	ExpiryWarnDays *int                   `json:"expiry_warn_days" binding:"omitempty,min=0"`
+	MaxAccounts    *int                   `json:"max_accounts" binding:"omitempty,min=0"`
+	MaxRPM         *int                   `json:"max_rpm" binding:"omitempty,min=0"`
+	MaxConcurrency *int                   `json:"max_concurrency" binding:"omitempty,min=0"`
 }
 
 // List handles listing all proxies with pagination
@@ -136,12 +157,10 @@ func (h *ProxyHandler) List(c *gin.Context) {
 		item := *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i])
 		out = append(out, item)
 	}
-	if h.concurrencyService != nil && len(ids) > 0 {
-		if cc, err := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); err == nil && cc != nil {
-			for i := range out {
-				out[i].Concurrency = cc[out[i].ID]
-			}
-		}
+	cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), ids)
+	for i := range out {
+		out[i].Concurrency = cc[out[i].ID]
+		out[i].CurrentRPM = rpm[out[i].ID]
 	}
 	if h.stewards != nil {
 		labels := h.stewards.LabelsForProxies(c.Request.Context(), ids)
@@ -196,12 +215,10 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 				item.Password = ""
 				out = append(out, item)
 			}
-			if h.concurrencyService != nil && len(fetchIDs) > 0 {
-				if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), fetchIDs); ccErr == nil && cc != nil {
-					for i := range out {
-						out[i].Concurrency = cc[out[i].ID]
-					}
-				}
+			cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), fetchIDs)
+			for i := range out {
+				out[i].Concurrency = cc[out[i].ID]
+				out[i].CurrentRPM = rpm[out[i].ID]
 			}
 			response.Success(c, out)
 			return
@@ -214,12 +231,10 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 			item.Password = ""
 			out = append(out, item)
 		}
-		if h.concurrencyService != nil && len(fetchIDs) > 0 {
-			if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), fetchIDs); ccErr == nil && cc != nil {
-				for i := range out {
-					out[i].Concurrency = cc[out[i].ID]
-				}
-			}
+		cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), fetchIDs)
+		for i := range out {
+			out[i].Concurrency = cc[out[i].ID]
+			out[i].CurrentRPM = rpm[out[i].ID]
 		}
 		response.Success(c, out)
 		return
@@ -237,12 +252,10 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 			ids = append(ids, proxies[i].ID)
 			out = append(out, *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i]))
 		}
-		if h.concurrencyService != nil && len(ids) > 0 {
-			if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); ccErr == nil && cc != nil {
-				for i := range out {
-					out[i].Concurrency = cc[out[i].ID]
-				}
-			}
+		cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), ids)
+		for i := range out {
+			out[i].Concurrency = cc[out[i].ID]
+			out[i].CurrentRPM = rpm[out[i].ID]
 		}
 		response.Success(c, out)
 		return
@@ -260,12 +273,10 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 		ids = append(ids, proxies[i].ID)
 		out = append(out, *dto.ProxyFromServiceAdmin(&proxies[i]))
 	}
-	if h.concurrencyService != nil && len(ids) > 0 {
-		if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); ccErr == nil && cc != nil {
-			for i := range out {
-				out[i].Concurrency = cc[out[i].ID]
-			}
-		}
+	cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), ids)
+	for i := range out {
+		out[i].Concurrency = cc[out[i].ID]
+		out[i].CurrentRPM = rpm[out[i].ID]
 	}
 	response.Success(c, out)
 }
@@ -289,10 +300,10 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 	}
 
 	resp := dto.ProxyFromServiceAdmin(proxy)
-	if h.concurrencyService != nil && resp != nil {
-		if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), []int64{proxyID}); ccErr == nil && cc != nil {
-			resp.Concurrency = cc[proxyID]
-		}
+	if resp != nil {
+		cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), []int64{proxyID})
+		resp.Concurrency = cc[proxyID]
+		resp.CurrentRPM = rpm[proxyID]
 	}
 	response.Success(c, resp)
 }
@@ -326,6 +337,9 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 			FallbackMode:   strings.TrimSpace(req.FallbackMode),
 			BackupProxyID:  req.BackupProxyID,
 			ExpiryWarnDays: req.ExpiryWarnDays,
+			MaxAccounts:    req.MaxAccounts,
+			MaxRPM:         req.MaxRPM,
+			MaxConcurrency: req.MaxConcurrency,
 		})
 		if err != nil {
 			return nil, err
@@ -390,6 +404,9 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		BackupProxyID:  req.BackupProxyID.Value,
 		ClearBackupID:  req.BackupProxyID.Set && req.BackupProxyID.Value == nil,
 		ExpiryWarnDays: req.ExpiryWarnDays,
+		MaxAccounts:    req.MaxAccounts,
+		MaxRPM:         req.MaxRPM,
+		MaxConcurrency: req.MaxConcurrency,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

@@ -155,6 +155,14 @@ func (e *ConcurrencyError) Error() string {
 	return fmt.Sprintf("%s concurrency limit reached", e.SlotType)
 }
 
+type RateLimitError struct {
+	SlotType string
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("%s rpm limit reached", e.SlotType)
+}
+
 type WaitQueueFullError struct {
 	SlotType string
 }
@@ -345,14 +353,35 @@ func (h *ConcurrencyHelper) withAPIKeySlot(ctx context.Context, apiKeyID int64, 
 	}
 }
 
-// WithProxySlot wraps an account release function with proxy slot tracking.
-// If the account has a configured proxy (proxyID > 0), the proxy's active concurrency
-// slot is held for the entire request/stream lifetime and released when releaseFunc is called.
-func (h *ConcurrencyHelper) WithProxySlot(ctx context.Context, proxyID *int64, releaseFunc func()) func() {
-	if h == nil || h.concurrencyService == nil || proxyID == nil || *proxyID <= 0 {
-		return releaseFunc
+// WithProxySlot wraps an account release function with proxy capacity admission.
+// A configured proxy concurrency/RPM limit is enforced before the upstream call;
+// zero limits preserve the historical monitor-only behavior.
+func (h *ConcurrencyHelper) WithProxySlot(ctx context.Context, account *service.Account, releaseFunc func()) (func(), error) {
+	if h == nil || h.concurrencyService == nil || account == nil || account.ProxyID == nil || *account.ProxyID <= 0 {
+		return releaseFunc, nil
 	}
-	proxyRelease := h.concurrencyService.TrackProxySlot(ctx, *proxyID)
+	maxConcurrency, maxRPM := 0, 0
+	if account.Proxy != nil && account.Proxy.ID == *account.ProxyID {
+		maxConcurrency = account.Proxy.MaxConcurrency
+		maxRPM = account.Proxy.MaxRPM
+	}
+	result, err := h.concurrencyService.AcquireProxyCapacity(ctx, *account.ProxyID, maxConcurrency, maxRPM)
+	if err != nil {
+		if releaseFunc != nil {
+			releaseFunc()
+		}
+		return nil, err
+	}
+	if result == nil || !result.Acquired {
+		if releaseFunc != nil {
+			releaseFunc()
+		}
+		if result != nil && result.BlockedByRPM() {
+			return nil, &RateLimitError{SlotType: "proxy"}
+		}
+		return nil, &ConcurrencyError{SlotType: "proxy"}
+	}
+	proxyRelease := result.ReleaseFunc
 	return func() {
 		if releaseFunc != nil {
 			releaseFunc()
@@ -360,7 +389,7 @@ func (h *ConcurrencyHelper) WithProxySlot(ctx context.Context, proxyID *int64, r
 		if proxyRelease != nil {
 			proxyRelease()
 		}
-	}
+	}, nil
 }
 
 // AcquireAccountSlotWithWait acquires an account concurrency slot, waiting if necessary.

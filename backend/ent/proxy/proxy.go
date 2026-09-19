@@ -43,6 +43,12 @@ const (
 	FieldBackupProxyID = "backup_proxy_id"
 	// FieldExpiryWarnDays holds the string denoting the expiry_warn_days field in the database.
 	FieldExpiryWarnDays = "expiry_warn_days"
+	// FieldMaxAccounts holds the string denoting the max_accounts field in the database.
+	FieldMaxAccounts = "max_accounts"
+	// FieldMaxRpm holds the string denoting the max_rpm field in the database.
+	FieldMaxRpm = "max_rpm"
+	// FieldMaxConcurrency holds the string denoting the max_concurrency field in the database.
+	FieldMaxConcurrency = "max_concurrency"
 	// FieldExitIP holds the string denoting the exit_ip field in the database.
 	FieldExitIP = "exit_ip"
 	// FieldExitCountry holds the string denoting the exit_country field in the database.
@@ -105,6 +111,9 @@ var Columns = []string{
 	FieldFallbackMode,
 	FieldBackupProxyID,
 	FieldExpiryWarnDays,
+	FieldMaxAccounts,
+	FieldMaxRpm,
+	FieldMaxConcurrency,
 	FieldExitIP,
 	FieldExitCountry,
 	FieldExitCountryCode,
@@ -161,6 +170,18 @@ var (
 	FallbackModeValidator func(string) error
 	// DefaultExpiryWarnDays holds the default value on creation for the "expiry_warn_days" field.
 	DefaultExpiryWarnDays int
+	// DefaultMaxAccounts holds the default value on creation for the "max_accounts" field.
+	DefaultMaxAccounts int
+	// MaxAccountsValidator is a validator for the "max_accounts" field. It is called by the builders before save.
+	MaxAccountsValidator func(int) error
+	// DefaultMaxRpm holds the default value on creation for the "max_rpm" field.
+	DefaultMaxRpm int
+	// MaxRpmValidator is a validator for the "max_rpm" field. It is called by the builders before save.
+	MaxRpmValidator func(int) error
+	// DefaultMaxConcurrency holds the default value on creation for the "max_concurrency" field.
+	DefaultMaxConcurrency int
+	// MaxConcurrencyValidator is a validator for the "max_concurrency" field. It is called by the builders before save.
+	MaxConcurrencyValidator func(int) error
 	// ExitIPValidator is a validator for the "exit_ip" field. It is called by the builders before save.
 	ExitIPValidator func(string) error
 	// ExitCountryValidator is a validator for the "exit_country" field. It is called by the builders before save.
@@ -255,6 +276,21 @@ func ByBackupProxyID(opts ...sql.OrderTermOption) OrderOption {
 // ByExpiryWarnDays orders the results by the expiry_warn_days field.
 func ByExpiryWarnDays(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldExpiryWarnDays, opts...).ToFunc()
+}
+
+// ByMaxAccounts orders the results by the max_accounts field.
+func ByMaxAccounts(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMaxAccounts, opts...).ToFunc()
+}
+
+// ByMaxRpm orders the results by the max_rpm field.
+func ByMaxRpm(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMaxRpm, opts...).ToFunc()
+}
+
+// ByMaxConcurrency orders the results by the max_concurrency field.
+func ByMaxConcurrency(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMaxConcurrency, opts...).ToFunc()
 }
 
 // ByExitIP orders the results by the exit_ip field.
