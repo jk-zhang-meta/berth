@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 // CustomMenuItem represents a user-configured custom menu entry.

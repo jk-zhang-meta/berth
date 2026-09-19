@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -209,7 +209,22 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	compatMessagesBridge := isOpenAICompatMessagesBridgeBody(body)
 	setOpenAICompatMessagesBridgeContext(c, compatMessagesBridge)
 
-	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	isNativeCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	isNativeCodexPrivacy := openai.IsCodexOfficialClientByHeadersStrict(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	isCodexCLI := isNativeCodexCLI || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	if isNativeCodexPrivacy {
+		sanitizedBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIResponses, account.Proxy)
+		if privacyErr != nil {
+			return nil, privacyErr
+		}
+		if changed {
+			body = sanitizedBody
+			originalBody = sanitizedBody
+			requestView = newOpenAIRequestView(sanitizedBody)
+			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+			originalModel = reqModel
+		}
+	}
 	codexImageGenerationExplicitToolPolicy := codexImageGenerationExplicitToolPolicyAllow
 	if isCodexCLI {
 		codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
@@ -368,8 +383,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
+	if isNativeCodexCLI && instructions.Type == gjson.String && strings.Contains(instructions.String(), agentNetworkEgressMarker) {
+		instructionsEmpty = strings.TrimSpace(strings.SplitN(instructions.String(), agentNetworkEgressMarker, 2)[0]) == ""
+	}
 	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
-		markPatchSet("instructions", defaultCodexSynthInstructions(upstreamModel))
+		markPatchSet("instructions", mergeInstructionsWithNetworkEgress(instructions.String(), defaultCodexSynthInstructions(upstreamModel)))
 	}
 	if billingModel != requestedModel {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", requestedModel, billingModel, account.Name, isCodexCLI)
@@ -1490,6 +1508,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 保证不被覆盖丢失）。
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
+	sanitizeNativeCodexHeaders(c, req.Header)
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
 
 	return req, nil

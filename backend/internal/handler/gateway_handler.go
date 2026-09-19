@@ -13,21 +13,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/domain"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/claude"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ctxkey"
+	pkgerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/geminicli"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/securityaudit"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -293,6 +293,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
+		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), platform,
+	))
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64
@@ -421,10 +424,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 				}
 
-				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountCapacityWithWaitTimeout(
 					c,
 					account.ID,
 					selection.WaitPlan.MaxConcurrency,
+					selection.WaitPlan.MaxRPM,
 					selection.WaitPlan.Timeout,
 					reqStream,
 					&streamStarted,
@@ -435,6 +439,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
+				accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 			}
@@ -463,6 +468,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Warn("gateway.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
+			h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
@@ -537,15 +543,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
-			}
-
-			// RPM 计数递增（Forward 成功后）
-			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
-			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
-			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
-				if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
-					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				}
 			}
 
 			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -762,10 +759,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 				}
 
-				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountCapacityWithWaitTimeout(
 					c,
 					account.ID,
 					selection.WaitPlan.MaxConcurrency,
+					selection.WaitPlan.MaxRPM,
 					selection.WaitPlan.Timeout,
 					reqStream,
 					&streamStarted,
@@ -776,6 +774,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
+				accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 			}
@@ -809,6 +808,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Warn("gateway.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
+			h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
@@ -984,7 +984,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Any("fallback_group_id", fallbackGroupID),
 						zap.Bool("fallback_used", fallbackUsed),
 					)
-					if !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
+					if apiKey.MarketplaceUsage == nil && !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
 						fallbackGroup, err := h.gatewayService.ResolveGroupByID(c.Request.Context(), *fallbackGroupID)
 						if err != nil {
 							reqLog.Warn("gateway.resolve_fallback_group_failed", zap.Int64("fallback_group_id", *fallbackGroupID), zap.Error(err))
@@ -1083,15 +1083,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					upstreamServedSession = true
 				}
 				return
-			}
-
-			// RPM 计数递增（Forward 成功后）
-			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
-			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
-			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
-				if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
-					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				}
 			}
 
 			// 绑定粘性会话（成功转发后绑定/刷新）
@@ -1533,6 +1524,9 @@ func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
 func cloneAPIKeyWithGroup(apiKey *service.APIKey, group *service.Group) *service.APIKey {
 	if apiKey == nil || group == nil {
 		return apiKey
+	}
+	if apiKey.MarketplaceUsage != nil && (apiKey.GroupID == nil || *apiKey.GroupID != group.ID) {
+		return nil
 	}
 	cloned := *apiKey
 	groupID := group.ID

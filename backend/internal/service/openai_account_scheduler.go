@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/config"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -564,7 +564,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		)
 		return nil, true, nil
 	}
-	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.GetBaseRPM())
 	if acquireErr == nil && result != nil && result.Acquired {
 		if !req.PreserveStickyBinding {
 			_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
@@ -576,28 +576,15 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}), false, nil
 	}
 
-	cfg := s.service.schedulingConfig()
-	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	if s.service.concurrencyService != nil {
-		if escapeCfg.enabled && acquireErr == nil && result != nil && !result.Acquired {
-			errorRate, ttft, _ := s.stats.snapshot(accountID)
-			slog.Info("sticky_escape_triggered",
-				"account_id", accountID,
-				"reason", "concurrency_full",
-				"error_rate", errorRate,
-				"ttft", ttft,
-			)
-			return nil, true, nil
+		reason := "concurrency_full"
+		if result != nil && result.BlockedByRPM() {
+			reason = "rpm_full"
+		} else if acquireErr != nil {
+			reason = "capacity_error"
 		}
-		return attachSelectionProfitGate(ctx, &AccountSelectionResult{
-			Account: account,
-			WaitPlan: &AccountWaitPlan{
-				AccountID:      accountID,
-				MaxConcurrency: account.Concurrency,
-				Timeout:        cfg.StickySessionWaitTimeout,
-				MaxWaiting:     cfg.StickySessionMaxWaiting,
-			},
-		}), false, nil
+		slog.Info("sticky_escape_triggered", "account_id", accountID, "reason", reason)
+		return nil, true, nil
 	}
 	return nil, false, nil
 }
@@ -893,7 +880,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidateCount:            len(candidates),
 	}
 	if len(candidates) == 0 {
-		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+		plan.selectionOrder = prioritizeOpenAIWorkSessionAccounts(ctx, s.buildOpenAISelectionOrder(req, plan))
 		return plan
 	}
 
@@ -1037,8 +1024,46 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		plan.topK = 1
 	}
 
-	plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
+	plan.selectionOrder = prioritizeOpenAIWorkSessionAccounts(ctx, s.buildOpenAISelectionOrder(req, plan))
 	return plan
+}
+
+func prioritizeOpenAIWorkSessionAccounts(ctx context.Context, order []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	pref := WorkSessionPrefFromContext(ctx)
+	if pref == nil || len(order) < 2 {
+		return order
+	}
+	preferred := pref.QueueAccountIDs
+	if len(preferred) == 0 && pref.AssignedAccountID > 0 {
+		preferred = []int64{pref.AssignedAccountID}
+	}
+	if len(preferred) == 0 {
+		return order
+	}
+	ranks := make(map[int64]int, len(preferred))
+	for i, id := range preferred {
+		if id > 0 {
+			if _, exists := ranks[id]; !exists {
+				ranks[id] = i
+			}
+		}
+	}
+	rankOf := func(candidate openAIAccountCandidateScore) (int, bool) {
+		if candidate.account == nil {
+			return 0, false
+		}
+		rank, ok := ranks[candidate.account.ID]
+		return rank, ok
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		ri, iPreferred := rankOf(order[i])
+		rj, jPreferred := rankOf(order[j])
+		if iPreferred != jPreferred {
+			return iPreferred
+		}
+		return iPreferred && ri < rj
+	})
+	return order
 }
 
 func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
@@ -1180,7 +1205,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			continue
 		}
 
-		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency, budget)
+		result, attempted, acquireErr := s.tryAcquireOpenAIAccountSlot(ctx, candidate.account.ID, candidate.account.Concurrency, candidate.account.GetBaseRPM(), budget)
 		if !attempted {
 			break
 		}
@@ -1213,7 +1238,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 
 		if fresh.Concurrency != candidate.account.Concurrency {
 			release(result)
-			result, attempted, acquireErr = s.tryAcquireOpenAIAccountSlot(ctx, fresh.ID, fresh.Concurrency, budget)
+			result, attempted, acquireErr = s.tryAcquireOpenAIAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.GetBaseRPM(), budget)
 			if !attempted {
 				continue
 			}
@@ -1240,12 +1265,13 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAIAccountSlot(
 	ctx context.Context,
 	accountID int64,
 	maxConcurrency int,
+	maxRPM int,
 	budget *openAISelectionProbeBudget,
 ) (*AcquireResult, bool, error) {
 	if s.service.concurrencyService != nil && maxConcurrency > 0 && !budget.recordAcquire(accountID) {
 		return nil, false, nil
 	}
-	result, err := s.service.tryAcquireAccountSlot(ctx, accountID, maxConcurrency)
+	result, err := s.service.tryAcquireAccountSlot(ctx, accountID, maxConcurrency, maxRPM)
 	return result, true, err
 }
 
@@ -1310,7 +1336,7 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
 			continue
 		}
-		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.GetBaseRPM())
 		if acquireErr != nil {
 			return nil, acquireErr
 		}
@@ -1331,6 +1357,7 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 				WaitPlan: &AccountWaitPlan{
 					AccountID:      account.ID,
 					MaxConcurrency: account.Concurrency,
+					MaxRPM:         account.GetBaseRPM(),
 					Timeout:        cfg.StickySessionWaitTimeout,
 					MaxWaiting:     cfg.StickySessionMaxWaiting,
 				},
@@ -1399,6 +1426,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if len(accounts) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false, openAISelectionFilterStats{}.summary(""))
 	}
+	applyWorkSessionQueuePriority(ctx, accounts)
 	// Local free-tier soft gate on the Grok scheduling path only (not admin probe).
 	accounts = s.filterGrokFreeQuotaAccounts(ctx, accounts)
 	if len(accounts) == 0 {
@@ -1717,6 +1745,7 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 				WaitPlan: &AccountWaitPlan{
 					AccountID:      fresh.ID,
 					MaxConcurrency: fresh.Concurrency,
+					MaxRPM:         fresh.GetBaseRPM(),
 					Timeout:        cfg.FallbackWaitTimeout,
 					MaxWaiting:     cfg.FallbackMaxWaiting,
 				},

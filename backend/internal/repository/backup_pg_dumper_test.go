@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,9 +22,9 @@ func newTestPgDumper(t *testing.T, commandContext func(context.Context, string, 
 		cfg: &config.DatabaseConfig{
 			Host:     "db.example.test",
 			Port:     5432,
-			User:     "sub2api",
+			User:     "berth",
 			Password: "secret",
-			DBName:   "sub2api",
+			DBName:   "berth",
 			SSLMode:  "require",
 		},
 		db:             db,

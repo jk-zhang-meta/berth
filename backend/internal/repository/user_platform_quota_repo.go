@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/userplatformquota"
+	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
 	"github.com/lib/pq"
 )
 

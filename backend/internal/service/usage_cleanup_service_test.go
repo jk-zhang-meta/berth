@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
 

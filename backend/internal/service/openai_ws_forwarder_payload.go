@@ -184,6 +184,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 覆盖所有 WS 模式（ctx_pool/dedicated/passthrough）的握手头。
 	account.ApplyHeaderOverrides(headers)
 	setOpenAICodexRoutingHint(headers, account, routingModel, routingServiceTier)
+	sanitizeNativeCodexHeaders(c, headers)
 	logOpenAIRoutingDiagnostics(
 		ctx,
 		account,

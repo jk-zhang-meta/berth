@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 func UserFromServiceShallow(u *service.User) *User {
@@ -463,6 +463,7 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier,
 		Status: a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		OwnerUserID: a.OwnerUserID, OwnerLabel: a.OwnerLabel, FirstTokenMs: a.FirstTokenMs, DurationMs: a.DurationMs,
 		Schedulable: a.Schedulable, RateLimitedAt: a.RateLimitedAt, RateLimitResetAt: a.RateLimitResetAt,
 		OverloadUntil: a.OverloadUntil, TempUnschedulableUntil: a.TempUnschedulableUntil,
 		TempUnschedulableReason: a.TempUnschedulableReason, SessionWindowStart: a.SessionWindowStart,
@@ -512,6 +513,18 @@ func AccountGroupFromService(ag *service.AccountGroup) *AccountGroup {
 }
 
 func ProxyFromService(p *service.Proxy) *Proxy {
+	out := proxyFromServiceUnredacted(p)
+	if out != nil && service.ProxyNeedsRentalRedaction(p.ID) {
+		out.Host = ""
+		out.Port = 0
+		out.Username = ""
+		out.FallbackMode = service.FallbackModeNone
+		out.BackupProxyID = nil
+	}
+	return out
+}
+
+func proxyFromServiceUnredacted(p *service.Proxy) *Proxy {
 	if p == nil {
 		return nil
 	}
@@ -529,6 +542,7 @@ func ProxyFromService(p *service.Proxy) *Proxy {
 		FallbackMode:   p.FallbackMode,
 		BackupProxyID:  p.BackupProxyID,
 		ExpiryWarnDays: p.ExpiryWarnDays,
+		ExitVerified:   p.HasVerifiedExitProfile(),
 	}
 }
 
@@ -537,21 +551,26 @@ func ProxyWithAccountCountFromService(p *service.ProxyWithAccountCount) *ProxyWi
 		return nil
 	}
 	return &ProxyWithAccountCount{
-		Proxy:          *ProxyFromService(&p.Proxy),
-		AccountCount:   p.AccountCount,
-		LatencyMs:      p.LatencyMs,
-		LatencyStatus:  p.LatencyStatus,
-		LatencyMessage: p.LatencyMessage,
-		IPAddress:      p.IPAddress,
-		Country:        p.Country,
-		CountryCode:    p.CountryCode,
-		Region:         p.Region,
-		City:           p.City,
-		QualityStatus:  p.QualityStatus,
-		QualityScore:   p.QualityScore,
-		QualityGrade:   p.QualityGrade,
-		QualitySummary: p.QualitySummary,
-		QualityChecked: p.QualityChecked,
+		Proxy:            *ProxyFromService(&p.Proxy),
+		AccountCount:     p.AccountCount,
+		LatencyMs:        p.LatencyMs,
+		LatencyStatus:    p.LatencyStatus,
+		LatencyMessage:   p.LatencyMessage,
+		IPAddress:        p.IPAddress,
+		Country:          p.Country,
+		CountryCode:      p.CountryCode,
+		Region:           p.Region,
+		City:             p.City,
+		Timezone:         p.Timezone,
+		UTCOffsetSeconds: p.UTCOffsetSeconds,
+		ASN:              p.ASN,
+		ISP:              p.ISP,
+		ExitCheckedAt:    p.ExitCheckedAt,
+		QualityStatus:    p.QualityStatus,
+		QualityScore:     p.QualityScore,
+		QualityGrade:     p.QualityGrade,
+		QualitySummary:   p.QualitySummary,
+		QualityChecked:   p.QualityChecked,
 	}
 }
 
@@ -561,7 +580,7 @@ func ProxyFromServiceAdmin(p *service.Proxy) *AdminProxy {
 	if p == nil {
 		return nil
 	}
-	base := ProxyFromService(p)
+	base := proxyFromServiceUnredacted(p)
 	if base == nil {
 		return nil
 	}
@@ -582,21 +601,26 @@ func ProxyWithAccountCountFromServiceAdmin(p *service.ProxyWithAccountCount) *Ad
 		return nil
 	}
 	return &AdminProxyWithAccountCount{
-		AdminProxy:     *admin,
-		AccountCount:   p.AccountCount,
-		LatencyMs:      p.LatencyMs,
-		LatencyStatus:  p.LatencyStatus,
-		LatencyMessage: p.LatencyMessage,
-		IPAddress:      p.IPAddress,
-		Country:        p.Country,
-		CountryCode:    p.CountryCode,
-		Region:         p.Region,
-		City:           p.City,
-		QualityStatus:  p.QualityStatus,
-		QualityScore:   p.QualityScore,
-		QualityGrade:   p.QualityGrade,
-		QualitySummary: p.QualitySummary,
-		QualityChecked: p.QualityChecked,
+		AdminProxy:       *admin,
+		AccountCount:     p.AccountCount,
+		LatencyMs:        p.LatencyMs,
+		LatencyStatus:    p.LatencyStatus,
+		LatencyMessage:   p.LatencyMessage,
+		IPAddress:        p.IPAddress,
+		Country:          p.Country,
+		CountryCode:      p.CountryCode,
+		Region:           p.Region,
+		City:             p.City,
+		Timezone:         p.Timezone,
+		UTCOffsetSeconds: p.UTCOffsetSeconds,
+		ASN:              p.ASN,
+		ISP:              p.ISP,
+		ExitCheckedAt:    p.ExitCheckedAt,
+		QualityStatus:    p.QualityStatus,
+		QualityScore:     p.QualityScore,
+		QualityGrade:     p.QualityGrade,
+		QualitySummary:   p.QualitySummary,
+		QualityChecked:   p.QualityChecked,
 	}
 }
 

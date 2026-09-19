@@ -10,8 +10,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
@@ -53,6 +54,16 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 	if account == nil {
 		writeOpenAIResponsesInputTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("responses input_tokens: missing account")
+	}
+	if c != nil && openai.IsCodexOfficialClientByHeadersStrict(c.GetHeader("User-Agent"), c.GetHeader("originator")) {
+		sanitizedBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIResponses, account.Proxy)
+		if privacyErr != nil {
+			writeOpenAIResponsesInputTokensError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request privacy context")
+			return privacyErr
+		}
+		if changed {
+			body = sanitizedBody
+		}
 	}
 
 	prepared, err := prepareNativeOpenAIInputTokensCountRequest(body, account)
@@ -475,6 +486,7 @@ func (s *OpenAIGatewayService) buildInputTokensUpstreamRequest(
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	sanitizeNativeCodexHeaders(c, req.Header)
 
 	return req, nil
 }

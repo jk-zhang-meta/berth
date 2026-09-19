@@ -11,10 +11,10 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
-	"github.com/Wei-Shaw/sub2api/ent/usagelog"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/group"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/usagelog"
 )
 
 // AccountCreate is the builder for creating a Account entity.

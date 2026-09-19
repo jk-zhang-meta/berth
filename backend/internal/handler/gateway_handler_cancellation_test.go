@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ctxkey"
+	middleware "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )

@@ -42,7 +42,7 @@ const codexOfficialClientFamilyPrefix = "codex "
 // codexOfficialClientOriginators：Codex 官方客户端家族 originator 精确集合。
 // app-server `initialize` 把 originator 设为 clientInfo.name 逐字值（codex-rs default_client.rs），
 // 故官方集合是这些确定字面量；镜像 is_first_party_originator / is_first_party_chat_originator
-// 并叠加 sub2api 已取证变体。用精确匹配而非「含 codex_/codex」的宽松兜底，避免 evil-codex_ 之类
+// 并叠加 berth 已取证变体。用精确匹配而非「含 codex_/codex」的宽松兜底，避免 evil-codex_ 之类
 // 伪造绕过（gate 仍需 UA 双因子佐证）。新官方/合作客户端经 allowed_client.go 命名预设放行，
 // 或在 bump context/codex 时同步补入本集合。
 var codexOfficialClientOriginators = map[string]bool{
@@ -154,6 +154,13 @@ func IsCodexOfficialClientOriginator(originator string) bool {
 // official Codex client family request.
 func IsCodexOfficialClientByHeaders(userAgent, originator string) bool {
 	return IsCodexOfficialClientRequest(userAgent) || IsCodexOfficialClientOriginator(originator)
+}
+
+// IsCodexOfficialClientByHeadersStrict is the privacy-sensitive counterpart
+// to IsCodexOfficialClientByHeaders. It preserves exact official-originator
+// recognition while refusing the historical User-Agent substring fallback.
+func IsCodexOfficialClientByHeadersStrict(userAgent, originator string) bool {
+	return IsCodexOfficialClientRequestStrict(userAgent) || IsCodexOfficialClientOriginator(originator)
 }
 
 func normalizeCodexClientHeader(value string) string {

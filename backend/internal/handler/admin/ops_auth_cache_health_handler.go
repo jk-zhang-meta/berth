@@ -3,7 +3,7 @@ package admin
 import (
 	"net/http"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 

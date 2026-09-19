@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/internal/payment"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/internal/payment"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

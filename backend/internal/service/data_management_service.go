@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 )
 
 const (
-	DefaultDataManagementAgentSocketPath = "/tmp/sub2api-datamanagement.sock"
-	LegacyBackupAgentSocketPath          = "/tmp/sub2api-backup.sock"
+	DefaultDataManagementAgentSocketPath = "/tmp/berth-datamanagement.sock"
+	LegacyBackupAgentSocketPath          = "/tmp/berth-backup.sock"
 
 	DataManagementDeprecatedReason         = "DATA_MANAGEMENT_DEPRECATED"
 	DataManagementAgentSocketMissingReason = "DATA_MANAGEMENT_AGENT_SOCKET_MISSING"

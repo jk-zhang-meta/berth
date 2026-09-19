@@ -1,5 +1,5 @@
 /**
- * Core Type Definitions for Sub2API Frontend
+ * Core Type Definitions for Berth Frontend
  */
 
 // ==================== Common Types ====================
@@ -936,6 +936,7 @@ export interface Proxy {
   password?: string | null
   status: 'active' | 'inactive' | 'expired'
   account_count?: number // Number of accounts using this proxy
+  concurrency?: number // Real-time active requests/sessions count
   latency_ms?: number
   latency_status?: 'success' | 'failed'
   latency_message?: string
@@ -944,6 +945,12 @@ export interface Proxy {
   country_code?: string
   region?: string
   city?: string
+  timezone?: string
+  utc_offset_seconds?: number
+  asn?: string
+  isp?: string
+  exit_checked_at?: number
+  exit_verified?: boolean
   quality_status?: 'healthy' | 'warn' | 'challenge' | 'failed'
   quality_score?: number
   quality_grade?: string
@@ -1044,7 +1051,7 @@ export interface TempUnschedulableStatus {
 }
 
 export interface UpstreamBillingData {
-  object: 'sub2api.key_billing'
+  object: 'berth.key_billing'
   schema_version: 1
   billing_scope: 'token'
   group_rate_multiplier: number
@@ -1287,6 +1294,11 @@ export interface Account {
   parent_privacy_mode?: string
   parent_subscription_expires_at?: string
   parent_chatgpt_account_id?: string
+
+  owner_user_id?: number
+  owner_label?: string
+  first_token_ms?: number | null
+  duration_ms?: number | null
 }
 
 // The admin account list may return this compact shape when lite=1. Detail

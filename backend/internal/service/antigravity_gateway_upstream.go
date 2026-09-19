@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,6 +23,15 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	startTime := time.Now()
 	sessionID := getSessionID(c)
 	prefix := logPrefix(sessionID, account.Name)
+	if agentPrivacyAnthropicBodyHasSignals(body) || (c != nil && c.Request != nil && IsClaudeCodeClient(c.Request.Context())) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
+		if privacyErr != nil {
+			return nil, fmt.Errorf("parse claude request: %w", privacyErr)
+		}
+		if changed {
+			body = privacyBody
+		}
+	}
 
 	// 获取上游配置
 	baseURL := strings.TrimSpace(account.GetCredential("base_url"))

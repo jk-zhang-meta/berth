@@ -12,9 +12,9 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitor"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
-	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitor"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitorhistory"
+	"github.com/jk-zhang-meta/berth/ent/predicate"
 )
 
 // ChannelMonitorHistoryQuery is the builder for querying ChannelMonitorHistory entities.

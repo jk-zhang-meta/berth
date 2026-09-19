@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -300,9 +300,10 @@ func batchImageOwnerFromContext(c *gin.Context) (service.BatchImageOwner, bool) 
 		return service.BatchImageOwner{}, false
 	}
 	return service.BatchImageOwner{
-		UserID:   apiKey.UserID,
-		APIKeyID: apiKey.ID,
-		GroupID:  apiKey.GroupID,
+		MarketplaceUsage: apiKey.MarketplaceUsage != nil,
+		UserID:           apiKey.UserID,
+		APIKeyID:         apiKey.ID,
+		GroupID:          apiKey.GroupID,
 	}, true
 }
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 

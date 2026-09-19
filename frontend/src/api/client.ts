@@ -13,7 +13,7 @@ import {
   shouldMarkUserUIRequest,
 } from './adminUIRequest'
 import { refreshAuthTokens } from './tokenRefresh'
-import { getAPIBaseURL } from './url'
+import { getAPIBaseURL, rewritePoolAPIForUser } from './url'
 export { buildApiUrl, buildGatewayUrl } from './url'
 
 // ==================== Axios Instance Configuration ====================
@@ -44,6 +44,10 @@ apiClient.interceptors.request.use(
     const token = localStorage.getItem('auth_token')
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`
+    }
+
+    if (config.url) {
+      config.url = rewritePoolAPIForUser(config.url)
     }
 
     // Attach locale for backend translations

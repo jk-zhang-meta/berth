@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -42,6 +42,15 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 ) (*OpenAIForwardResult, error) {
 	if account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
 		return nil, fmt.Errorf("grok account type %s is not supported by Responses forwarding", account.Type)
+	}
+	if agentPrivacyBodyHasSignals(body) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIResponses, account.Proxy)
+		if privacyErr != nil {
+			return nil, fmt.Errorf("sanitize Grok agent request: %w", privacyErr)
+		}
+		if changed {
+			body = privacyBody
+		}
 	}
 
 	upstreamModel := account.GetMappedModel(originalModel)

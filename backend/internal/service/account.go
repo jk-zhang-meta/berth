@@ -13,14 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/domain"
+	"github.com/jk-zhang-meta/berth/internal/pkg/geminicli"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai_compat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
 )
 
 type Account struct {
+	PrivateOwnerUserID      int64 `json:"-"`
 	ID                      int64
 	Name                    string
 	Notes                   *string

@@ -48,7 +48,9 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
-    token: 'test-token'
+    token: 'test-token',
+    isAdmin: true,
+    isSimpleMode: false
   })
 }))
 

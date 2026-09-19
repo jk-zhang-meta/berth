@@ -3,8 +3,9 @@ package admin
 import (
 	"strconv"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,6 +18,10 @@ type upstreamBillingProbeBatchRequest struct {
 }
 
 func (h *AccountHandler) GetUpstreamBillingProbeSettings(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	if h.upstreamBillingProbe == nil {
 		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
 		return
@@ -30,6 +35,10 @@ func (h *AccountHandler) GetUpstreamBillingProbeSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateUpstreamBillingProbeSettings(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	if h.upstreamBillingProbe == nil {
 		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
 		return
@@ -61,6 +70,9 @@ func (h *AccountHandler) SetUpstreamBillingProbeEnabled(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	var req upstreamBillingProbeEnabledRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -83,6 +95,9 @@ func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	snapshot, err := h.upstreamBillingProbe.ProbeAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -92,6 +107,10 @@ func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 }
 
 func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	if h.upstreamBillingProbe == nil {
 		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
 		return

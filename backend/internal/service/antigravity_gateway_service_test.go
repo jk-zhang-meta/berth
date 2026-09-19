@@ -13,12 +13,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func verifiedAntigravityPrivacyTestProxy() *Proxy {
+	checkedAt := time.Now().UTC()
+	return &Proxy{
+		ExitIP:        "198.51.100.44",
+		ExitTimezone:  "America/Chicago",
+		ExitCheckedAt: &checkedAt,
+	}
+}
 
 // antigravityFailingWriter 模拟客户端断开连接的 gin.ResponseWriter
 type antigravityFailingWriter struct {
@@ -294,6 +303,9 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 		"contents": []map[string]any{
 			{"role": "user", "parts": []map[string]any{{"text": "hello"}}},
 		},
+		"systemInstruction": map[string]any{
+			"parts": []map[string]any{{"text": "<environment_context><cwd>/private/gemini</cwd><current_date>2026-09-17</current_date><timezone>Asia/Tokyo</timezone></environment_context>"}},
+		},
 	})
 	require.NoError(t, err)
 	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1beta/models/gemini-2.5-flash:streamGenerateContent", bytes.NewReader(body))
@@ -321,6 +333,7 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
+		Proxy:       verifiedAntigravityPrivacyTestProxy(),
 		Credentials: map[string]any{
 			"access_token": "token",
 			antigravityProjectIDFallbackCredentialKey: "configured-project",
@@ -338,6 +351,10 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	var wrapped map[string]any
 	require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &wrapped))
 	require.Equal(t, "configured-project", wrapped["project"])
+	forwarded := string(upstream.requestBodies[0])
+	require.NotContains(t, forwarded, "/private/gemini")
+	require.NotContains(t, forwarded, "Asia/Tokyo")
+	require.Contains(t, forwarded, "America/Chicago")
 }
 
 func TestAntigravityGatewayService_ForwardGemini_ImageUsesDefaultMappingAndOAuth(t *testing.T) {
@@ -908,6 +925,52 @@ func TestAntigravityGatewayService_Forward_BillsWithMappedModel(t *testing.T) {
 	require.NotNil(t, result)
 	require.Equal(t, "claude-sonnet-4-5", result.Model)
 	require.Equal(t, mappedModel, result.UpstreamModel)
+}
+
+func TestAntigravityGatewayService_Forward_UsesSelectedProxyPrivacyContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	body := []byte(`{"model":"claude-sonnet-4-5","system":"<environment_context><cwd>/Users/private/work</cwd><current_date>2026-09-17</current_date><timezone>Asia/Tokyo</timezone></environment_context>","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	upstreamBody := []byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1}}}\n\n")
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}}
+	svc := &AntigravityGatewayService{
+		settingService: NewSettingService(&antigravitySettingRepoStub{}, &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}),
+		tokenProvider:  &AntigravityTokenProvider{},
+		httpUpstream:   upstream,
+	}
+	account := &Account{
+		ID:          501,
+		Name:        "privacy-proxy",
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Proxy:       verifiedAntigravityPrivacyTestProxy(),
+		Credentials: map[string]any{
+			"access_token": "token",
+			"project_id":   "proj",
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5": "gemini-3-pro-high",
+			},
+		},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requestBodies, 1)
+	forwarded := string(upstream.requestBodies[0])
+	require.NotContains(t, forwarded, "/Users/private/work")
+	require.NotContains(t, forwarded, "Asia/Tokyo")
+	require.Contains(t, forwarded, "America/Chicago")
+	require.Contains(t, forwarded, "198.51.100.44")
 }
 
 // TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel

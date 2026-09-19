@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -152,12 +152,28 @@ func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
 		return
 	}
 
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
+	caller := accountImportCaller{userID: getAdminIDFromContext(c), restricted: isAccountUser(c)}
 	executeAdminIdempotentJSON(c, "admin.accounts.import_codex_session", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		return h.importCodexSessions(ctx, req, entries)
+		return h.importCodexSessions(ctx, req, entries, caller)
 	})
 }
 
-func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessionImportRequest, entries []codexImportEntry) (CodexSessionImportResult, error) {
+func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessionImportRequest, entries []codexImportEntry, callers ...accountImportCaller) (CodexSessionImportResult, error) {
+	var caller accountImportCaller
+	if len(callers) > 0 {
+		caller = callers[0]
+	}
+	callerID := caller.userID
+	if caller.restricted {
+		req.GroupIDs = nil
+		req.Priority = nil
+		req.RateMultiplier = nil
+		skip := true
+		req.SkipDefaultGroupBind = &skip
+	}
 	result := CodexSessionImportResult{
 		Total: len(entries),
 		Items: make([]CodexSessionImportItem, 0, len(entries)),
@@ -166,6 +182,15 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 	existingAccounts, err := h.listAccountsFiltered(ctx, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "", "created_at", "desc")
 	if err != nil {
 		return result, err
+	}
+	if caller.restricted {
+		owned := make([]service.Account, 0, len(existingAccounts))
+		for _, account := range existingAccounts {
+			if h.stewards.OwnsAccount(ctx, account.ID, callerID) {
+				owned = append(owned, account)
+			}
+		}
+		existingAccounts = owned
 	}
 	index := buildCodexAccountIndex(existingAccounts)
 
@@ -180,6 +205,9 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 	priority := 50
 	if req.Priority != nil {
 		priority = *req.Priority
+	}
+	if caller.restricted {
+		priority = 0
 	}
 	credentialExtras := sanitizeCodexImportCredentialExtras(req.CredentialExtras)
 	skipDefaultGroupBind := false
@@ -255,6 +283,9 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 
 		existing, matchedKey := index.Find(item.IdentityKeys, item.UserID)
 		if existing != nil && updateExisting {
+			if caller.restricted && !h.stewards.OwnsAccount(ctx, existing.ID, callerID) {
+				return result, fmt.Errorf("account ownership changed during import")
+			}
 			if strings.HasPrefix(matchedKey, "account:") && item.UserID != "" &&
 				codexCredentialString(existing.Credentials, "chatgpt_user_id") == "" {
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
@@ -328,7 +359,12 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			continue
 		}
 
+		var privateOwnerID int64
+		if caller.restricted {
+			privateOwnerID = callerID
+		}
 		account, createErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
+			PrivateOwnerUserID:    privateOwnerID,
 			Name:                  accountName,
 			Notes:                 req.Notes,
 			Platform:              service.PlatformOpenAI,
@@ -363,6 +399,9 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		}
 		if account != nil {
 			index.Add(*account)
+			if h.stewards != nil {
+				_ = h.stewards.ClaimAccount(ctx, account.ID, callerID)
+			}
 		}
 		result.Created++
 		accountID := int64(0)

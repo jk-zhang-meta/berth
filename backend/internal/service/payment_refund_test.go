@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
-	"github.com/Wei-Shaw/sub2api/internal/payment"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/paymentauditlog"
+	"github.com/jk-zhang-meta/berth/internal/payment"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 

@@ -43,7 +43,7 @@ export default {
     // Proxies Management
     proxies: {
       title: 'IP管理',
-      description: '管理代理服务器配置',
+      description: '管理已验证真实出口 IP、地理位置与时区的代理资源',
       createProxy: '添加代理',
       editProxy: '编辑代理',
       deleteProxy: '删除代理',
@@ -52,6 +52,11 @@ export default {
       },
       deleteConfirmMessage: "确定要删除代理 '{name}' 吗？",
       testProxy: '测试代理',
+      exitIP: '出口 IP',
+      exitVerified: '出口已验证',
+      exitUnverified: '待验证',
+      exitCheckedAt: '检测时间',
+      exitProfileHelp: '新增或修改代理连接信息时，必须真实检测到出口 IP 与有效 IANA 时区后才能保存或绑定账号。',
       dataImport: '导入',
       dataExportSelected: '导出选中',
       dataImportTitle: '导入代理',
@@ -80,6 +85,7 @@ export default {
         auth: '认证',
         location: '地理位置',
         status: '状态',
+        concurrency: '实时并发',
         accounts: '账号数',
         latency: '延迟',
         expiry: '有效期',

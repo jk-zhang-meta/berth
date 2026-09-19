@@ -19,15 +19,15 @@ import (
 	"strings"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
-	dbaccountgroup "github.com/Wei-Shaw/sub2api/ent/accountgroup"
-	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
-	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
-	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	dbaccount "github.com/jk-zhang-meta/berth/ent/account"
+	dbaccountgroup "github.com/jk-zhang-meta/berth/ent/accountgroup"
+	dbgroup "github.com/jk-zhang-meta/berth/ent/group"
+	dbpredicate "github.com/jk-zhang-meta/berth/ent/predicate"
+	dbproxy "github.com/jk-zhang-meta/berth/ent/proxy"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/lib/pq"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -123,6 +123,9 @@ func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedul
 }
 
 func (r *accountRepository) Create(ctx context.Context, account *service.Account) error {
+	if account != nil && account.PrivateOwnerUserID > 0 {
+		return r.CreateWithAccountGroups(ctx, account, nil)
+	}
 	if err := createAccountRecord(ctx, r.client, account); err != nil {
 		return err
 	}
@@ -197,6 +200,11 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	}
 
 	account.ID = created.ID
+	if account.PrivateOwnerUserID > 0 {
+		if _, err := client.ExecContext(ctx, `INSERT INTO account_stewards (account_id,user_id) VALUES ($1,$2)`, account.ID, account.PrivateOwnerUserID); err != nil {
+			return err
+		}
+	}
 	account.CreatedAt = created.CreatedAt
 	account.UpdatedAt = created.UpdatedAt
 	return nil
@@ -2032,6 +2040,7 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
+			withoutPrivateStewards(),
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
@@ -2066,6 +2075,7 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
+			withoutPrivateStewards(),
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
@@ -2086,10 +2096,11 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
+			withoutPrivateStewards(),
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.Not(dbaccount.HasAccountGroups()),
+			withoutPublicGroupBindings(),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -2110,10 +2121,11 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
+			withoutPrivateStewards(),
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.Not(dbaccount.HasAccountGroups()),
+			withoutPublicGroupBindings(),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -2162,12 +2174,13 @@ func (r *accountRepository) ListModelAvailabilityCandidates(
 	}
 
 	preds := []dbpredicate.Account{
+		withoutPrivateStewards(),
 		dbaccount.StatusEQ(service.StatusActive),
 		dbaccount.SchedulableEQ(true),
 		dbaccount.PlatformIn(platforms...),
 	}
 	if !includeGrouped {
-		preds = append(preds, dbaccount.Not(dbaccount.HasAccountGroups()))
+		preds = append(preds, withoutPublicGroupBindings())
 	}
 	accounts, err := r.client.Account.Query().
 		Where(preds...).

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/domain"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 type User struct {
@@ -231,6 +231,11 @@ type Account struct {
 	CreatedAt               time.Time                      `json:"created_at"`
 	UpdatedAt               time.Time                      `json:"updated_at"`
 
+	OwnerUserID  int64  `json:"owner_user_id,omitempty"`
+	OwnerLabel   string `json:"owner_label,omitempty"`
+	FirstTokenMs *int64 `json:"first_token_ms,omitempty"`
+	DurationMs   *int64 `json:"duration_ms,omitempty"`
+
 	Schedulable bool `json:"schedulable"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
@@ -355,6 +360,10 @@ type AccountListItem struct {
 	AutoPauseOnExpired      bool       `json:"auto_pause_on_expired"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
+	OwnerUserID             int64      `json:"owner_user_id,omitempty"`
+	OwnerLabel              string     `json:"owner_label,omitempty"`
+	FirstTokenMs            *int64     `json:"first_token_ms,omitempty"`
+	DurationMs              *int64     `json:"duration_ms,omitempty"`
 
 	Schedulable bool `json:"schedulable"`
 
@@ -446,24 +455,31 @@ type Proxy struct {
 	FallbackMode   string     `json:"fallback_mode"`
 	BackupProxyID  *int64     `json:"backup_proxy_id"`
 	ExpiryWarnDays int        `json:"expiry_warn_days"`
+	Concurrency    int        `json:"concurrency"`
+	ExitVerified   bool       `json:"exit_verified"`
 }
 
 type ProxyWithAccountCount struct {
 	Proxy
-	AccountCount   int64  `json:"account_count"`
-	LatencyMs      *int64 `json:"latency_ms,omitempty"`
-	LatencyStatus  string `json:"latency_status,omitempty"`
-	LatencyMessage string `json:"latency_message,omitempty"`
-	IPAddress      string `json:"ip_address,omitempty"`
-	Country        string `json:"country,omitempty"`
-	CountryCode    string `json:"country_code,omitempty"`
-	Region         string `json:"region,omitempty"`
-	City           string `json:"city,omitempty"`
-	QualityStatus  string `json:"quality_status,omitempty"`
-	QualityScore   *int   `json:"quality_score,omitempty"`
-	QualityGrade   string `json:"quality_grade,omitempty"`
-	QualitySummary string `json:"quality_summary,omitempty"`
-	QualityChecked *int64 `json:"quality_checked,omitempty"`
+	AccountCount     int64  `json:"account_count"`
+	LatencyMs        *int64 `json:"latency_ms,omitempty"`
+	LatencyStatus    string `json:"latency_status,omitempty"`
+	LatencyMessage   string `json:"latency_message,omitempty"`
+	IPAddress        string `json:"ip_address,omitempty"`
+	Country          string `json:"country,omitempty"`
+	CountryCode      string `json:"country_code,omitempty"`
+	Region           string `json:"region,omitempty"`
+	City             string `json:"city,omitempty"`
+	Timezone         string `json:"timezone,omitempty"`
+	UTCOffsetSeconds *int   `json:"utc_offset_seconds,omitempty"`
+	ASN              string `json:"asn,omitempty"`
+	ISP              string `json:"isp,omitempty"`
+	ExitCheckedAt    *int64 `json:"exit_checked_at,omitempty"`
+	QualityStatus    string `json:"quality_status,omitempty"`
+	QualityScore     *int   `json:"quality_score,omitempty"`
+	QualityGrade     string `json:"quality_grade,omitempty"`
+	QualitySummary   string `json:"quality_summary,omitempty"`
+	QualityChecked   *int64 `json:"quality_checked,omitempty"`
 }
 
 // AdminProxy 是管理员接口使用的 proxy DTO（包含密码等敏感字段）。
@@ -476,20 +492,27 @@ type AdminProxy struct {
 // AdminProxyWithAccountCount 是管理员接口使用的带账号统计的 proxy DTO。
 type AdminProxyWithAccountCount struct {
 	AdminProxy
-	AccountCount   int64  `json:"account_count"`
-	LatencyMs      *int64 `json:"latency_ms,omitempty"`
-	LatencyStatus  string `json:"latency_status,omitempty"`
-	LatencyMessage string `json:"latency_message,omitempty"`
-	IPAddress      string `json:"ip_address,omitempty"`
-	Country        string `json:"country,omitempty"`
-	CountryCode    string `json:"country_code,omitempty"`
-	Region         string `json:"region,omitempty"`
-	City           string `json:"city,omitempty"`
-	QualityStatus  string `json:"quality_status,omitempty"`
-	QualityScore   *int   `json:"quality_score,omitempty"`
-	QualityGrade   string `json:"quality_grade,omitempty"`
-	QualitySummary string `json:"quality_summary,omitempty"`
-	QualityChecked *int64 `json:"quality_checked,omitempty"`
+	AccountCount     int64  `json:"account_count"`
+	LatencyMs        *int64 `json:"latency_ms,omitempty"`
+	LatencyStatus    string `json:"latency_status,omitempty"`
+	LatencyMessage   string `json:"latency_message,omitempty"`
+	IPAddress        string `json:"ip_address,omitempty"`
+	Country          string `json:"country,omitempty"`
+	CountryCode      string `json:"country_code,omitempty"`
+	Region           string `json:"region,omitempty"`
+	City             string `json:"city,omitempty"`
+	Timezone         string `json:"timezone,omitempty"`
+	UTCOffsetSeconds *int   `json:"utc_offset_seconds,omitempty"`
+	ASN              string `json:"asn,omitempty"`
+	ISP              string `json:"isp,omitempty"`
+	ExitCheckedAt    *int64 `json:"exit_checked_at,omitempty"`
+	QualityStatus    string `json:"quality_status,omitempty"`
+	QualityScore     *int   `json:"quality_score,omitempty"`
+	QualityGrade     string `json:"quality_grade,omitempty"`
+	QualitySummary   string `json:"quality_summary,omitempty"`
+	QualityChecked   *int64 `json:"quality_checked,omitempty"`
+	OwnerUserID      int64  `json:"owner_user_id,omitempty"`
+	OwnerLabel       string `json:"owner_label,omitempty"`
 }
 
 type ProxyAccountSummary struct {

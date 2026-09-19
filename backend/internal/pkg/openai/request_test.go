@@ -183,3 +183,23 @@ func TestIsCodexOfficialClientByHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestIsCodexOfficialClientByHeadersStrict(t *testing.T) {
+	tests := []struct {
+		name       string
+		ua         string
+		originator string
+		want       bool
+	}{
+		{name: "strict ua prefix", ua: "codex_cli_rs/0.141.0 (x)", want: true},
+		{name: "deceptive substring rejected", ua: "Mozilla/5.0 codex_cli_rs/0.141.0", want: false},
+		{name: "exact official originator", ua: "Mozilla/5.0", originator: "codex_cli_rs", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsCodexOfficialClientByHeadersStrict(tt.ua, tt.originator); got != tt.want {
+				t.Fatalf("IsCodexOfficialClientByHeadersStrict(%q, %q) = %v, want %v", tt.ua, tt.originator, got, tt.want)
+			}
+		})
+	}
+}

@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/claude"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +25,18 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body.Bytes()
+		isNativeClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+		if !isNativeClaudeCode && parsed.MetadataUserID != "" {
+			isNativeClaudeCode = systemHasBillingAttributionBlock(passthroughBody)
+		}
+		if isNativeClaudeCode {
+			markNativeClaudeCodePrivacyRequest(c)
+			var privacyErr error
+			passthroughBody, _, privacyErr = sanitizeAgentRequestBody(passthroughBody, agentPrivacyAnthropicMessages, account.Proxy)
+			if privacyErr != nil {
+				return privacyErr
+			}
+		}
 		if reqModel := parsed.Model; reqModel != "" {
 			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
 				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
@@ -56,6 +68,21 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isClaudeCodeCT := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCodeCT && parsed.MetadataUserID != "" {
+		isClaudeCodeCT = systemHasBillingAttributionBlock(body)
+	}
+	if isClaudeCodeCT {
+		markNativeClaudeCodePrivacyRequest(c)
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
+		if privacyErr != nil {
+			return privacyErr
+		}
+		if changed {
+			if err := replaceBody(privacyBody); err != nil {
+				return err
+			}
+		}
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 
 	if shouldMimicClaudeCode {
@@ -427,9 +454,11 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
-
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	if isNativeClaudeCodePrivacyRequest(c) {
+		sanitizeNativeClaudeCodeHeaders(req.Header)
+	}
 
 	return req, nil
 }
@@ -575,9 +604,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
-
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	if isNativeClaudeCodePrivacyRequest(c) {
+		sanitizeNativeClaudeCodeHeaders(req.Header)
+	}
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

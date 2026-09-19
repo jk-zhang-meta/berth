@@ -13,11 +13,11 @@ import (
 
 	"entgo.io/ent/dialect"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
-	"github.com/Wei-Shaw/sub2api/internal/payment"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/paymentauditlog"
+	"github.com/jk-zhang-meta/berth/ent/paymentorder"
+	"github.com/jk-zhang-meta/berth/internal/payment"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 )
 
 // ErrOrderNotFound is returned by HandlePaymentNotification when the webhook

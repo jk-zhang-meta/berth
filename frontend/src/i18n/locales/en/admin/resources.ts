@@ -43,7 +43,7 @@ export default {
     // Proxies
     proxies: {
       title: 'Proxy Management',
-      description: 'Manage proxy servers for accounts',
+      description: 'Manage proxies with verified egress IP, geolocation, and timezone',
       createProxy: 'Create Proxy',
       editProxy: 'Edit Proxy',
       deleteProxy: 'Delete Proxy',
@@ -52,6 +52,11 @@ export default {
       },
       deleteConfirmMessage: "Are you sure you want to delete proxy '{name}'?",
       testProxy: 'Test Proxy',
+      exitIP: 'Exit IP',
+      exitVerified: 'Egress verified',
+      exitUnverified: 'Unverified',
+      exitCheckedAt: 'Checked at',
+      exitProfileHelp: 'New or changed proxy connections must resolve a real exit IP and valid IANA timezone before they can be saved or bound to accounts.',
       dataImport: 'Import',
       dataExportSelected: 'Export Selected',
       dataImportTitle: 'Import Proxies',
@@ -91,6 +96,7 @@ export default {
         auth: 'Auth',
         location: 'Location',
         status: 'Status',
+        concurrency: 'Active Sessions',
         accounts: 'Accounts',
         latency: 'Latency',
         expiry: 'Validity',

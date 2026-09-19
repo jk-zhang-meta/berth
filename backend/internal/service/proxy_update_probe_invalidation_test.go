@@ -56,7 +56,7 @@ func TestBothProxyUpdateServicesUseRepositoryUpdateBoundary(t *testing.T) {
 				ExpiryWarnDays: 7,
 			},
 		}
-		svc := &adminServiceImpl{proxyRepo: repo}
+		svc := &adminServiceImpl{proxyRepo: repo, proxyProber: &recordingProxyExitProber{}}
 		warnDays := 7
 
 		_, err := svc.UpdateProxy(context.Background(), 9, &UpdateProxyInput{

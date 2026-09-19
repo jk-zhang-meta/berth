@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	pkghttputil "github.com/jk-zhang-meta/berth/internal/pkg/httputil"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -1916,7 +1916,10 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
-	firstPayload string
+	marketplaceUsage   *service.MarketplaceUsageSnapshot
+	secondCyberFailure bool
+	marketplace        *service.MarketplaceService
+	firstPayload       string
 	// midPayload 在首个 turn 完成后发送（如 session.update），上游桩会为它
 	// 回一个 response.completed，客户端按普通事件读取。
 	midPayload                string
@@ -2898,6 +2901,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				turn,
 				gjson.GetBytes(payload, "model").String(),
 			)
+			if turn == 2 && tc.secondCyberFailure {
+				response = `{"type":"error","error":{"type":"invalid_request_error","code":"cyber_policy","message":"blocked by cyber policy"},"usage":{"input_tokens":9,"output_tokens":2}}`
+			}
 			writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
 			writeErr := conn.Write(writeCtx, coderws.MessageText, []byte(response))
 			cancelWrite()
@@ -3003,12 +3009,15 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
 	}
+	h.apiKeyService.SetMarketplace(tc.marketplace)
 
 	apiKey := &service.APIKey{
 		ID:      1801,
+		UserID:  1701,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1701, Status: service.StatusActive},
 	}
+	apiKey.MarketplaceUsage = tc.marketplaceUsage
 	if tc.group != nil {
 		apiKey.Group = tc.group
 	}
@@ -3062,7 +3071,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		_, event, readErr := clientConn.Read(readCtx)
 		cancelRead()
 		require.NoError(t, readErr)
-		require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+		if tc.secondCyberFailure && len(clientEvents) == 1 {
+			require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+		} else {
+			require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+		}
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 	}
 	readCompleted()
@@ -3088,7 +3101,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
 			require.Contains(t, closeErr.Reason, "not available for this group")
 			_ = clientConn.CloseNow()
-			return openAIResponsesWSUsageLogResult{}
+			var payloads [][]byte
+			for len(upstreamPayloadCh) > 0 {
+				payloads = append(payloads, <-upstreamPayloadCh)
+			}
+			return openAIResponsesWSUsageLogResult{upstreamPayloads: payloads}
 		}
 		readCompleted()
 	}
@@ -3122,6 +3139,13 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		t.Fatal("等待上游 WebSocket 结束超时")
 	}
 
+	if tc.secondCyberFailure {
+		select {
+		case extra := <-usageRepo.created:
+			t.Fatalf("duplicate usage log after failed turn: %+v", extra)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 	return openAIResponsesWSUsageLogResult{
 		log:                  usageLogs[0],
 		logs:                 usageLogs,

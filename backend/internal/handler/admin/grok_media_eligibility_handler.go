@@ -3,9 +3,9 @@ package admin
 import (
 	"strconv"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,6 +30,14 @@ type updateGrokMediaEligibilityRequest struct {
 // media-routing decision for a Grok OAuth account.
 // GET /api/v1/admin/accounts/:id/grok-media-eligibility
 func (h *AccountHandler) GetGrokMediaEligibility(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	account, err := h.getGrokOAuthAccount(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -43,6 +51,14 @@ func (h *AccountHandler) GetGrokMediaEligibility(c *gin.Context) {
 // extra fields are preserved.
 // PUT /api/v1/admin/accounts/:id/grok-media-eligibility
 func (h *AccountHandler) UpdateGrokMediaEligibility(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	account, err := h.getGrokOAuthAccount(c)
 	if err != nil {
 		response.ErrorFrom(c, err)

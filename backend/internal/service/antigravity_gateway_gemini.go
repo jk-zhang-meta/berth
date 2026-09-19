@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -62,6 +62,15 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	}
 	if len(body) == 0 {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Request body is empty")
+	}
+	if agentPrivacyBodyHasSignals(body) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyGeminiGenerateContent, account.Proxy)
+		if privacyErr != nil {
+			return nil, s.writeGoogleError(c, http.StatusBadRequest, "Invalid request body")
+		}
+		if changed {
+			body = privacyBody
+		}
 	}
 
 	// 解析请求以获取 image_size（用于图片计费）

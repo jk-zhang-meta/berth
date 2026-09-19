@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	_ "github.com/jk-zhang-meta/berth/ent/runtime"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/stretchr/testify/require"
 
 	"entgo.io/ent/dialect"

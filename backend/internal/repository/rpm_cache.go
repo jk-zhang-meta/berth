@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -40,6 +40,17 @@ type RPMCacheImpl struct {
 	rdb *redis.Client
 }
 
+var reserveRPMScript = redis.NewScript(`
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local limit = tonumber(ARGV[1])
+if current >= limit then
+  return {current, 0}
+end
+local next = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return {next, 1}
+`)
+
 // NewRPMCache 创建 RPM 计数器缓存
 func NewRPMCache(rdb *redis.Client) service.RPMCache {
 	return &RPMCacheImpl{rdb: rdb}
@@ -67,25 +78,47 @@ func (c *RPMCacheImpl) currentMinuteSuffix(ctx context.Context) (string, error) 
 	return strconv.FormatInt(minuteTS, 10), nil
 }
 
-// IncrementRPM 原子递增并返回当前分钟的计数
-// 使用 TxPipeline (MULTI/EXEC) 执行 INCR + EXPIRE，保证原子性且兼容 Redis Cluster
-func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, error) {
+// ReserveRPM atomically reserves one request without ever exceeding maxRPM.
+// The Lua script touches a single explicit key, so it remains Redis Cluster
+// compatible while eliminating the read-then-increment race.
+func (c *RPMCacheImpl) ReserveRPM(ctx context.Context, accountID int64, maxRPM int) (int, bool, error) {
+	if maxRPM <= 0 {
+		return 0, false, fmt.Errorf("rpm reserve: max rpm must be positive")
+	}
 	key, err := c.currentMinuteKey(ctx, accountID)
 	if err != nil {
-		return 0, fmt.Errorf("rpm increment: %w", err)
+		return 0, false, fmt.Errorf("rpm reserve: %w", err)
 	}
 
-	// 使用 TxPipeline (MULTI/EXEC) 保证 INCR + EXPIRE 原子执行
-	// EXPIRE 幂等，每次都设置不影响正确性
-	pipe := c.rdb.TxPipeline()
-	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, rpmKeyTTL)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("rpm increment: %w", err)
+	result, err := reserveRPMScript.Run(ctx, c.rdb, []string{key}, maxRPM, int(rpmKeyTTL/time.Second)).Slice()
+	if err != nil {
+		return 0, false, fmt.Errorf("rpm reserve: %w", err)
 	}
+	if len(result) != 2 {
+		return 0, false, fmt.Errorf("rpm reserve: unexpected result length %d", len(result))
+	}
+	count, err := redisResultInt(result[0])
+	if err != nil {
+		return 0, false, fmt.Errorf("rpm reserve count: %w", err)
+	}
+	reserved, err := redisResultInt(result[1])
+	if err != nil {
+		return 0, false, fmt.Errorf("rpm reserve flag: %w", err)
+	}
+	return count, reserved == 1, nil
+}
 
-	return int(incrCmd.Val()), nil
+func redisResultInt(value any) (int, error) {
+	switch v := value.(type) {
+	case int64:
+		return int(v), nil
+	case string:
+		return strconv.Atoi(v)
+	case []byte:
+		return strconv.Atoi(string(v))
+	default:
+		return 0, fmt.Errorf("unexpected redis integer type %T", value)
+	}
 }
 
 // GetRPM 获取当前分钟的 RPM 计数

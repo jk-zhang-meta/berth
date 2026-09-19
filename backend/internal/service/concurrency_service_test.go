@@ -34,6 +34,10 @@ type stubConcurrencyCacheForTest struct {
 	apiKeyReleaseErr     error
 	apiKeyConcurrency    map[int64]int
 	apiKeyConcurrencyErr error
+	proxyTrackErr        error
+	proxyReleaseErr      error
+	proxyConcurrency     map[int64]int
+	proxyConcurrencyErr  error
 
 	// 记录调用
 	releasedAccountIDs       []int64
@@ -43,6 +47,10 @@ type stubConcurrencyCacheForTest struct {
 	trackedAPIKeyRequestIDs  []string
 	releasedAPIKeyIDs        []int64
 	releasedAPIKeyRequestIDs []string
+	trackedProxyIDs          []int64
+	trackedProxyRequestIDs   []string
+	releasedProxyIDs         []int64
+	releasedProxyRequestIDs  []string
 }
 
 type ingressLeaseCacheForTest struct {
@@ -143,6 +151,26 @@ func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Contex
 	result := make(map[int64]int, len(apiKeyIDs))
 	for _, apiKeyID := range apiKeyIDs {
 		result[apiKeyID] = c.apiKeyConcurrency[apiKeyID]
+	}
+	return result, nil
+}
+func (c *stubConcurrencyCacheForTest) TrackProxySlot(_ context.Context, proxyID int64, requestID string) error {
+	c.trackedProxyIDs = append(c.trackedProxyIDs, proxyID)
+	c.trackedProxyRequestIDs = append(c.trackedProxyRequestIDs, requestID)
+	return c.proxyTrackErr
+}
+func (c *stubConcurrencyCacheForTest) ReleaseProxySlot(_ context.Context, proxyID int64, requestID string) error {
+	c.releasedProxyIDs = append(c.releasedProxyIDs, proxyID)
+	c.releasedProxyRequestIDs = append(c.releasedProxyRequestIDs, requestID)
+	return c.proxyReleaseErr
+}
+func (c *stubConcurrencyCacheForTest) GetProxyConcurrencyBatch(_ context.Context, proxyIDs []int64) (map[int64]int, error) {
+	if c.proxyConcurrencyErr != nil {
+		return nil, c.proxyConcurrencyErr
+	}
+	result := make(map[int64]int, len(proxyIDs))
+	for _, proxyID := range proxyIDs {
+		result[proxyID] = c.proxyConcurrency[proxyID]
 	}
 	return result, nil
 }
@@ -322,6 +350,62 @@ func TestGetAPIKeyConcurrencyBatch_Fallbacks(t *testing.T) {
 		counts, err := svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{1, 2})
 		require.NoError(t, err)
 		require.Equal(t, map[int64]int{1: 3, 2: 0}, counts)
+	})
+}
+
+func TestTrackProxySlot_ReleaseDecrements(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{}
+	svc := NewConcurrencyService(cache)
+
+	release := svc.TrackProxySlot(context.Background(), 42)
+	require.NotNil(t, release)
+	require.Equal(t, []int64{42}, cache.trackedProxyIDs)
+	require.Len(t, cache.trackedProxyRequestIDs, 1)
+	require.NotEmpty(t, cache.trackedProxyRequestIDs[0])
+
+	release()
+
+	require.Equal(t, []int64{42}, cache.releasedProxyIDs)
+	require.Equal(t, cache.trackedProxyRequestIDs, cache.releasedProxyRequestIDs)
+}
+
+func TestTrackProxySlot_FailOpen(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{proxyTrackErr: errors.New("redis down")}
+	svc := NewConcurrencyService(cache)
+
+	release := svc.TrackProxySlot(context.Background(), 42)
+	require.NotNil(t, release)
+	require.Equal(t, []int64{42}, cache.trackedProxyIDs)
+
+	require.NotPanics(t, release)
+	require.Empty(t, cache.releasedProxyIDs)
+}
+
+func TestGetProxyConcurrencyBatch_Fallbacks(t *testing.T) {
+	t.Run("nil cache returns zeroes", func(t *testing.T) {
+		svc := &ConcurrencyService{cache: nil}
+
+		counts, err := svc.GetProxyConcurrencyBatch(context.Background(), []int64{1, 2})
+		require.NoError(t, err)
+		require.Equal(t, map[int64]int{1: 0, 2: 0}, counts)
+	})
+
+	t.Run("redis error returns zeroes", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{proxyConcurrencyErr: errors.New("redis down")}
+		svc := NewConcurrencyService(cache)
+
+		counts, err := svc.GetProxyConcurrencyBatch(context.Background(), []int64{1, 2})
+		require.NoError(t, err)
+		require.Equal(t, map[int64]int{1: 0, 2: 0}, counts)
+	})
+
+	t.Run("success returns counts", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{proxyConcurrency: map[int64]int{1: 5, 2: 0}}
+		svc := NewConcurrencyService(cache)
+
+		counts, err := svc.GetProxyConcurrencyBatch(context.Background(), []int64{1, 2})
+		require.NoError(t, err)
+		require.Equal(t, map[int64]int{1: 5, 2: 0}, counts)
 	})
 }
 

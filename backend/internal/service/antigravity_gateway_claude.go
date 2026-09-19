@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -32,6 +32,15 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 上游透传账号直接转发，不走 OAuth token 刷新
 	if account.Type == AccountTypeUpstream {
 		return s.ForwardUpstream(ctx, c, account, body)
+	}
+	if agentPrivacyAnthropicBodyHasSignals(body) || (c != nil && c.Request != nil && IsClaudeCodeClient(c.Request.Context())) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
+		if privacyErr != nil {
+			return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		}
+		if changed {
+			body = privacyBody
+		}
 	}
 
 	startTime := time.Now()

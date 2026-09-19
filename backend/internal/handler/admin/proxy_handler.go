@@ -6,16 +6,33 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/handler/dto"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 // ProxyHandler handles admin proxy management
 type ProxyHandler struct {
-	adminService service.AdminService
+	adminService       service.AdminService
+	stewards           *service.StewardStore
+	concurrencyService *service.ConcurrencyService
+}
+
+func (h *ProxyHandler) SetStewards(store *service.StewardStore) {
+	if h == nil {
+		return
+	}
+	h.stewards = store
+}
+
+func (h *ProxyHandler) SetConcurrencyService(cs *service.ConcurrencyService) {
+	if h == nil {
+		return
+	}
+	h.concurrencyService = cs
 }
 
 // NewProxyHandler creates a new admin proxy handler
@@ -69,15 +86,76 @@ func (h *ProxyHandler) List(c *gin.Context) {
 		search = search[:100]
 	}
 
-	proxies, total, err := h.adminService.ListProxiesWithAccountCount(c.Request.Context(), page, pageSize, protocol, status, search, sortBy, sortOrder)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+	ownerFilter, _ := strconv.ParseInt(c.Query("owner_user_id"), 10, 64)
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
+			ownerFilter = subject.UserID
+		}
+	}
+
+	var proxies []service.ProxyWithAccountCount
+	var total int64
+	var err error
+	if ownerFilter > 0 && h.stewards != nil {
+		ids := h.stewards.ListProxyIDs(c.Request.Context(), ownerFilter)
+		fetched, fetchErr := h.adminService.GetProxiesByIDs(c.Request.Context(), ids)
+		if fetchErr != nil {
+			response.ErrorFrom(c, fetchErr)
+			return
+		}
+		total = int64(len(fetched))
+		start := (page - 1) * pageSize
+		if start < 0 {
+			start = 0
+		}
+		if start > len(fetched) {
+			fetched = nil
+		} else {
+			end := start + pageSize
+			if end > len(fetched) {
+				end = len(fetched)
+			}
+			fetched = fetched[start:end]
+		}
+		proxies = make([]service.ProxyWithAccountCount, 0, len(fetched))
+		for i := range fetched {
+			proxies = append(proxies, service.ProxyWithAccountCount{Proxy: fetched[i]})
+		}
+	} else {
+		proxies, total, err = h.adminService.ListProxiesWithAccountCount(c.Request.Context(), page, pageSize, protocol, status, search, sortBy, sortOrder)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 
 	out := make([]dto.AdminProxyWithAccountCount, 0, len(proxies))
+	ids := make([]int64, 0, len(proxies))
 	for i := range proxies {
-		out = append(out, *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i]))
+		ids = append(ids, proxies[i].ID)
+		item := *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i])
+		out = append(out, item)
+	}
+	if h.concurrencyService != nil && len(ids) > 0 {
+		if cc, err := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); err == nil && cc != nil {
+			for i := range out {
+				out[i].Concurrency = cc[out[i].ID]
+			}
+		}
+	}
+	if h.stewards != nil {
+		labels := h.stewards.LabelsForProxies(c.Request.Context(), ids)
+		for i := range out {
+			if lab, ok := labels[out[i].ID]; ok {
+				out[i].OwnerUserID = lab.UserID
+				out[i].OwnerLabel = lab.Label
+			}
+		}
+	}
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		for i := range out {
+			out[i].Password = ""
+		}
 	}
 	response.Paginated(c, out, total, page, pageSize)
 }
@@ -87,6 +165,65 @@ func (h *ProxyHandler) List(c *gin.Context) {
 // Optional query param: with_count=true to include account count per proxy
 func (h *ProxyHandler) GetAll(c *gin.Context) {
 	withCount := c.Query("with_count") == "true"
+	role, ok := middleware.GetUserRoleFromContext(c)
+
+	if ok && role != service.RoleAdmin {
+		subject, ok := middleware.GetAuthSubjectFromContext(c)
+		if !ok || h.stewards == nil {
+			response.Forbidden(c, "forbidden")
+			return
+		}
+		ids := h.stewards.ListProxyIDs(c.Request.Context(), subject.UserID)
+		if len(ids) == 0 {
+			if withCount {
+				response.Success(c, []dto.AdminProxyWithAccountCount{})
+			} else {
+				response.Success(c, []dto.AdminProxy{})
+			}
+			return
+		}
+		fetched, err := h.adminService.GetProxiesByIDs(c.Request.Context(), ids)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if withCount {
+			out := make([]dto.AdminProxyWithAccountCount, 0, len(fetched))
+			fetchIDs := make([]int64, 0, len(fetched))
+			for i := range fetched {
+				fetchIDs = append(fetchIDs, fetched[i].ID)
+				item := *dto.ProxyWithAccountCountFromServiceAdmin(&service.ProxyWithAccountCount{Proxy: fetched[i]})
+				item.Password = ""
+				out = append(out, item)
+			}
+			if h.concurrencyService != nil && len(fetchIDs) > 0 {
+				if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), fetchIDs); ccErr == nil && cc != nil {
+					for i := range out {
+						out[i].Concurrency = cc[out[i].ID]
+					}
+				}
+			}
+			response.Success(c, out)
+			return
+		}
+		out := make([]dto.AdminProxy, 0, len(fetched))
+		fetchIDs := make([]int64, 0, len(fetched))
+		for i := range fetched {
+			fetchIDs = append(fetchIDs, fetched[i].ID)
+			item := *dto.ProxyFromServiceAdmin(&fetched[i])
+			item.Password = ""
+			out = append(out, item)
+		}
+		if h.concurrencyService != nil && len(fetchIDs) > 0 {
+			if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), fetchIDs); ccErr == nil && cc != nil {
+				for i := range out {
+					out[i].Concurrency = cc[out[i].ID]
+				}
+			}
+		}
+		response.Success(c, out)
+		return
+	}
 
 	if withCount {
 		proxies, err := h.adminService.GetAllProxiesWithAccountCount(c.Request.Context())
@@ -95,8 +232,17 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 			return
 		}
 		out := make([]dto.AdminProxyWithAccountCount, 0, len(proxies))
+		ids := make([]int64, 0, len(proxies))
 		for i := range proxies {
+			ids = append(ids, proxies[i].ID)
 			out = append(out, *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i]))
+		}
+		if h.concurrencyService != nil && len(ids) > 0 {
+			if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); ccErr == nil && cc != nil {
+				for i := range out {
+					out[i].Concurrency = cc[out[i].ID]
+				}
+			}
 		}
 		response.Success(c, out)
 		return
@@ -109,8 +255,17 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 	}
 
 	out := make([]dto.AdminProxy, 0, len(proxies))
+	ids := make([]int64, 0, len(proxies))
 	for i := range proxies {
+		ids = append(ids, proxies[i].ID)
 		out = append(out, *dto.ProxyFromServiceAdmin(&proxies[i]))
+	}
+	if h.concurrencyService != nil && len(ids) > 0 {
+		if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), ids); ccErr == nil && cc != nil {
+			for i := range out {
+				out[i].Concurrency = cc[out[i].ID]
+			}
+		}
 	}
 	response.Success(c, out)
 }
@@ -123,6 +278,9 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 		response.BadRequest(c, "Invalid proxy ID")
 		return
 	}
+	if !h.allowProxy(c, proxyID) {
+		return
+	}
 
 	proxy, err := h.adminService.GetProxy(c.Request.Context(), proxyID)
 	if err != nil {
@@ -130,7 +288,13 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.ProxyFromServiceAdmin(proxy))
+	resp := dto.ProxyFromServiceAdmin(proxy)
+	if h.concurrencyService != nil && resp != nil {
+		if cc, ccErr := h.concurrencyService.GetProxyConcurrencyBatch(c.Request.Context(), []int64{proxyID}); ccErr == nil && cc != nil {
+			resp.Concurrency = cc[proxyID]
+		}
+	}
+	response.Success(c, resp)
 }
 
 // Create handles creating a new proxy
@@ -139,6 +303,9 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 	var req CreateProxyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.BackupProxyID) {
 		return
 	}
 
@@ -163,8 +330,24 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 		if err != nil {
 			return nil, err
 		}
+		if h.stewards != nil {
+			_ = h.stewards.ClaimProxy(ctx, proxy.ID, getAdminIDFromContext(c))
+		}
 		return dto.ProxyFromServiceAdmin(proxy), nil
 	})
+}
+
+func (h *ProxyHandler) allowProxy(c *gin.Context, proxyID int64) bool {
+	role, ok := middleware.GetUserRoleFromContext(c)
+	if !ok || role == service.RoleAdmin {
+		return true
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || h.stewards == nil || !h.stewards.OwnsProxy(c.Request.Context(), proxyID, subject.UserID) {
+		response.Forbidden(c, "not your proxy")
+		return false
+	}
+	return true
 }
 
 // Update handles updating a proxy
@@ -175,10 +358,16 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid proxy ID")
 		return
 	}
+	if !h.allowProxy(c, proxyID) {
+		return
+	}
 
 	var req UpdateProxyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.BackupProxyID.Value) {
 		return
 	}
 
@@ -218,6 +407,9 @@ func (h *ProxyHandler) Delete(c *gin.Context) {
 		response.BadRequest(c, "Invalid proxy ID")
 		return
 	}
+	if !h.allowProxy(c, proxyID) {
+		return
+	}
 
 	err = h.adminService.DeleteProxy(c.Request.Context(), proxyID)
 	if err != nil {
@@ -241,6 +433,20 @@ func (h *ProxyHandler) BatchDelete(c *gin.Context) {
 		return
 	}
 
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		subject, ok := middleware.GetAuthSubjectFromContext(c)
+		if !ok || h.stewards == nil {
+			response.Forbidden(c, "forbidden")
+			return
+		}
+		for _, id := range req.IDs {
+			if !h.stewards.OwnsProxy(c.Request.Context(), id, subject.UserID) {
+				response.Forbidden(c, "not your proxy")
+				return
+			}
+		}
+	}
+
 	result, err := h.adminService.BatchDeleteProxies(c.Request.Context(), req.IDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -256,6 +462,9 @@ func (h *ProxyHandler) Test(c *gin.Context) {
 	proxyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid proxy ID")
+		return
+	}
+	if !h.allowProxy(c, proxyID) {
 		return
 	}
 
@@ -276,6 +485,9 @@ func (h *ProxyHandler) CheckQuality(c *gin.Context) {
 		response.BadRequest(c, "Invalid proxy ID")
 		return
 	}
+	if !h.allowProxy(c, proxyID) {
+		return
+	}
 
 	result, err := h.adminService.CheckProxyQuality(c.Request.Context(), proxyID)
 	if err != nil {
@@ -292,6 +504,9 @@ func (h *ProxyHandler) GetStats(c *gin.Context) {
 	proxyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid proxy ID")
+		return
+	}
+	if !h.allowProxy(c, proxyID) {
 		return
 	}
 
@@ -312,6 +527,9 @@ func (h *ProxyHandler) GetProxyAccounts(c *gin.Context) {
 	proxyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid proxy ID")
+		return
+	}
+	if !h.allowProxy(c, proxyID) {
 		return
 	}
 
@@ -374,7 +592,7 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		}
 
 		// Create proxy with default name
-		_, err = h.adminService.CreateProxy(c.Request.Context(), &service.CreateProxyInput{
+		createdProxy, err := h.adminService.CreateProxy(c.Request.Context(), &service.CreateProxyInput{
 			Name:     "default",
 			Protocol: protocol,
 			Host:     host,
@@ -386,6 +604,10 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 			// If creation fails due to duplicate, count as skipped
 			skipped++
 			continue
+		}
+
+		if h.stewards != nil {
+			_ = h.stewards.ClaimProxy(c.Request.Context(), createdProxy.ID, getAdminIDFromContext(c))
 		}
 
 		created++

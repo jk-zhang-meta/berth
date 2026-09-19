@@ -4,14 +4,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 type GeminiOAuthHandler struct {
 	geminiOAuthService *service.GeminiOAuthService
+	stewards           *service.StewardStore
 }
 
 func NewGeminiOAuthHandler(geminiOAuthService *service.GeminiOAuthService) *GeminiOAuthHandler {
@@ -41,6 +42,9 @@ func (h *GeminiOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	var req GeminiGenerateAuthURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 
@@ -94,6 +98,9 @@ func (h *GeminiOAuthHandler) ExchangeCode(c *gin.Context) {
 	var req GeminiExchangeCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 

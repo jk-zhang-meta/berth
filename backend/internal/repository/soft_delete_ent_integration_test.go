@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/apikey"
-	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
-	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/apikey"
+	"github.com/jk-zhang-meta/berth/ent/schema/mixins"
+	"github.com/jk-zhang-meta/berth/ent/usersubscription"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/stretchr/testify/require"
 )
 

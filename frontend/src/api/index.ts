@@ -1,5 +1,5 @@
 /**
- * API Client for Sub2API Backend
+ * API Client for Berth Backend
  * Central export point for all API modules
  */
 
@@ -12,6 +12,7 @@ export { authAPI, isTotp2FARequired, type LoginResponse } from './auth'
 // User APIs
 export { keysAPI } from './keys'
 export { usageAPI } from './usage'
+export { sessionsAPI } from './sessions'
 export { userAPI } from './user'
 export { redeemAPI, type RedeemHistoryItem } from './redeem'
 export { paymentAPI } from './payment'

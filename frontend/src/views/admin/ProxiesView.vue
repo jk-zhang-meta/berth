@@ -73,10 +73,10 @@
               <Icon name="trash" size="md" class="mr-2" />
               {{ t('admin.proxies.batchDeleteAction') }}
             </button>
-            <button @click="showImportData = true" class="btn btn-secondary">
+            <button v-if="authStore.isAdmin" @click="showImportData = true" class="btn btn-secondary">
               {{ t('admin.proxies.dataImport') }}
             </button>
-            <button @click="showExportDataDialog = true" class="btn btn-secondary">
+            <button v-if="authStore.isAdmin" @click="showExportDataDialog = true" class="btn btn-secondary">
               {{ selectedCount > 0 ? t('admin.proxies.dataExportSelected') : t('admin.proxies.dataExport') }}
             </button>
             <button @click="showCreateModal = true" class="btn btn-primary">
@@ -184,35 +184,83 @@
           </template>
 
           <template #cell-location="{ row }">
-            <div class="flex items-center gap-2">
-              <img
-                v-if="row.country_code"
-                :src="flagUrl(row.country_code)"
-                :alt="row.country || row.country_code"
-                class="h-4 w-6 rounded-sm"
-              />
-              <span v-if="formatLocation(row)" class="text-sm text-gray-700 dark:text-gray-200">
-                {{ formatLocation(row) }}
+            <div class="flex flex-col gap-1 text-xs">
+              <div class="flex items-center gap-2">
+                <img
+                  v-if="row.country_code"
+                  :src="flagUrl(row.country_code)"
+                  :alt="row.country || row.country_code"
+                  class="h-4 w-6 rounded-sm"
+                />
+                <span v-if="formatLocation(row)" class="text-sm text-gray-700 dark:text-gray-200">
+                  {{ formatLocation(row) }}
+                </span>
+                <span v-else class="text-sm text-gray-400">-</span>
+                <span
+                  class="badge"
+                  :class="row.exit_verified ? 'badge-success' : 'badge-warning'"
+                >
+                  {{ row.exit_verified ? t('admin.proxies.exitVerified') : t('admin.proxies.exitUnverified') }}
+                </span>
+              </div>
+              <div v-if="row.ip_address" class="font-mono text-gray-500 dark:text-gray-400">
+                {{ t('admin.proxies.exitIP') }}: {{ row.ip_address }}
+              </div>
+              <div v-if="row.timezone" class="text-gray-500 dark:text-gray-400">
+                {{ row.timezone }}<span v-if="formatUTCOffset(row.utc_offset_seconds)"> · {{ formatUTCOffset(row.utc_offset_seconds) }}</span>
+              </div>
+              <div v-if="row.asn || row.isp" class="text-gray-400 dark:text-gray-500" :title="[row.asn, row.isp].filter(Boolean).join(' · ')">
+                {{ [row.asn, row.isp].filter(Boolean).join(' · ') }}
+              </div>
+              <div v-if="row.exit_checked_at" class="text-gray-400 dark:text-gray-500">
+                {{ t('admin.proxies.exitCheckedAt') }}: {{ formatExitCheckedAt(row.exit_checked_at) }}
+              </div>
+            </div>
+          </template>
+
+          <template #cell-concurrency="{ value }">
+            <div class="inline-flex items-center gap-1.5">
+              <span
+                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium font-mono"
+                :class="[
+                  (value || 0) > 0
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 ring-1 ring-amber-500/30'
+                    : 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-400'
+                ]"
+                :title="t('admin.proxies.columns.concurrency')"
+              >
+                <span
+                  v-if="(value || 0) > 0"
+                  class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
+                />
+                <span
+                  v-else
+                  class="h-1.5 w-1.5 rounded-full bg-gray-400"
+                />
+                {{ value || 0 }}
               </span>
-              <span v-else class="text-sm text-gray-400">-</span>
             </div>
           </template>
 
           <template #cell-account_count="{ row, value }">
-            <button
-              v-if="(value || 0) > 0"
-              type="button"
-              class="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-primary-700 hover:bg-gray-200 dark:bg-dark-600 dark:text-primary-300 dark:hover:bg-dark-500"
-              @click="openAccountsModal(row)"
-            >
-              {{ t('admin.groups.accountsCount', { count: value || 0 }) }}
-            </button>
-            <span
-              v-else
-              class="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300"
-            >
-              {{ t('admin.groups.accountsCount', { count: 0 }) }}
-            </span>
+            <div class="inline-flex items-center">
+              <button
+                v-if="(value || 0) > 0"
+                type="button"
+                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium font-mono text-primary-700 hover:bg-gray-200 dark:bg-dark-600 dark:text-primary-300 dark:hover:bg-dark-500 transition-colors"
+                :title="t('admin.proxies.columns.accounts')"
+                @click="openAccountsModal(row)"
+              >
+                {{ value }}
+              </button>
+              <span
+                v-else
+                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium font-mono text-gray-400 dark:bg-dark-600 dark:text-gray-400"
+                :title="t('admin.proxies.columns.accounts')"
+              >
+                0
+              </span>
+            </div>
           </template>
 
           <template #cell-latency="{ row }">
@@ -967,6 +1015,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import type { Proxy, ProxyAccountSummary, ProxyProtocol, ProxyQualityCheckResult } from '@/types'
 import type { Column } from '@/components/common/types'
@@ -991,6 +1040,7 @@ import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 const { copyToClipboard } = useClipboard()
 
 const columns = computed<Column[]>(() => [
@@ -1000,6 +1050,7 @@ const columns = computed<Column[]>(() => [
   { key: 'address', label: t('admin.proxies.columns.address'), sortable: false },
   { key: 'auth', label: t('admin.proxies.columns.auth'), sortable: false },
   { key: 'location', label: t('admin.proxies.columns.location'), sortable: false },
+  { key: 'concurrency', label: t('admin.proxies.columns.concurrency'), sortable: true },
   { key: 'account_count', label: t('admin.proxies.columns.accounts'), sortable: true },
   { key: 'latency', label: t('admin.proxies.columns.latency'), sortable: false },
   { key: 'expiry', label: t('admin.proxies.columns.expiry'), sortable: true },
@@ -1187,13 +1238,15 @@ const buildProxyQueryFilters = () => ({
   sort_order: sortState.sort_order
 })
 
-const loadProxies = async () => {
+const loadProxiesInternal = async (silent = false) => {
   if (abortController) {
     abortController.abort()
   }
   const currentAbortController = new AbortController()
   abortController = currentAbortController
-  loading.value = true
+  if (!silent) {
+    loading.value = true
+  }
   try {
     const response = await adminAPI.proxies.list(
       pagination.page,
@@ -1211,14 +1264,26 @@ const loadProxies = async () => {
     if (isAbortError(error)) {
       return
     }
-    appStore.showError(t('admin.proxies.failedToLoad'))
+    if (!silent) {
+      appStore.showError(t('admin.proxies.failedToLoad'))
+    }
     console.error('Error loading proxies:', error)
   } finally {
     if (abortController === currentAbortController) {
-      loading.value = false
+      if (!silent) {
+        loading.value = false
+      }
       abortController = null
     }
   }
+}
+
+const loadProxies = () => {
+  return loadProxiesInternal(false)
+}
+
+const loadProxiesSilently = () => {
+  return loadProxiesInternal(true)
 }
 
 let searchTimeout: ReturnType<typeof setTimeout>
@@ -1492,6 +1557,11 @@ const applyLatencyResult = (
     country_code?: string
     region?: string
     city?: string
+    timezone?: string
+    utc_offset_seconds?: number
+    asn?: string
+    isp?: string
+    exit_checked_at?: number
   }
 ) => {
   const target = proxies.value.find((proxy) => proxy.id === proxyId)
@@ -1504,14 +1574,16 @@ const applyLatencyResult = (
     target.country_code = result.country_code
     target.region = result.region
     target.city = result.city
+    target.timezone = result.timezone
+    target.utc_offset_seconds = result.utc_offset_seconds
+    target.asn = result.asn
+    target.isp = result.isp
+    target.exit_checked_at = result.exit_checked_at
+    target.exit_verified = Boolean(result.ip_address && result.timezone && result.exit_checked_at)
   } else {
     target.latency_status = 'failed'
     target.latency_ms = undefined
-    target.ip_address = undefined
-    target.country = undefined
-    target.country_code = undefined
-    target.region = undefined
-    target.city = undefined
+    // Keep the last verified exit profile on transient probe failures.
   }
   target.latency_message = result.message
 }
@@ -1534,8 +1606,22 @@ const applyQualityResult = (proxyId: number, result: ProxyQualityCheckResult) =>
 }
 
 const formatLocation = (proxy: Proxy) => {
-  const parts = [proxy.country, proxy.city].filter(Boolean) as string[]
-  return parts.join(' · ')
+  const parts = [proxy.country, proxy.region, proxy.city].filter(Boolean) as string[]
+  return [...new Set(parts)].join(' · ')
+}
+
+const formatUTCOffset = (seconds?: number) => {
+  if (typeof seconds !== 'number') return ''
+  const sign = seconds >= 0 ? '+' : '-'
+  const absolute = Math.abs(seconds)
+  const hours = Math.floor(absolute / 3600)
+  const minutes = Math.floor((absolute % 3600) / 60)
+  return `UTC${sign}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+const formatExitCheckedAt = (seconds?: number) => {
+  if (!seconds) return ''
+  return formatDateTime(new Date(seconds * 1000))
 }
 
 const flagUrl = (code: string) =>
@@ -1926,7 +2012,7 @@ const handleExportData = async () => {
           }
     )
     const timestamp = formatExportTimestamp()
-    const filename = `sub2api-proxy-${timestamp}.json`
+    const filename = `berth-proxy-${timestamp}.json`
     const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -2070,13 +2156,24 @@ function closeCopyMenu() {
   copyMenuProxyId.value = null
 }
 
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   loadProxies()
   loadBackupProxyOptions()
   document.addEventListener('click', closeCopyMenu)
+  refreshTimer = setInterval(() => {
+    if (!document.hidden && !loading.value) {
+      loadProxiesSilently()
+    }
+  }, 5000)
 })
 
 onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
   clearTimeout(searchTimeout)
   abortController?.abort()
   document.removeEventListener('click', closeCopyMenu)

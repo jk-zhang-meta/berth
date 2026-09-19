@@ -11,8 +11,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
 )
 
 // ProxyCreate is the builder for creating a Proxy entity.
@@ -187,6 +187,146 @@ func (_c *ProxyCreate) SetNillableExpiryWarnDays(v *int) *ProxyCreate {
 	return _c
 }
 
+// SetExitIP sets the "exit_ip" field.
+func (_c *ProxyCreate) SetExitIP(v string) *ProxyCreate {
+	_c.mutation.SetExitIP(v)
+	return _c
+}
+
+// SetNillableExitIP sets the "exit_ip" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitIP(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitIP(*v)
+	}
+	return _c
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (_c *ProxyCreate) SetExitCountry(v string) *ProxyCreate {
+	_c.mutation.SetExitCountry(v)
+	return _c
+}
+
+// SetNillableExitCountry sets the "exit_country" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitCountry(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitCountry(*v)
+	}
+	return _c
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (_c *ProxyCreate) SetExitCountryCode(v string) *ProxyCreate {
+	_c.mutation.SetExitCountryCode(v)
+	return _c
+}
+
+// SetNillableExitCountryCode sets the "exit_country_code" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitCountryCode(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitCountryCode(*v)
+	}
+	return _c
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (_c *ProxyCreate) SetExitRegion(v string) *ProxyCreate {
+	_c.mutation.SetExitRegion(v)
+	return _c
+}
+
+// SetNillableExitRegion sets the "exit_region" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitRegion(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitRegion(*v)
+	}
+	return _c
+}
+
+// SetExitCity sets the "exit_city" field.
+func (_c *ProxyCreate) SetExitCity(v string) *ProxyCreate {
+	_c.mutation.SetExitCity(v)
+	return _c
+}
+
+// SetNillableExitCity sets the "exit_city" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitCity(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitCity(*v)
+	}
+	return _c
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (_c *ProxyCreate) SetExitTimezone(v string) *ProxyCreate {
+	_c.mutation.SetExitTimezone(v)
+	return _c
+}
+
+// SetNillableExitTimezone sets the "exit_timezone" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitTimezone(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitTimezone(*v)
+	}
+	return _c
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (_c *ProxyCreate) SetExitUtcOffsetSeconds(v int) *ProxyCreate {
+	_c.mutation.SetExitUtcOffsetSeconds(v)
+	return _c
+}
+
+// SetNillableExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitUtcOffsetSeconds(v *int) *ProxyCreate {
+	if v != nil {
+		_c.SetExitUtcOffsetSeconds(*v)
+	}
+	return _c
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (_c *ProxyCreate) SetExitAsn(v string) *ProxyCreate {
+	_c.mutation.SetExitAsn(v)
+	return _c
+}
+
+// SetNillableExitAsn sets the "exit_asn" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitAsn(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitAsn(*v)
+	}
+	return _c
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (_c *ProxyCreate) SetExitIsp(v string) *ProxyCreate {
+	_c.mutation.SetExitIsp(v)
+	return _c
+}
+
+// SetNillableExitIsp sets the "exit_isp" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitIsp(v *string) *ProxyCreate {
+	if v != nil {
+		_c.SetExitIsp(*v)
+	}
+	return _c
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (_c *ProxyCreate) SetExitCheckedAt(v time.Time) *ProxyCreate {
+	_c.mutation.SetExitCheckedAt(v)
+	return _c
+}
+
+// SetNillableExitCheckedAt sets the "exit_checked_at" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableExitCheckedAt(v *time.Time) *ProxyCreate {
+	if v != nil {
+		_c.SetExitCheckedAt(*v)
+	}
+	return _c
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_c *ProxyCreate) AddAccountIDs(ids ...int64) *ProxyCreate {
 	_c.mutation.AddAccountIDs(ids...)
@@ -352,6 +492,46 @@ func (_c *ProxyCreate) check() error {
 	if _, ok := _c.mutation.ExpiryWarnDays(); !ok {
 		return &ValidationError{Name: "expiry_warn_days", err: errors.New(`ent: missing required field "Proxy.expiry_warn_days"`)}
 	}
+	if v, ok := _c.mutation.ExitIP(); ok {
+		if err := proxy.ExitIPValidator(v); err != nil {
+			return &ValidationError{Name: "exit_ip", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_ip": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitCountry(); ok {
+		if err := proxy.ExitCountryValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitCountryCode(); ok {
+		if err := proxy.ExitCountryCodeValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country_code", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country_code": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitRegion(); ok {
+		if err := proxy.ExitRegionValidator(v); err != nil {
+			return &ValidationError{Name: "exit_region", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_region": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitCity(); ok {
+		if err := proxy.ExitCityValidator(v); err != nil {
+			return &ValidationError{Name: "exit_city", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_city": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitTimezone(); ok {
+		if err := proxy.ExitTimezoneValidator(v); err != nil {
+			return &ValidationError{Name: "exit_timezone", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_timezone": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitAsn(); ok {
+		if err := proxy.ExitAsnValidator(v); err != nil {
+			return &ValidationError{Name: "exit_asn", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_asn": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ExitIsp(); ok {
+		if err := proxy.ExitIspValidator(v); err != nil {
+			return &ValidationError{Name: "exit_isp", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_isp": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -430,6 +610,46 @@ func (_c *ProxyCreate) createSpec() (*Proxy, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ExpiryWarnDays(); ok {
 		_spec.SetField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
 		_node.ExpiryWarnDays = value
+	}
+	if value, ok := _c.mutation.ExitIP(); ok {
+		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)
+		_node.ExitIP = &value
+	}
+	if value, ok := _c.mutation.ExitCountry(); ok {
+		_spec.SetField(proxy.FieldExitCountry, field.TypeString, value)
+		_node.ExitCountry = &value
+	}
+	if value, ok := _c.mutation.ExitCountryCode(); ok {
+		_spec.SetField(proxy.FieldExitCountryCode, field.TypeString, value)
+		_node.ExitCountryCode = &value
+	}
+	if value, ok := _c.mutation.ExitRegion(); ok {
+		_spec.SetField(proxy.FieldExitRegion, field.TypeString, value)
+		_node.ExitRegion = &value
+	}
+	if value, ok := _c.mutation.ExitCity(); ok {
+		_spec.SetField(proxy.FieldExitCity, field.TypeString, value)
+		_node.ExitCity = &value
+	}
+	if value, ok := _c.mutation.ExitTimezone(); ok {
+		_spec.SetField(proxy.FieldExitTimezone, field.TypeString, value)
+		_node.ExitTimezone = &value
+	}
+	if value, ok := _c.mutation.ExitUtcOffsetSeconds(); ok {
+		_spec.SetField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt, value)
+		_node.ExitUtcOffsetSeconds = &value
+	}
+	if value, ok := _c.mutation.ExitAsn(); ok {
+		_spec.SetField(proxy.FieldExitAsn, field.TypeString, value)
+		_node.ExitAsn = &value
+	}
+	if value, ok := _c.mutation.ExitIsp(); ok {
+		_spec.SetField(proxy.FieldExitIsp, field.TypeString, value)
+		_node.ExitIsp = &value
+	}
+	if value, ok := _c.mutation.ExitCheckedAt(); ok {
+		_spec.SetField(proxy.FieldExitCheckedAt, field.TypeTime, value)
+		_node.ExitCheckedAt = &value
 	}
 	if nodes := _c.mutation.AccountsIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -730,6 +950,192 @@ func (u *ProxyUpsert) AddExpiryWarnDays(v int) *ProxyUpsert {
 	return u
 }
 
+// SetExitIP sets the "exit_ip" field.
+func (u *ProxyUpsert) SetExitIP(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitIP, v)
+	return u
+}
+
+// UpdateExitIP sets the "exit_ip" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitIP() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitIP)
+	return u
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (u *ProxyUpsert) ClearExitIP() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitIP)
+	return u
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (u *ProxyUpsert) SetExitCountry(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitCountry, v)
+	return u
+}
+
+// UpdateExitCountry sets the "exit_country" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitCountry() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitCountry)
+	return u
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (u *ProxyUpsert) ClearExitCountry() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitCountry)
+	return u
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (u *ProxyUpsert) SetExitCountryCode(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitCountryCode, v)
+	return u
+}
+
+// UpdateExitCountryCode sets the "exit_country_code" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitCountryCode() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitCountryCode)
+	return u
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (u *ProxyUpsert) ClearExitCountryCode() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitCountryCode)
+	return u
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (u *ProxyUpsert) SetExitRegion(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitRegion, v)
+	return u
+}
+
+// UpdateExitRegion sets the "exit_region" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitRegion() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitRegion)
+	return u
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (u *ProxyUpsert) ClearExitRegion() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitRegion)
+	return u
+}
+
+// SetExitCity sets the "exit_city" field.
+func (u *ProxyUpsert) SetExitCity(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitCity, v)
+	return u
+}
+
+// UpdateExitCity sets the "exit_city" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitCity() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitCity)
+	return u
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (u *ProxyUpsert) ClearExitCity() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitCity)
+	return u
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (u *ProxyUpsert) SetExitTimezone(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitTimezone, v)
+	return u
+}
+
+// UpdateExitTimezone sets the "exit_timezone" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitTimezone() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitTimezone)
+	return u
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (u *ProxyUpsert) ClearExitTimezone() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitTimezone)
+	return u
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsert) SetExitUtcOffsetSeconds(v int) *ProxyUpsert {
+	u.Set(proxy.FieldExitUtcOffsetSeconds, v)
+	return u
+}
+
+// UpdateExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitUtcOffsetSeconds() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitUtcOffsetSeconds)
+	return u
+}
+
+// AddExitUtcOffsetSeconds adds v to the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsert) AddExitUtcOffsetSeconds(v int) *ProxyUpsert {
+	u.Add(proxy.FieldExitUtcOffsetSeconds, v)
+	return u
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsert) ClearExitUtcOffsetSeconds() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitUtcOffsetSeconds)
+	return u
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (u *ProxyUpsert) SetExitAsn(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitAsn, v)
+	return u
+}
+
+// UpdateExitAsn sets the "exit_asn" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitAsn() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitAsn)
+	return u
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (u *ProxyUpsert) ClearExitAsn() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitAsn)
+	return u
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (u *ProxyUpsert) SetExitIsp(v string) *ProxyUpsert {
+	u.Set(proxy.FieldExitIsp, v)
+	return u
+}
+
+// UpdateExitIsp sets the "exit_isp" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitIsp() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitIsp)
+	return u
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (u *ProxyUpsert) ClearExitIsp() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitIsp)
+	return u
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (u *ProxyUpsert) SetExitCheckedAt(v time.Time) *ProxyUpsert {
+	u.Set(proxy.FieldExitCheckedAt, v)
+	return u
+}
+
+// UpdateExitCheckedAt sets the "exit_checked_at" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateExitCheckedAt() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldExitCheckedAt)
+	return u
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (u *ProxyUpsert) ClearExitCheckedAt() *ProxyUpsert {
+	u.SetNull(proxy.FieldExitCheckedAt)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -1003,6 +1409,223 @@ func (u *ProxyUpsertOne) AddExpiryWarnDays(v int) *ProxyUpsertOne {
 func (u *ProxyUpsertOne) UpdateExpiryWarnDays() *ProxyUpsertOne {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetExitIP sets the "exit_ip" field.
+func (u *ProxyUpsertOne) SetExitIP(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitIP(v)
+	})
+}
+
+// UpdateExitIP sets the "exit_ip" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitIP() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitIP()
+	})
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (u *ProxyUpsertOne) ClearExitIP() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitIP()
+	})
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (u *ProxyUpsertOne) SetExitCountry(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCountry(v)
+	})
+}
+
+// UpdateExitCountry sets the "exit_country" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitCountry() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCountry()
+	})
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (u *ProxyUpsertOne) ClearExitCountry() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCountry()
+	})
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (u *ProxyUpsertOne) SetExitCountryCode(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCountryCode(v)
+	})
+}
+
+// UpdateExitCountryCode sets the "exit_country_code" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitCountryCode() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCountryCode()
+	})
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (u *ProxyUpsertOne) ClearExitCountryCode() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCountryCode()
+	})
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (u *ProxyUpsertOne) SetExitRegion(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitRegion(v)
+	})
+}
+
+// UpdateExitRegion sets the "exit_region" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitRegion() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitRegion()
+	})
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (u *ProxyUpsertOne) ClearExitRegion() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitRegion()
+	})
+}
+
+// SetExitCity sets the "exit_city" field.
+func (u *ProxyUpsertOne) SetExitCity(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCity(v)
+	})
+}
+
+// UpdateExitCity sets the "exit_city" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitCity() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCity()
+	})
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (u *ProxyUpsertOne) ClearExitCity() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCity()
+	})
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (u *ProxyUpsertOne) SetExitTimezone(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitTimezone(v)
+	})
+}
+
+// UpdateExitTimezone sets the "exit_timezone" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitTimezone() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitTimezone()
+	})
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (u *ProxyUpsertOne) ClearExitTimezone() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitTimezone()
+	})
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertOne) SetExitUtcOffsetSeconds(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitUtcOffsetSeconds(v)
+	})
+}
+
+// AddExitUtcOffsetSeconds adds v to the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertOne) AddExitUtcOffsetSeconds(v int) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddExitUtcOffsetSeconds(v)
+	})
+}
+
+// UpdateExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitUtcOffsetSeconds() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitUtcOffsetSeconds()
+	})
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertOne) ClearExitUtcOffsetSeconds() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitUtcOffsetSeconds()
+	})
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (u *ProxyUpsertOne) SetExitAsn(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitAsn(v)
+	})
+}
+
+// UpdateExitAsn sets the "exit_asn" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitAsn() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitAsn()
+	})
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (u *ProxyUpsertOne) ClearExitAsn() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitAsn()
+	})
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (u *ProxyUpsertOne) SetExitIsp(v string) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitIsp(v)
+	})
+}
+
+// UpdateExitIsp sets the "exit_isp" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitIsp() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitIsp()
+	})
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (u *ProxyUpsertOne) ClearExitIsp() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitIsp()
+	})
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (u *ProxyUpsertOne) SetExitCheckedAt(v time.Time) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCheckedAt(v)
+	})
+}
+
+// UpdateExitCheckedAt sets the "exit_checked_at" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateExitCheckedAt() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCheckedAt()
+	})
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (u *ProxyUpsertOne) ClearExitCheckedAt() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCheckedAt()
 	})
 }
 
@@ -1445,6 +2068,223 @@ func (u *ProxyUpsertBulk) AddExpiryWarnDays(v int) *ProxyUpsertBulk {
 func (u *ProxyUpsertBulk) UpdateExpiryWarnDays() *ProxyUpsertBulk {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetExitIP sets the "exit_ip" field.
+func (u *ProxyUpsertBulk) SetExitIP(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitIP(v)
+	})
+}
+
+// UpdateExitIP sets the "exit_ip" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitIP() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitIP()
+	})
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (u *ProxyUpsertBulk) ClearExitIP() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitIP()
+	})
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (u *ProxyUpsertBulk) SetExitCountry(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCountry(v)
+	})
+}
+
+// UpdateExitCountry sets the "exit_country" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitCountry() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCountry()
+	})
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (u *ProxyUpsertBulk) ClearExitCountry() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCountry()
+	})
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (u *ProxyUpsertBulk) SetExitCountryCode(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCountryCode(v)
+	})
+}
+
+// UpdateExitCountryCode sets the "exit_country_code" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitCountryCode() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCountryCode()
+	})
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (u *ProxyUpsertBulk) ClearExitCountryCode() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCountryCode()
+	})
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (u *ProxyUpsertBulk) SetExitRegion(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitRegion(v)
+	})
+}
+
+// UpdateExitRegion sets the "exit_region" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitRegion() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitRegion()
+	})
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (u *ProxyUpsertBulk) ClearExitRegion() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitRegion()
+	})
+}
+
+// SetExitCity sets the "exit_city" field.
+func (u *ProxyUpsertBulk) SetExitCity(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCity(v)
+	})
+}
+
+// UpdateExitCity sets the "exit_city" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitCity() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCity()
+	})
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (u *ProxyUpsertBulk) ClearExitCity() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCity()
+	})
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (u *ProxyUpsertBulk) SetExitTimezone(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitTimezone(v)
+	})
+}
+
+// UpdateExitTimezone sets the "exit_timezone" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitTimezone() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitTimezone()
+	})
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (u *ProxyUpsertBulk) ClearExitTimezone() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitTimezone()
+	})
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertBulk) SetExitUtcOffsetSeconds(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitUtcOffsetSeconds(v)
+	})
+}
+
+// AddExitUtcOffsetSeconds adds v to the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertBulk) AddExitUtcOffsetSeconds(v int) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddExitUtcOffsetSeconds(v)
+	})
+}
+
+// UpdateExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitUtcOffsetSeconds() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitUtcOffsetSeconds()
+	})
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (u *ProxyUpsertBulk) ClearExitUtcOffsetSeconds() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitUtcOffsetSeconds()
+	})
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (u *ProxyUpsertBulk) SetExitAsn(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitAsn(v)
+	})
+}
+
+// UpdateExitAsn sets the "exit_asn" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitAsn() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitAsn()
+	})
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (u *ProxyUpsertBulk) ClearExitAsn() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitAsn()
+	})
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (u *ProxyUpsertBulk) SetExitIsp(v string) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitIsp(v)
+	})
+}
+
+// UpdateExitIsp sets the "exit_isp" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitIsp() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitIsp()
+	})
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (u *ProxyUpsertBulk) ClearExitIsp() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitIsp()
+	})
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (u *ProxyUpsertBulk) SetExitCheckedAt(v time.Time) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetExitCheckedAt(v)
+	})
+}
+
+// UpdateExitCheckedAt sets the "exit_checked_at" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateExitCheckedAt() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateExitCheckedAt()
+	})
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (u *ProxyUpsertBulk) ClearExitCheckedAt() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.ClearExitCheckedAt()
 	})
 }
 

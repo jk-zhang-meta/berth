@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 )
 
 // AdminService interface defines admin management operations
@@ -394,6 +394,7 @@ type UpdateGroupInput struct {
 }
 
 type CreateAccountInput struct {
+	PrivateOwnerUserID int64 `json:"-"`
 	Name               string
 	Notes              *string
 	Platform           string
@@ -419,10 +420,12 @@ type CreateAccountInput struct {
 // ShadowOptions is the input for CreateShadow.
 // The shadow holds no credentials — the scheduler transparently delegates to the parent account's tokens.
 type ShadowOptions struct {
-	Name        string
-	Priority    int
-	Concurrency int
-	GroupIDs    []int64
+	PrivateOwnerUserID   int64
+	SkipDefaultGroupBind bool
+	Name                 string
+	Priority             int
+	Concurrency          int
+	GroupIDs             []int64
 }
 
 type UpdateAccountInput struct {
@@ -573,14 +576,19 @@ type ProxyBatchDeleteSkipped struct {
 
 // ProxyTestResult represents the result of testing a proxy
 type ProxyTestResult struct {
-	Success     bool   `json:"success"`
-	Message     string `json:"message"`
-	LatencyMs   int64  `json:"latency_ms,omitempty"`
-	IPAddress   string `json:"ip_address,omitempty"`
-	City        string `json:"city,omitempty"`
-	Region      string `json:"region,omitempty"`
-	Country     string `json:"country,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
+	Success          bool   `json:"success"`
+	Message          string `json:"message"`
+	LatencyMs        int64  `json:"latency_ms,omitempty"`
+	IPAddress        string `json:"ip_address,omitempty"`
+	City             string `json:"city,omitempty"`
+	Region           string `json:"region,omitempty"`
+	Country          string `json:"country,omitempty"`
+	CountryCode      string `json:"country_code,omitempty"`
+	Timezone         string `json:"timezone,omitempty"`
+	UTCOffsetSeconds *int   `json:"utc_offset_seconds,omitempty"`
+	ASN              string `json:"asn,omitempty"`
+	ISP              string `json:"isp,omitempty"`
+	ExitCheckedAt    int64  `json:"exit_checked_at,omitempty"`
 }
 
 type ProxyQualityCheckResult struct {
@@ -611,11 +619,15 @@ type ProxyQualityCheckItem struct {
 
 // ProxyExitInfo represents proxy exit information from ip-api.com
 type ProxyExitInfo struct {
-	IP          string
-	City        string
-	Region      string
-	Country     string
-	CountryCode string
+	IP               string
+	City             string
+	Region           string
+	Country          string
+	CountryCode      string
+	Timezone         string
+	UTCOffsetSeconds *int
+	ASN              string
+	ISP              string
 }
 
 // ProxyExitInfoProber tests proxy connectivity and retrieves exit information
@@ -683,6 +695,7 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
+	marketplace          *MarketplaceService
 	cfg                  *config.Config
 	userRepo             UserRepository
 	groupRepo            GroupRepository

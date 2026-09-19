@@ -15,12 +15,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
-	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/platform/liveattestation"
+	"github.com/jk-zhang-meta/berth/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -451,6 +451,7 @@ type OpenAIGatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	workSessions          *WorkSessionStore
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
@@ -491,6 +492,30 @@ type OpenAIGatewayService struct {
 	// 剥离跨账号回带（openai_codex_turn_state.go）。
 	openaiCodexTurnStateOrigins sync.Map
 	openaiCodexTurnStateWrites  atomic.Uint64
+}
+
+func (s *OpenAIGatewayService) SetWorkSessions(store *WorkSessionStore) {
+	if s != nil {
+		s.workSessions = store
+	}
+}
+
+func (s *OpenAIGatewayService) PrepareWorkSession(ctx context.Context, userID, apiKeyID int64, clientSessionID, platform string) context.Context {
+	if s == nil || s.workSessions == nil {
+		return ctx
+	}
+	ctx, _ = s.workSessions.Prepare(ctx, userID, apiKeyID, clientSessionID, platform)
+	return ctx
+}
+
+func (s *OpenAIGatewayService) BindWorkSessionAccount(ctx context.Context, accountID int64) {
+	if s == nil || s.workSessions == nil {
+		return
+	}
+	pref := WorkSessionPrefFromContext(ctx)
+	if pref != nil {
+		s.workSessions.BindAccount(ctx, pref.UserID, pref.ClientSessionID, pref.Platform, accountID)
+	}
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService

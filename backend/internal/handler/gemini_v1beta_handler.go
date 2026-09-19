@@ -12,15 +12,15 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
-	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/domain"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/gemini"
+	"github.com/jk-zhang-meta/berth/internal/pkg/googleapi"
+	pkghttputil "github.com/jk-zhang-meta/berth/internal/pkg/httputil"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/google/uuid"
 
 	"github.com/gin-gonic/gin"
@@ -530,10 +530,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				}
 			}()
 
-			accountReleaseFunc, err = geminiConcurrency.AcquireAccountSlotWithWaitTimeout(
+			accountReleaseFunc, err = geminiConcurrency.AcquireAccountCapacityWithWaitTimeout(
 				c,
 				account.ID,
 				selection.WaitPlan.MaxConcurrency,
+				selection.WaitPlan.MaxRPM,
 				selection.WaitPlan.Timeout,
 				stream,
 				&streamStarted,
@@ -543,6 +544,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				googleError(c, http.StatusTooManyRequests, err.Error())
 				return
 			}
+			accountReleaseFunc = geminiConcurrency.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
 			if accountWaitCounted {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
@@ -573,6 +575,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				reqLog.Warn("gemini.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
+		h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
 		// 账号槽位/等待计数需要在超时或断开时安全回收
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 

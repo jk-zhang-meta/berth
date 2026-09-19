@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -522,7 +522,6 @@ func (s *ConcurrencyCacheSuite) TestGetUserConcurrency_Missing() {
 }
 
 func (s *ConcurrencyCacheSuite) TestGetAccountsLoadBatch() {
-	s.T().Skip("TODO: Fix this test - CurrentConcurrency returns 0 instead of expected value in CI")
 	// Setup: Create accounts with different load states
 	account1 := int64(100)
 	account2 := int64(101)

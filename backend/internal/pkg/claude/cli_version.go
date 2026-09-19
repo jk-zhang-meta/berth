@@ -13,9 +13,9 @@ import (
 // 存在的理由：Anthropic 会对新模型设客户端版本下限（例如 claude-fable-5-1 要求
 // claude-cli >= 2.1.251），命中时上游直接返回
 // `Claude Code X.Y.Z does not support this model; version A.B.C or newer is required`。
-// 在没有本开关之前，这类模型必须等 sub2api 发一个新版本才能使用，
+// 在没有本开关之前，这类模型必须等 berth 发一个新版本才能使用，
 // 而改动本身只是一个常量。xai 包的 XAI_GROK_CLI_VERSION 已经是同样的做法。
-const CLIVersionEnv = "SUB2API_CLAUDE_CLI_VERSION"
+const CLIVersionEnv = "BERTH_CLAUDE_CLI_VERSION"
 
 // resolvedCLIVersion 在包初始化时解析一次。
 //

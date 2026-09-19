@@ -18,7 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/config"
 )
 
 // ─── Mocks ───

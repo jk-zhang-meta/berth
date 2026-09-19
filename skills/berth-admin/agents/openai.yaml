@@ -1,0 +1,7 @@
+interface:
+  display_name: "Berth Admin"
+  short_description: "Manage Berth admin accounts and settings"
+  default_prompt: "Use $berth-admin to inspect and manage Berth backend accounts safely."
+
+policy:
+  allow_implicit_invocation: true

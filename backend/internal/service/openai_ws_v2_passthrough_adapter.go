@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	openaiwsv2 "github.com/jk-zhang-meta/berth/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -688,12 +688,27 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
+	isNativeCodexCLI := c != nil && openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	isNativeCodexPrivacy := c != nil && openai.IsCodexOfficialClientByHeadersStrict(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	isCodexCLI := isNativeCodexCLI
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		isCodexCLI = true
+	}
 	if isOpenAIResponsesLiteWebSocketPayload(firstClientMessage) {
 		liteFirstMessage, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(firstClientMessage, account)
 		if liteErr != nil {
 			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, liteErr.Error(), liteErr)
 		}
 		firstClientMessage = liteFirstMessage
+	}
+	if isNativeCodexPrivacy {
+		sanitized, changed, privacyErr := sanitizeCodexWebSocketFrame(firstClientMessage, account.Proxy)
+		if privacyErr != nil {
+			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request privacy context", privacyErr)
+		}
+		if changed {
+			firstClientMessage = sanitized
+		}
 	}
 	originalFirstClientMessage := firstClientMessage
 	if next, policyErr := applyOpenAIWSReasoningEffortPolicy(firstClientMessage, hooks); policyErr != nil {
@@ -827,13 +842,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		account.ProxyID != nil && account.Proxy != nil,
 	)
 
-	isCodexCLI := false
-	if c != nil {
-		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
-	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		isCodexCLI = true
-	}
 	turnState := ""
 	turnMetadata := ""
 	if c != nil {
@@ -857,6 +865,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	proxyURL := ""
+	if err := checkAccountSnapshotProxyRental(ctx, account); err != nil {
+		return err
+	}
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
@@ -995,6 +1006,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						turnLifecycle.cancelResponseCreate()
 					}
 				}()
+				if isNativeCodexPrivacy {
+					sanitized, changed, privacyErr := sanitizeCodexWebSocketFrame(payload, account.Proxy)
+					if privacyErr != nil {
+						return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request privacy context", privacyErr)
+					}
+					if changed {
+						payload = sanitized
+					}
+				}
 			}
 			responsesLite := isResponseCreate && isOpenAIResponsesLiteWebSocketPayload(payload)
 			if isResponseCreate {
@@ -1045,6 +1065,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			}
 			requestModelForThisFrame := ""
 			if isResponseCreate {
+				if err := checkAccountSnapshotProxyRental(ctx, account); err != nil {
+					return payload, nil, err
+				}
 				requestModelForThisFrame = usageMeta.requestModelForFrame(payload)
 				if requestModelForThisFrame == "" {
 					requestModelForThisFrame = capturedSessionModel

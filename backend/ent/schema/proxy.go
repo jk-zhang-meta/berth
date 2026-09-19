@@ -1,7 +1,7 @@
 package schema
 
 import (
-	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
+	"github.com/jk-zhang-meta/berth/ent/schema/mixins"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/entsql"
@@ -64,6 +64,18 @@ func (Proxy) Fields() []ent.Field {
 		field.Int("expiry_warn_days").
 			Default(7).
 			Comment("Days before expiry to flag as expiring-soon (per proxy)."),
+		field.String("exit_ip").MaxLen(64).Optional().Nillable().
+			Comment("Last verified public egress IP observed through this proxy."),
+		field.String("exit_country").MaxLen(100).Optional().Nillable(),
+		field.String("exit_country_code").MaxLen(8).Optional().Nillable(),
+		field.String("exit_region").MaxLen(120).Optional().Nillable(),
+		field.String("exit_city").MaxLen(120).Optional().Nillable(),
+		field.String("exit_timezone").MaxLen(100).Optional().Nillable().
+			Comment("IANA timezone derived from the verified proxy egress."),
+		field.Int("exit_utc_offset_seconds").Optional().Nillable(),
+		field.String("exit_asn").MaxLen(128).Optional().Nillable(),
+		field.String("exit_isp").MaxLen(255).Optional().Nillable(),
+		field.Time("exit_checked_at").Optional().Nillable(),
 	}
 }
 
@@ -89,5 +101,6 @@ func (Proxy) Indexes() []ent.Index {
 		index.Fields("deleted_at"),
 		index.Fields("expires_at"),
 		index.Fields("backup_proxy_id"),
+		index.Fields("exit_ip"),
 	}
 }

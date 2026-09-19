@@ -22,6 +22,19 @@ describe('UsageProgressBar', () => {
     vi.useRealTimers()
   })
 
+  it('exposes a track hook so account cards can stretch the bar', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 40,
+        color: 'indigo'
+      }
+    })
+    const track = wrapper.get('.usage-progress-track')
+    expect(track.classes()).toContain('w-8')
+    expect(wrapper.get('.usage-progress-row').classes()).toContain('w-full')
+  })
+
   it('showNowWhenIdle=true 且利用率为 0 时显示“现在”', () => {
     const wrapper = mount(UsageProgressBar, {
       props: {

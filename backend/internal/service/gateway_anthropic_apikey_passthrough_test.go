@@ -13,19 +13,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/claude"
+	"github.com/jk-zhang-meta/berth/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
 type anthropicHTTPUpstreamRecorder struct {
-	lastReq  *http.Request
-	lastBody []byte
-	resp     *http.Response
-	err      error
+	lastReq      *http.Request
+	lastBody     []byte
+	lastProxyURL string
+	resp         *http.Response
+	err          error
 }
 
 func newAnthropicAPIKeyAccountForTest() *Account {
@@ -49,6 +50,7 @@ func newAnthropicAPIKeyAccountForTest() *Account {
 
 func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	u.lastReq = req
+	u.lastProxyURL = proxyURL
 	if req != nil && req.Body != nil {
 		b, _ := io.ReadAll(req.Body)
 		u.lastBody = b
@@ -59,6 +61,153 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 		return nil, u.err
 	}
 	return u.resp, nil
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_NativeClaudePrivacyUsesVerifiedProxySnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "claude-cli/"+claude.CLICurrentVersion+" (Windows NT 10.0; x86_64)")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	c.Request.Header.Set("X-Stainless-Arch", "x86_64")
+	c.Request.Header.Set("X-Stainless-Runtime", "node")
+	c.Request.Header.Set("X-Stainless-Runtime-Version", "v24.4.0")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "session-privacy")
+
+	metadataUserID := FormatMetadataUserID(
+		"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		"550e8400-e29b-41d4-a716-446655440000",
+		"123e4567-e89b-42d3-a456-426614174000",
+		claude.CLICurrentVersion,
+	)
+	userText := `literal <cwd>foo</cwd> and <timezone>bar</timezone> in user content`
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":true,"metadata":{"user_id":` + strconvQuote(metadataUserID) + `},"system":[{"type":"text","text":"<cwd>C:\\Users\\alice\\secret</cwd> <shell>powershell</shell> <timezone>America/Chicago</timezone>"}],"messages":[{"role":"user","content":` + strconvQuote(userText) + `}]}`)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+	require.NoError(t, err)
+
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}}
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+	svc := &GatewayService{
+		cfg:                  cfg,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+
+	checkedAt := time.Now().UTC()
+	offset := -4 * 60 * 60
+	proxyID := int64(901)
+	proxy := &Proxy{
+		ID:                   proxyID,
+		Protocol:             "http",
+		Host:                 "proxy.example",
+		Port:                 8080,
+		ExitIP:               "198.51.100.42",
+		ExitCountry:          "United States",
+		ExitCountryCode:      "US",
+		ExitRegion:           "New York",
+		ExitCity:             "New York",
+		ExitTimezone:         "America/New_York",
+		ExitUTCOffsetSeconds: &offset,
+		ExitASN:              "AS64500",
+		ExitISP:              "Example ISP",
+		ExitCheckedAt:        &checkedAt,
+	}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.ProxyID = &proxyID
+	account.Proxy = proxy
+	account.Credentials[credKeyHeaderOverrideEnabled] = true
+	account.Credentials[credKeyHeaderOverrides] = map[string]any{
+		"user-agent":                  "claude-cli/2.1.161 (Windows NT 10.0; x86_64)",
+		"x-stainless-os":              "Windows",
+		"x-stainless-arch":            "x86_64",
+		"x-stainless-runtime":         "node",
+		"x-stainless-runtime-version": "v24.4.0",
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, proxy.URL(), upstream.lastProxyURL)
+	require.NotContains(t, string(upstream.lastBody), `C:\\Users\\alice\\secret`)
+	require.NotContains(t, string(upstream.lastBody), "powershell")
+	require.NotContains(t, string(upstream.lastBody), "America/Chicago")
+	require.Contains(t, string(upstream.lastBody), agentNetworkEgressMarker)
+	require.Contains(t, string(upstream.lastBody), "198.51.100.42")
+	require.Contains(t, string(upstream.lastBody), "America/New_York")
+	require.Equal(t, userText, gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
+	require.Equal(t, defaultFingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Arch"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Runtime"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Runtime-Version"))
+	require.Equal(t, "session-privacy", getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
+	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "X-Api-Key"))
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ThirdPartyPrivacyContextIsUntouched(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "third-party-agent/1.0")
+
+	localContext := `<cwd>C:\Users\alice\secret</cwd> <shell>powershell</shell> <timezone>America/Chicago</timezone>`
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":true,"metadata":{"user_id":"user_123"},"system":[{"type":"text","text":` + strconvQuote(localContext) + `}],"messages":[{"role":"user","content":"hello"}]}`)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+	require.NoError(t, err)
+
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}}
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+	svc := &GatewayService{
+		cfg:                  cfg,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+
+	checkedAt := time.Now().UTC()
+	proxyID := int64(904)
+	proxy := &Proxy{
+		ID:            proxyID,
+		Protocol:      "http",
+		Host:          "proxy.example",
+		Port:          8080,
+		ExitIP:        "198.51.100.56",
+		ExitTimezone:  "America/New_York",
+		ExitCheckedAt: &checkedAt,
+	}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.ProxyID = &proxyID
+	account.Proxy = proxy
+	account.Credentials[credKeyHeaderOverrideEnabled] = true
+	account.Credentials[credKeyHeaderOverrides] = map[string]any{
+		"user-agent":     "third-party-agent/1.0",
+		"x-stainless-os": "Windows",
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, proxy.URL(), upstream.lastProxyURL)
+	require.Equal(t, localContext, gjson.GetBytes(upstream.lastBody, "system.0.text").String())
+	require.NotContains(t, string(upstream.lastBody), agentNetworkEgressMarker)
+	require.Equal(t, "third-party-agent/1.0", getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Equal(t, "Windows", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
 }
 
 func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
@@ -259,6 +408,92 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, upstreamRespBody, rec.Body.String())
 	require.Empty(t, rec.Header().Get("Set-Cookie"))
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_NativeClaudeCountTokensPrivacyUsesVerifiedProxySnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	c.Request.Header.Set("User-Agent", "claude-cli/"+claude.CLICurrentVersion+" (Windows NT 10.0; x86_64)")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	c.Request.Header.Set("X-Stainless-Arch", "x86_64")
+	c.Request.Header.Set("X-Stainless-Runtime", "node")
+	c.Request.Header.Set("X-Stainless-Runtime-Version", "v24.4.0")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "session-count-privacy")
+
+	metadataUserID := FormatMetadataUserID(
+		"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		"550e8400-e29b-41d4-a716-446655440000",
+		"123e4567-e89b-42d3-a456-426614174000",
+		claude.CLICurrentVersion,
+	)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":` + strconvQuote(metadataUserID) + `},"system":[{"type":"text","text":"<cwd>C:\\Users\\alice\\secret</cwd> <shell>powershell</shell> <timezone>Asia/Shanghai</timezone>"}],"messages":[{"role":"user","content":"hello"}]}`)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+	require.NoError(t, err)
+
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"input_tokens":42}`)),
+	}}
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+	svc := &GatewayService{
+		cfg:                  cfg,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+	}
+
+	checkedAt := time.Now().UTC()
+	offset := -4 * 60 * 60
+	proxyID := int64(906)
+	proxy := &Proxy{
+		ID:                   proxyID,
+		Protocol:             "http",
+		Host:                 "proxy.example",
+		Port:                 8080,
+		ExitIP:               "198.51.100.80",
+		ExitCountry:          "United States",
+		ExitCountryCode:      "US",
+		ExitRegion:           "New York",
+		ExitCity:             "New York",
+		ExitTimezone:         "America/New_York",
+		ExitUTCOffsetSeconds: &offset,
+		ExitASN:              "AS64500",
+		ExitISP:              "Example ISP",
+		ExitCheckedAt:        &checkedAt,
+	}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.ProxyID = &proxyID
+	account.Proxy = proxy
+	account.Credentials[credKeyHeaderOverrideEnabled] = true
+	account.Credentials[credKeyHeaderOverrides] = map[string]any{
+		"user-agent":                  "claude-cli/2.1.161 (Windows NT 10.0; x86_64)",
+		"x-stainless-os":              "Windows",
+		"x-stainless-arch":            "x86_64",
+		"x-stainless-runtime":         "node",
+		"x-stainless-runtime-version": "v24.4.0",
+	}
+
+	err = svc.ForwardCountTokens(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, proxy.URL(), upstream.lastProxyURL)
+	require.NotContains(t, string(upstream.lastBody), `C:\\Users\\alice\\secret`)
+	require.NotContains(t, string(upstream.lastBody), "powershell")
+	require.NotContains(t, string(upstream.lastBody), "Asia/Shanghai")
+	require.Contains(t, string(upstream.lastBody), agentNetworkEgressMarker)
+	require.Contains(t, string(upstream.lastBody), "198.51.100.80")
+	require.Contains(t, string(upstream.lastBody), "America/New_York")
+	require.Equal(t, defaultFingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Arch"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Runtime"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Runtime-Version"))
+	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "X-Api-Key"))
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_BearerAuthScheme(t *testing.T) {
@@ -1006,7 +1241,7 @@ func TestGatewayService_AnthropicOAuthRealClaudeCodeHaiku_PreservesClientHeaders
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, c.Request.Header.Get("User-Agent"), getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
-	require.Equal(t, "real-client-package", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Package-Version"))
+	require.Equal(t, defaultFingerprint.StainlessPackageVersion, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Package-Version"))
 	require.Equal(t, clientBeta, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-client-request-id"), "真实 CC 不应被强制写入 mimic request id")
 	require.Equal(t, gjson.GetBytes(body, "system").Raw, gjson.GetBytes(upstream.lastBody, "system").Raw)

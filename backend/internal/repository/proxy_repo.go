@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	entsql "entgo.io/ent/dialect/sql"
 )
@@ -53,6 +53,36 @@ func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) er
 	}
 	if proxyIn.BackupProxyID != nil {
 		builder.SetBackupProxyID(*proxyIn.BackupProxyID)
+	}
+	if proxyIn.ExitIP != "" {
+		builder.SetExitIP(proxyIn.ExitIP)
+	}
+	if proxyIn.ExitCountry != "" {
+		builder.SetExitCountry(proxyIn.ExitCountry)
+	}
+	if proxyIn.ExitCountryCode != "" {
+		builder.SetExitCountryCode(proxyIn.ExitCountryCode)
+	}
+	if proxyIn.ExitRegion != "" {
+		builder.SetExitRegion(proxyIn.ExitRegion)
+	}
+	if proxyIn.ExitCity != "" {
+		builder.SetExitCity(proxyIn.ExitCity)
+	}
+	if proxyIn.ExitTimezone != "" {
+		builder.SetExitTimezone(proxyIn.ExitTimezone)
+	}
+	if proxyIn.ExitUTCOffsetSeconds != nil {
+		builder.SetExitUtcOffsetSeconds(*proxyIn.ExitUTCOffsetSeconds)
+	}
+	if proxyIn.ExitASN != "" {
+		builder.SetExitAsn(proxyIn.ExitASN)
+	}
+	if proxyIn.ExitISP != "" {
+		builder.SetExitIsp(proxyIn.ExitISP)
+	}
+	if proxyIn.ExitCheckedAt != nil {
+		builder.SetExitCheckedAt(*proxyIn.ExitCheckedAt)
 	}
 
 	created, err := builder.Save(ctx)
@@ -175,6 +205,54 @@ func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.C
 		builder.SetBackupProxyID(*proxyIn.BackupProxyID)
 	} else {
 		builder.ClearBackupProxyID()
+	}
+	if proxyIn.ExitCheckedAt != nil {
+		if proxyIn.ExitIP != "" {
+			builder.SetExitIP(proxyIn.ExitIP)
+		} else {
+			builder.ClearExitIP()
+		}
+		if proxyIn.ExitCountry != "" {
+			builder.SetExitCountry(proxyIn.ExitCountry)
+		} else {
+			builder.ClearExitCountry()
+		}
+		if proxyIn.ExitCountryCode != "" {
+			builder.SetExitCountryCode(proxyIn.ExitCountryCode)
+		} else {
+			builder.ClearExitCountryCode()
+		}
+		if proxyIn.ExitRegion != "" {
+			builder.SetExitRegion(proxyIn.ExitRegion)
+		} else {
+			builder.ClearExitRegion()
+		}
+		if proxyIn.ExitCity != "" {
+			builder.SetExitCity(proxyIn.ExitCity)
+		} else {
+			builder.ClearExitCity()
+		}
+		if proxyIn.ExitTimezone != "" {
+			builder.SetExitTimezone(proxyIn.ExitTimezone)
+		} else {
+			builder.ClearExitTimezone()
+		}
+		if proxyIn.ExitUTCOffsetSeconds != nil {
+			builder.SetExitUtcOffsetSeconds(*proxyIn.ExitUTCOffsetSeconds)
+		} else {
+			builder.ClearExitUtcOffsetSeconds()
+		}
+		if proxyIn.ExitASN != "" {
+			builder.SetExitAsn(proxyIn.ExitASN)
+		} else {
+			builder.ClearExitAsn()
+		}
+		if proxyIn.ExitISP != "" {
+			builder.SetExitIsp(proxyIn.ExitISP)
+		} else {
+			builder.ClearExitIsp()
+		}
+		builder.SetExitCheckedAt(*proxyIn.ExitCheckedAt)
 	}
 
 	updated, err := builder.Save(ctx)
@@ -603,6 +681,32 @@ func proxyEntityToService(m *dbent.Proxy) *service.Proxy {
 	if m.Password != nil {
 		out.Password = *m.Password
 	}
+	if m.ExitIP != nil {
+		out.ExitIP = *m.ExitIP
+	}
+	if m.ExitCountry != nil {
+		out.ExitCountry = *m.ExitCountry
+	}
+	if m.ExitCountryCode != nil {
+		out.ExitCountryCode = *m.ExitCountryCode
+	}
+	if m.ExitRegion != nil {
+		out.ExitRegion = *m.ExitRegion
+	}
+	if m.ExitCity != nil {
+		out.ExitCity = *m.ExitCity
+	}
+	if m.ExitTimezone != nil {
+		out.ExitTimezone = *m.ExitTimezone
+	}
+	out.ExitUTCOffsetSeconds = m.ExitUtcOffsetSeconds
+	if m.ExitAsn != nil {
+		out.ExitASN = *m.ExitAsn
+	}
+	if m.ExitIsp != nil {
+		out.ExitISP = *m.ExitIsp
+	}
+	out.ExitCheckedAt = m.ExitCheckedAt
 	return out
 }
 

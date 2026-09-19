@@ -4,13 +4,33 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
 	"github.com/stretchr/testify/require"
 )
 
 type upstreamBillingProbeAdminRepo struct {
 	*upstreamBillingProbeAccountRepo
+}
+
+type verifiedBillingProxyRepo struct {
+	ProxyRepository
+	proxy *Proxy
+}
+
+func (r *verifiedBillingProxyRepo) GetByID(context.Context, int64) (*Proxy, error) {
+	return r.proxy, nil
+}
+
+func freshVerifiedBillingProxyRepo(proxyID int64) ProxyRepository {
+	checkedAt := time.Now().UTC()
+	return &verifiedBillingProxyRepo{proxy: &Proxy{
+		ID:            proxyID,
+		ExitIP:        "8.8.8.8",
+		ExitTimezone:  "America/Chicago",
+		ExitCheckedAt: &checkedAt,
+	}}
 }
 
 func (r *upstreamBillingProbeAdminRepo) ListShadowsByParent(context.Context, int64) ([]*Account, error) {
@@ -335,7 +355,10 @@ func TestUpdateAccountInvalidatesProbeSnapshotWhenProxyChanges(t *testing.T) {
 		},
 	}}
 
-	updated, err := (&adminServiceImpl{accountRepo: &upstreamBillingProbeAdminRepo{baseRepo}}).UpdateAccount(
+	updated, err := (&adminServiceImpl{
+		accountRepo: &upstreamBillingProbeAdminRepo{baseRepo},
+		proxyRepo:   freshVerifiedBillingProxyRepo(newProxyID),
+	}).UpdateAccount(
 		context.Background(),
 		accountID,
 		&UpdateAccountInput{ProxyID: &newProxyID},
@@ -727,7 +750,10 @@ func TestBulkUpdateAccountsInvalidatesProbeSnapshotForProxyUpdate(t *testing.T) 
 		ProxyID:    &proxyID,
 	}
 
-	result, err := (&adminServiceImpl{accountRepo: &upstreamBillingProbeAdminRepo{baseRepo}}).BulkUpdateAccounts(context.Background(), input)
+	result, err := (&adminServiceImpl{
+		accountRepo: &upstreamBillingProbeAdminRepo{baseRepo},
+		proxyRepo:   freshVerifiedBillingProxyRepo(proxyID),
+	}).BulkUpdateAccounts(context.Background(), input)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Success)

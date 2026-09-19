@@ -1,13 +1,14 @@
 package admin
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 type AntigravityOAuthHandler struct {
 	antigravityOAuthService *service.AntigravityOAuthService
+	stewards                *service.StewardStore
 }
 
 func NewAntigravityOAuthHandler(antigravityOAuthService *service.AntigravityOAuthService) *AntigravityOAuthHandler {
@@ -24,6 +25,9 @@ func (h *AntigravityOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	var req AntigravityGenerateAuthURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请求无效: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 
@@ -49,6 +53,9 @@ func (h *AntigravityOAuthHandler) ExchangeCode(c *gin.Context) {
 	var req AntigravityExchangeCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请求无效: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 
@@ -78,6 +85,9 @@ func (h *AntigravityOAuthHandler) RefreshToken(c *gin.Context) {
 	var req AntigravityRefreshTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请求无效: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 

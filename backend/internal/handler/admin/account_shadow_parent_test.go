@@ -3,8 +3,8 @@ package admin
 import (
 	"testing"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/handler/dto"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/stretchr/testify/require"
 )
 

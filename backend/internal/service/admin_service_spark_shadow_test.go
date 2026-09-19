@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
 
@@ -635,6 +635,7 @@ func TestUpdateAccount_PropagatesProxyToShadow(t *testing.T) {
 
 	// Update parent's ProxyID.
 	newProxy := int64(42)
+	svc.proxyRepo = freshVerifiedBindingProxyRepo(newProxy)
 	_, err = svc.UpdateAccount(ctx, parent.ID, &UpdateAccountInput{ProxyID: &newProxy})
 	require.NoError(t, err)
 
@@ -713,6 +714,7 @@ func TestBulkUpdateAccounts_PropagatesProxyToShadow(t *testing.T) {
 
 	// Bulk update parent's ProxyID.
 	newProxy := int64(99)
+	svc.proxyRepo = freshVerifiedBindingProxyRepo(newProxy)
 	_, err = svc.BulkUpdateAccounts(ctx, &BulkUpdateAccountsInput{
 		AccountIDs: []int64{parent.ID},
 		ProxyID:    &newProxy,

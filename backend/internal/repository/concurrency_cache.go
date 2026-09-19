@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -33,6 +33,7 @@ const (
 	liveAccountSlotKeyPrefix = "concurrency:live:account:"
 	liveUserSlotKeyPrefix    = "concurrency:live:user:"
 	liveAPIKeySlotKeyPrefix  = "concurrency:live:api_key:"
+	proxySlotKeyPrefix       = "concurrency:proxy:"
 	// API-key-scoped client WebSocket ingress leases use a shorter TTL than
 	// ordinary request slots, because idle ingress sessions do not hold a turn slot.
 	openAIWSIngressLeaseKeyPrefix  = "concurrency:openai_ws_ingress:api_key:"
@@ -388,6 +389,10 @@ func userSlotKey(userID int64) string {
 
 func apiKeySlotKey(apiKeyID int64) string {
 	return fmt.Sprintf("%s%d", apiKeySlotKeyPrefix, apiKeyID)
+}
+
+func proxySlotKey(proxyID int64) string {
+	return fmt.Sprintf("%s%d", proxySlotKeyPrefix, proxyID)
 }
 
 func liveAccountSlotKey(accountID int64) string {
@@ -750,6 +755,23 @@ func (c *concurrencyCache) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64
 	return c.rdb.ZRem(ctx, key, requestID).Err()
 }
 
+func (c *concurrencyCache) TrackProxySlot(ctx context.Context, proxyID int64, requestID string) error {
+	if c == nil || c.rdb == nil || proxyID <= 0 {
+		return nil
+	}
+	key := proxySlotKey(proxyID)
+	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, requestID).Result()
+	return err
+}
+
+func (c *concurrencyCache) ReleaseProxySlot(ctx context.Context, proxyID int64, requestID string) error {
+	if c == nil || c.rdb == nil || proxyID <= 0 {
+		return nil
+	}
+	key := proxySlotKey(proxyID)
+	return c.rdb.ZRem(ctx, key, requestID).Err()
+}
+
 func (c *concurrencyCache) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
 	if c == nil || c.rdb == nil || apiKeyID <= 0 || maxConnections <= 0 || leaseID == "" {
 		return false, nil
@@ -880,6 +902,49 @@ func (c *concurrencyCache) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKey
 	result := make(map[int64]int, len(apiKeyIDs))
 	for _, cmd := range cmds {
 		result[cmd.apiKeyID] = int(cmd.zcardCmd.Val() + cmd.liveCmd.Val())
+	}
+	return result, nil
+}
+
+func (c *concurrencyCache) GetProxyConcurrencyBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error) {
+	result := make(map[int64]int, len(proxyIDs))
+	for _, id := range proxyIDs {
+		result[id] = 0
+	}
+	if len(proxyIDs) == 0 {
+		return result, nil
+	}
+	if c == nil || c.rdb == nil {
+		return result, nil
+	}
+
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis TIME: %w", err)
+	}
+	cutoffTime := now.Unix() - int64(c.slotTTLSeconds)
+
+	pipe := c.rdb.Pipeline()
+	type proxyCmd struct {
+		proxyID  int64
+		zcardCmd *redis.IntCmd
+	}
+	cmds := make([]proxyCmd, 0, len(proxyIDs))
+	for _, proxyID := range proxyIDs {
+		key := proxySlotKey(proxyID)
+		pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(cutoffTime, 10))
+		cmds = append(cmds, proxyCmd{
+			proxyID:  proxyID,
+			zcardCmd: pipe.ZCard(ctx, key),
+		})
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("pipeline exec: %w", err)
+	}
+
+	for _, cmd := range cmds {
+		result[cmd.proxyID] = int(cmd.zcardCmd.Val())
 	}
 	return result, nil
 }

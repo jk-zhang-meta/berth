@@ -9,11 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/handler/dto"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,6 +26,27 @@ type GrokOAuthHandler struct {
 	quotaService     *service.GrokQuotaService
 	importProber     grokImportProber
 	reconciler       service.GrokOAuthReconciler
+	stewards         *service.StewardStore
+}
+
+func (h *GrokOAuthHandler) SetStewards(store *service.StewardStore) {
+	if h == nil {
+		return
+	}
+	h.stewards = store
+}
+
+func (h *GrokOAuthHandler) allowAccount(c *gin.Context, accountID int64) bool {
+	role, ok := middleware.GetUserRoleFromContext(c)
+	if !ok || role == service.RoleAdmin {
+		return true
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || h.stewards == nil || !h.stewards.OwnsAccount(c.Request.Context(), accountID, subject.UserID) {
+		response.Forbidden(c, "not your account")
+		return false
+	}
+	return true
 }
 
 func NewGrokOAuthHandler(
@@ -56,6 +78,9 @@ func (h *GrokOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		req = GrokGenerateAuthURLRequest{}
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	result, err := h.grokOAuthService.GenerateAuthURL(c.Request.Context(), req.ProxyID, req.RedirectURI)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -76,6 +101,9 @@ func (h *GrokOAuthHandler) ExchangeCode(c *gin.Context) {
 	var req GrokExchangeCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 	tokenInfo, err := h.grokOAuthService.ExchangeCode(c.Request.Context(), &service.GrokExchangeCodeInput{
@@ -116,6 +144,9 @@ func (h *GrokOAuthHandler) RefreshToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	refreshToken := strings.TrimSpace(req.RefreshToken)
 	if refreshToken == "" {
 		refreshToken = strings.TrimSpace(req.RT)
@@ -154,6 +185,9 @@ func (h *GrokOAuthHandler) ValidateSSOToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	tokenInfo, err := h.grokOAuthService.ValidateSSOToken(c.Request.Context(), req.SSOToken, req.ProxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -170,6 +204,9 @@ func (h *GrokOAuthHandler) AuthorizePassword(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	tokenInfo, err := h.grokOAuthService.AuthorizePassword(c.Request.Context(), req.Email, req.Password, req.ProxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -182,6 +219,9 @@ func (h *GrokOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
 		return
 	}
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
@@ -226,6 +266,10 @@ type GrokOAuthReconcileRequest struct {
 }
 
 func (h *GrokOAuthHandler) ReconcileOAuthAccounts(c *gin.Context) {
+	if isAccountUser(c) {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	var req GrokOAuthReconcileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request")
@@ -277,6 +321,9 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	tokenInfo, err := h.grokOAuthService.ExchangeCode(c.Request.Context(), &service.GrokExchangeCodeInput{
 		SessionID:   req.SessionID,
 		Code:        req.Code,
@@ -298,7 +345,7 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		name = "Grok OAuth Account"
 	}
 
-	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+	account, err := h.adminService.CreateAccount(c.Request.Context(), accountCreatePolicy(c, &service.CreateAccountInput{
 		Name:        name,
 		Platform:    service.PlatformGrok,
 		Type:        service.AccountTypeOAuth,
@@ -307,30 +354,35 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Concurrency: req.Concurrency,
 		Priority:    req.Priority,
 		GroupIDs:    req.GroupIDs,
-	})
+	}))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if account != nil && h.stewards != nil {
+		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
 	}
 	h.scheduleGrokImportProbe(account)
 	response.Success(c, dto.AccountFromService(account))
 }
 
 type GrokSSOToOAuthRequest struct {
-	SSOTokens          []string       `json:"sso_tokens"`
-	SSOToken           string         `json:"sso_token"`
-	Name               string         `json:"name"`
-	Notes              *string        `json:"notes"`
-	ProxyID            *int64         `json:"proxy_id"`
-	GroupIDs           []int64        `json:"group_ids"`
-	Credentials        map[string]any `json:"credentials"`
-	Extra              map[string]any `json:"extra"`
-	Concurrency        int            `json:"concurrency"`
-	LoadFactor         *int           `json:"load_factor"`
-	Priority           int            `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	skipDefaultGroupBind bool
+	privateOwnerUserID   int64
+	SSOTokens            []string       `json:"sso_tokens"`
+	SSOToken             string         `json:"sso_token"`
+	Name                 string         `json:"name"`
+	Notes                *string        `json:"notes"`
+	ProxyID              *int64         `json:"proxy_id"`
+	GroupIDs             []int64        `json:"group_ids"`
+	Credentials          map[string]any `json:"credentials"`
+	Extra                map[string]any `json:"extra"`
+	Concurrency          int            `json:"concurrency"`
+	LoadFactor           *int           `json:"load_factor"`
+	Priority             int            `json:"priority"`
+	RateMultiplier       *float64       `json:"rate_multiplier"`
+	ExpiresAt            *int64         `json:"expires_at"`
+	AutoPauseOnExpired   *bool          `json:"auto_pause_on_expired"`
 }
 
 type GrokSSOToOAuthItemResult struct {
@@ -362,6 +414,16 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
+	if isAccountUser(c) {
+		req.GroupIDs = nil
+		req.Priority = 0
+		req.RateMultiplier = nil
+		req.skipDefaultGroupBind = true
+		req.privateOwnerUserID = privateAccountOwner(c)
+	}
 	tokens := normalizeSSOImportTokens(req.SSOTokens, req.SSOToken)
 	if len(tokens) == 0 {
 		response.BadRequest(c, "sso_tokens is required")
@@ -369,6 +431,7 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	userID := getAdminIDFromContext(c)
 	workerCount := grokSSOImportConcurrency
 	if len(tokens) < workerCount {
 		workerCount = len(tokens)
@@ -381,7 +444,7 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				items[job.index] = h.safeCreateAccountFromSSOToken(ctx, req, job.token, job.index+1, len(tokens))
+				items[job.index] = h.safeCreateAccountFromSSOToken(ctx, userID, req, job.token, job.index+1, len(tokens))
 			}
 		}()
 	}
@@ -405,7 +468,7 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 	response.Success(c, result)
 }
 
-func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) (result grokSSOImportWorkerResult) {
+func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, userID int64, req GrokSSOToOAuthRequest, token string, index, total int) (result grokSSOImportWorkerResult) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			slog.Error("grok_sso_import_worker_panic", "index", index, "recover", recovered)
@@ -417,10 +480,10 @@ func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, re
 			}
 		}
 	}()
-	return h.createAccountFromSSOToken(ctx, req, token, index, total)
+	return h.createAccountFromSSOToken(ctx, userID, req, token, index, total)
 }
 
-func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) grokSSOImportWorkerResult {
+func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, userID int64, req GrokSSOToOAuthRequest, token string, index, total int) grokSSOImportWorkerResult {
 	tokenInfo, err := h.grokOAuthService.ConvertFromSSO(ctx, token, req.ProxyID)
 	if err != nil {
 		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Error: grokSSOImportErrorMessage(err)}}
@@ -430,23 +493,28 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req Gr
 	name := grokSSOImportAccountName(req.Name, tokenInfo, index, total)
 	expiresAt, autoPauseOnExpired := grokSSOImportExpiry(req.ExpiresAt, req.AutoPauseOnExpired, tokenInfo)
 	account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
-		Name:               name,
-		Notes:              req.Notes,
-		Platform:           service.PlatformGrok,
-		Type:               service.AccountTypeOAuth,
-		Credentials:        credentials,
-		Extra:              cloneGrokSSOMap(req.Extra),
-		ProxyID:            req.ProxyID,
-		Concurrency:        req.Concurrency,
-		LoadFactor:         req.LoadFactor,
-		Priority:           req.Priority,
-		RateMultiplier:     req.RateMultiplier,
-		GroupIDs:           append([]int64(nil), req.GroupIDs...),
-		ExpiresAt:          expiresAt,
-		AutoPauseOnExpired: autoPauseOnExpired,
+		PrivateOwnerUserID:   req.privateOwnerUserID,
+		Name:                 name,
+		Notes:                req.Notes,
+		Platform:             service.PlatformGrok,
+		Type:                 service.AccountTypeOAuth,
+		Credentials:          credentials,
+		Extra:                cloneGrokSSOMap(req.Extra),
+		ProxyID:              req.ProxyID,
+		Concurrency:          req.Concurrency,
+		LoadFactor:           req.LoadFactor,
+		Priority:             req.Priority,
+		RateMultiplier:       req.RateMultiplier,
+		GroupIDs:             append([]int64(nil), req.GroupIDs...),
+		SkipDefaultGroupBind: req.skipDefaultGroupBind,
+		ExpiresAt:            expiresAt,
+		AutoPauseOnExpired:   autoPauseOnExpired,
 	})
 	if err != nil {
 		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(err)}}
+	}
+	if account != nil && h.stewards != nil && userID > 0 {
+		_ = h.stewards.ClaimAccount(ctx, account.ID, userID)
 	}
 	h.scheduleGrokImportProbe(account)
 	return grokSSOImportWorkerResult{
@@ -593,6 +661,9 @@ func (h *GrokOAuthHandler) QueryQuota(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	if h.quotaService == nil {
 		response.BadRequest(c, "grok quota service is not enabled")
 		return
@@ -609,6 +680,9 @@ func (h *GrokOAuthHandler) ResetQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
 		return
 	}
 	if h.quotaService == nil {

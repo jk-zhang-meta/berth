@@ -10,14 +10,15 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
 )
 
 // Account management implementations
@@ -290,6 +291,13 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	}
 	autoPauseOnExpired := source.AutoPauseOnExpired
 	groups, groupIDs := duplicateAccountGroups(source)
+	groupIDs, err = s.inheritableAccountGroupIDs(ctx, groupIDs)
+	if err != nil {
+		return nil, err
+	}
+	groups = slices.DeleteFunc(groups, func(group AccountGroup) bool {
+		return !slices.Contains(groupIDs, group.GroupID)
+	})
 	if err := s.ValidateAccountGroupBindings(ctx, groupIDs); err != nil {
 		return nil, err
 	}
@@ -417,17 +425,18 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	delete(accountExtra, OllamaCloudUsageSnapshotExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
-		Name:        input.Name,
-		Notes:       normalizeAccountNotes(input.Notes),
-		Platform:    input.Platform,
-		Type:        input.Type,
-		Credentials: input.Credentials,
-		Extra:       accountExtra,
-		ProxyID:     input.ProxyID,
-		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
-		Priority:    input.Priority,
-		Status:      StatusActive,
-		Schedulable: true,
+		Name:               input.Name,
+		Notes:              normalizeAccountNotes(input.Notes),
+		Platform:           input.Platform,
+		Type:               input.Type,
+		Credentials:        input.Credentials,
+		Extra:              accountExtra,
+		ProxyID:            input.ProxyID,
+		Concurrency:        normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
+		Priority:           input.Priority,
+		Status:             StatusActive,
+		Schedulable:        true,
+		PrivateOwnerUserID: input.PrivateOwnerUserID,
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -471,6 +480,9 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
+		return nil, err
+	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, err
@@ -567,6 +579,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if input.ProxyID != nil && !account.IsCredentialShadow() {
+		currentProxyID := int64(0)
+		if account.ProxyID != nil {
+			currentProxyID = *account.ProxyID
+		}
+		if *input.ProxyID != currentProxyID {
+			if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
@@ -1015,6 +1038,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					"spark shadow account %d proxy is inherited from its parent and cannot be set in bulk; manage it on the parent account", acc.ID)
 			}
 		}
+		if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
+			return nil, err
+		}
 	}
 
 	// 预加载账号平台信息（混合渠道检查需要）。
@@ -1335,7 +1361,6 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW",
 			"spark shadow parent must be a real account, not another spark shadow")
 	}
-
 	// 2. 一母一影校验
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, parentID)
 	if err != nil {
@@ -1359,7 +1384,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		}
 	} else if len(parent.GroupIDs) > 0 {
 		groupIDs = append([]int64(nil), parent.GroupIDs...)
-	} else if s.groupRepo != nil {
+	} else if s.groupRepo != nil && !opts.SkipDefaultGroupBind {
 		defaultGroupName := PlatformOpenAI + "-default"
 		if groups, gerr := s.groupRepo.ListActiveByPlatform(ctx, PlatformOpenAI); gerr == nil {
 			for _, g := range groups {
@@ -1369,6 +1394,10 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 				}
 			}
 		}
+	}
+	groupIDs, err = s.inheritableAccountGroupIDs(ctx, groupIDs)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.ValidateAccountGroupBindings(ctx, groupIDs); err != nil {
 		return nil, err
@@ -1398,17 +1427,18 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		priority = parent.Priority
 	}
 	shadow := &Account{
-		Name:            name,
-		Platform:        PlatformOpenAI,
-		Type:            AccountTypeOAuth,
-		Status:          StatusActive,
-		Credentials:     map[string]any{"model_mapping": defaultSparkShadowModelMapping()},
-		ParentAccountID: &parentID,
-		QuotaDimension:  QuotaDimensionSpark,
-		ProxyID:         parent.ProxyID,
-		Priority:        priority,
-		Concurrency:     concurrency,
-		Schedulable:     true,
+		PrivateOwnerUserID: opts.PrivateOwnerUserID,
+		Name:               name,
+		Platform:           PlatformOpenAI,
+		Type:               AccountTypeOAuth,
+		Status:             StatusActive,
+		Credentials:        map[string]any{"model_mapping": defaultSparkShadowModelMapping()},
+		ParentAccountID:    &parentID,
+		QuotaDimension:     QuotaDimensionSpark,
+		ProxyID:            parent.ProxyID,
+		Priority:           priority,
+		Concurrency:        concurrency,
+		Schedulable:        true,
 		Extra: map[string]any{
 			openAILongContextBillingEnabledKey: parent.IsOpenAILongContextBillingEnabled(),
 		},

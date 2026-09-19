@@ -3,8 +3,9 @@ package admin
 import (
 	"strconv"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,6 +18,10 @@ type ollamaCloudUsageAutoRefreshRequest struct {
 }
 
 func (h *AccountHandler) GetOllamaCloudUsageSettings(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	if h.ollamaCloudUsage == nil {
 		response.ErrorFrom(c, service.ErrOllamaCloudUsageUnavailable)
 		return
@@ -30,6 +35,10 @@ func (h *AccountHandler) GetOllamaCloudUsageSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateOllamaCloudUsageSettings(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	if h.ollamaCloudUsage == nil {
 		response.ErrorFrom(c, service.ErrOllamaCloudUsageUnavailable)
 		return
@@ -55,7 +64,7 @@ func (h *AccountHandler) GetOllamaCloudUsage(c *gin.Context) {
 	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
-	accountID, ok := ollamaCloudUsageAccountID(c)
+	accountID, ok := h.ollamaCloudUsageAccountID(c)
 	if !ok {
 		return
 	}
@@ -71,7 +80,7 @@ func (h *AccountHandler) SaveOllamaCloudUsageSession(c *gin.Context) {
 	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
-	accountID, ok := ollamaCloudUsageAccountID(c)
+	accountID, ok := h.ollamaCloudUsageAccountID(c)
 	if !ok {
 		return
 	}
@@ -92,7 +101,7 @@ func (h *AccountHandler) DeleteOllamaCloudUsageSession(c *gin.Context) {
 	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
-	accountID, ok := ollamaCloudUsageAccountID(c)
+	accountID, ok := h.ollamaCloudUsageAccountID(c)
 	if !ok {
 		return
 	}
@@ -108,7 +117,7 @@ func (h *AccountHandler) SetOllamaCloudUsageAutoRefresh(c *gin.Context) {
 	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
-	accountID, ok := ollamaCloudUsageAccountID(c)
+	accountID, ok := h.ollamaCloudUsageAccountID(c)
 	if !ok {
 		return
 	}
@@ -129,7 +138,7 @@ func (h *AccountHandler) RefreshOllamaCloudUsage(c *gin.Context) {
 	if !h.requireOllamaCloudUsage(c) {
 		return
 	}
-	accountID, ok := ollamaCloudUsageAccountID(c)
+	accountID, ok := h.ollamaCloudUsageAccountID(c)
 	if !ok {
 		return
 	}
@@ -149,13 +158,16 @@ func (h *AccountHandler) requireOllamaCloudUsage(c *gin.Context) bool {
 	return false
 }
 
-func ollamaCloudUsageAccountID(c *gin.Context) (int64, bool) {
+func (h *AccountHandler) ollamaCloudUsageAccountID(c *gin.Context) (int64, bool) {
 	if c == nil {
 		return 0, false
 	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
+		return 0, false
+	}
+	if !h.allowAccount(c, accountID) {
 		return 0, false
 	}
 	return accountID, true

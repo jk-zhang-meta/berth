@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/servertiming"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 // S3BackupStore implements service.BackupObjectStore using AWS S3 compatible storage

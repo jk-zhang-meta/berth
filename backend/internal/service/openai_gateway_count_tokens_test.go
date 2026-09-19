@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -85,6 +85,71 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesI
 	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+}
+
+func TestOpenAIGatewayService_ForwardResponsesInputTokens_NativeCodexPrivacyUsesVerifiedProxySnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/input_tokens", nil)
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0 (Windows 11; x86_64) xterm-256color")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"object":"response.input_tokens","input_tokens":12}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+
+	proxyID := int64(903)
+	offset := -4 * 60 * 60
+	checkedAt := time.Now().UTC()
+	account := &Account{
+		ID:          103,
+		Name:        "openai-input-tokens-privacy",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+		ProxyID:     &proxyID,
+		Proxy: &Proxy{
+			ID:                   proxyID,
+			Protocol:             "http",
+			Host:                 "proxy.example",
+			Port:                 8080,
+			ExitIP:               "198.51.100.79",
+			ExitCountry:          "United States",
+			ExitCountryCode:      "US",
+			ExitRegion:           "New York",
+			ExitCity:             "New York",
+			ExitTimezone:         "America/New_York",
+			ExitUTCOffsetSeconds: &offset,
+			ExitASN:              "AS64500",
+			ExitISP:              "Example ISP",
+			ExitCheckedAt:        &checkedAt,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	body := []byte(`{"model":"gpt-5.2","instructions":"keep","input":[{"role":"user","content":[{"type":"input_text","text":"<environment_context><cwd>C:\\Users\\alice\\secret</cwd><shell>powershell</shell><timezone>Asia/Shanghai</timezone></environment_context>"}]}]}`)
+	err := svc.ForwardResponsesInputTokens(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, account.Proxy.URL(), upstream.lastProxyURL)
+	require.Contains(t, string(upstream.lastBody), `C:\\Users\\alice\\secret`)
+	require.Contains(t, string(upstream.lastBody), "powershell")
+	require.NotContains(t, string(upstream.lastBody), "Asia/Shanghai")
+	require.Contains(t, string(upstream.lastBody), "<timezone>America/New_York</timezone>")
+	require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), agentNetworkEgressMarker)
+	require.Equal(t, "keep", gjson.GetBytes(upstream.lastBody, "instructions").String())
+	require.Equal(t, CodexCanonicalUserAgent(), upstream.lastReq.Header.Get("User-Agent"))
 }
 
 func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_OAuthFallsBackWhenPlatformEndpointUnsupported(t *testing.T) {
@@ -327,7 +392,7 @@ func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
 		{
 			name:               "simple user text",
 			defaultOpenAIModel: "gpt-5",
-			anthropicBody:      []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello world from sub2api"}]}`),
+			anthropicBody:      []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello world from berth"}]}`),
 		},
 		{
 			name:               "system plus tool",
@@ -337,7 +402,7 @@ func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
 		{
 			name:               "multi turn text",
 			defaultOpenAIModel: "gpt-4.1",
-			anthropicBody:      []byte(`{"model":"claude-opus-4-1","messages":[{"role":"user","content":"summarize this repo"},{"role":"assistant","content":"which repo?"},{"role":"user","content":"sub2api"}]}`),
+			anthropicBody:      []byte(`{"model":"claude-opus-4-1","messages":[{"role":"user","content":"summarize this repo"},{"role":"assistant","content":"which repo?"},{"role":"user","content":"berth"}]}`),
 		},
 	}
 

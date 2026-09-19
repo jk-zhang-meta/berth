@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -836,6 +836,20 @@ func (r *publicBatchImageAccountRepo) ListSchedulableByPlatform(_ context.Contex
 	out := make([]Account, 0, len(r.accounts))
 	for _, account := range r.accounts {
 		if account.Platform == platform {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
+func (r *publicBatchImageAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	accounts, err := r.ListSchedulableByPlatform(ctx, platform)
+	if err != nil {
+		return nil, err
+	}
+	var out []Account
+	for _, account := range accounts {
+		if len(account.GroupIDs) == 0 {
 			out = append(out, account)
 		}
 	}

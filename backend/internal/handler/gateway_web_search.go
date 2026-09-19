@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/websearch"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -175,6 +175,7 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		}
 		account = selected.Account
 		accountReleaseFunc = release
+		h.gatewayService.BindWorkSessionAccount(c.Request.Context(), account.ID)
 
 		if isXSearch {
 			nativeResp, providerName, err = h.doGrokNativeXSearch(c.Request.Context(), c, account, req, searchModel, maxResults)
@@ -303,10 +304,11 @@ func (h *GatewayHandler) acquireWebSearchAccountSlot(
 		}
 	}
 	streamStarted := false
-	slotRelease, err := h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+	slotRelease, err := h.concurrencyHelper.AcquireAccountCapacityWithWaitTimeout(
 		c,
 		account.ID,
 		selected.WaitPlan.MaxConcurrency,
+		selected.WaitPlan.MaxRPM,
 		selected.WaitPlan.Timeout,
 		false,
 		&streamStarted,
@@ -315,6 +317,7 @@ func (h *GatewayHandler) acquireWebSearchAccountSlot(
 	if err != nil {
 		return nil, false, err
 	}
+	slotRelease = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, slotRelease)
 	return slotRelease, true, nil
 }
 

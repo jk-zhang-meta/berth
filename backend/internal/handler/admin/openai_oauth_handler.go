@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/handler/dto"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,6 +23,27 @@ type OpenAIOAuthHandler struct {
 	adminService       service.AdminService
 	quotaService       openAIQuotaService
 	rateLimitService   openAIAccountStateRecoverer
+	stewards           *service.StewardStore
+}
+
+func (h *OpenAIOAuthHandler) SetStewards(store *service.StewardStore) {
+	if h == nil {
+		return
+	}
+	h.stewards = store
+}
+
+func (h *OpenAIOAuthHandler) allowAccount(c *gin.Context, accountID int64) bool {
+	role, ok := middleware.GetUserRoleFromContext(c)
+	if !ok || role == service.RoleAdmin {
+		return true
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || h.stewards == nil || !h.stewards.OwnsAccount(c.Request.Context(), accountID, subject.UserID) {
+		response.Forbidden(c, "not your account")
+		return false
+	}
+	return true
 }
 
 type openAIQuotaService interface {
@@ -113,6 +135,9 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		// Allow empty body
 		req = OpenAIGenerateAuthURLRequest{}
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 
 	result, err := h.openaiOAuthService.GenerateAuthURL(
 		c.Request.Context(),
@@ -143,6 +168,9 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 	var req OpenAIExchangeCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 
@@ -195,6 +223,9 @@ func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 	refreshToken := strings.TrimSpace(req.RefreshToken)
 	if refreshToken == "" {
 		refreshToken = strings.TrimSpace(req.RT)
@@ -234,6 +265,9 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
 		return
 	}
 
@@ -310,6 +344,9 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+		return
+	}
 
 	// Exchange code for tokens
 	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
@@ -339,7 +376,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	// Create account
-	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+	account, err := h.adminService.CreateAccount(c.Request.Context(), accountCreatePolicy(c, &service.CreateAccountInput{
 		Name:        name,
 		Platform:    platform,
 		Type:        "oauth",
@@ -349,10 +386,13 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Concurrency: req.Concurrency,
 		Priority:    req.Priority,
 		GroupIDs:    req.GroupIDs,
-	})
+	}))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if h.stewards != nil {
+		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
 	}
 
 	response.Success(c, dto.AccountFromService(account))
@@ -364,6 +404,9 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 	var req OpenAICodexPATCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
 		return
 	}
 	if err := service.ValidateOpenAILongContextBillingExtra(service.PlatformOpenAI, req.Extra); err != nil {
@@ -429,7 +472,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
 	}
 
-	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+	account, err := h.adminService.CreateAccount(c.Request.Context(), accountCreatePolicy(c, &service.CreateAccountInput{
 		Name:                  buildOpenAICodexPATAccountName(req.Name, tokenInfo),
 		Notes:                 req.Notes,
 		Platform:              service.PlatformOpenAI,
@@ -446,10 +489,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 		AutoPauseOnExpired:    req.AutoPauseOnExpired,
 		SkipDefaultGroupBind:  skipDefaultGroupBind,
 		SkipMixedChannelCheck: req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk,
-	})
+	}))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+
+	if account != nil && h.stewards != nil {
+		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
 	}
 
 	response.Success(c, dto.AccountFromService(account))
@@ -478,6 +525,9 @@ func (h *OpenAIOAuthHandler) QueryQuota(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, accountID) {
+		return
+	}
 	if h.quotaService == nil {
 		response.BadRequest(c, "openai quota service is not enabled")
 		return
@@ -503,6 +553,9 @@ func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
 		return
 	}
 	if h.quotaService == nil {
@@ -550,6 +603,9 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, parentID) {
+		return
+	}
 
 	var req CreateShadowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -557,15 +613,25 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 		return
 	}
 
+	if isAccountUser(c) {
+		req.GroupIDs = nil
+		req.Priority = 0
+	}
 	shadow, err := h.adminService.CreateShadow(c.Request.Context(), parentID, service.ShadowOptions{
-		Name:        req.Name,
-		Priority:    req.Priority,
-		Concurrency: req.Concurrency,
-		GroupIDs:    req.GroupIDs,
+		PrivateOwnerUserID:   privateAccountOwner(c),
+		SkipDefaultGroupBind: isAccountUser(c),
+		Name:                 req.Name,
+		Priority:             req.Priority,
+		Concurrency:          req.Concurrency,
+		GroupIDs:             req.GroupIDs,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+
+	if shadow != nil && h.stewards != nil {
+		_ = h.stewards.ClaimAccount(c.Request.Context(), shadow.ID, getAdminIDFromContext(c))
 	}
 
 	response.Success(c, dto.AccountFromServiceShallow(shadow))
@@ -577,6 +643,9 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, accountID) {
 		return
 	}
 	if h.quotaService == nil {

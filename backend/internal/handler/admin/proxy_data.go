@@ -7,13 +7,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 // ExportData exports proxy-only data for migration.
 func (h *ProxyHandler) ExportData(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	ctx := c.Request.Context()
 
 	selectedIDs, err := parseProxyIDs(c)
@@ -93,6 +98,10 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 
 // ImportData imports proxy-only data for migration.
 func (h *ProxyHandler) ImportData(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	type ProxyImportRequest struct {
 		Data DataPayload `json:"data"`
 	}

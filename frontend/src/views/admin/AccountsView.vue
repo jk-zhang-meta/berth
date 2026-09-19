@@ -6,7 +6,9 @@
           <AccountTableFilters
             v-model:searchQuery="params.search"
             :filters="params"
-            :groups="groups"
+            :groups="authStore.isAdmin ? groups : []"
+            :owners="authStore.isAdmin ? ownerOptions : []"
+            :show-group-filter="authStore.isAdmin"
             @update:filters="(newFilters) => Object.assign(params, newFilters)"
             @change="debouncedReload"
             @update:searchQuery="debouncedReload"
@@ -16,6 +18,11 @@
             @refresh="handleManualRefresh"
             @create="showCreate = true"
           >
+            <template #before>
+              <button class="btn btn-secondary px-2 md:px-3" type="button" @click="toggleCardView">
+                {{ cardView ? '表格' : '卡片' }}
+              </button>
+            </template>
             <template #after>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
@@ -63,7 +70,7 @@
               </div>
 
               <!-- More Tools Dropdown -->
-              <div class="relative" ref="accountToolsDropdownRef">
+              <div v-if="authStore.isAdmin" class="relative" ref="accountToolsDropdownRef">
                 <button
                   ref="accountToolsTriggerRef"
                   @click="toggleAccountToolsDropdown"
@@ -133,27 +140,6 @@
                         </span>
                         <span class="flex-1 text-left">{{ t('admin.tlsFingerprintProfiles.title') }}</span>
                       </button>
-
-                      <div class="my-2 border-t border-gray-100 dark:border-dark-700"></div>
-                      <div class="px-2 py-2">
-                        <div class="flex items-center justify-between gap-3">
-                          <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                            {{ t('admin.accounts.viewColumns') }}
-                          </span>
-                          <Icon name="grid" size="sm" class="text-gray-400" />
-                        </div>
-                      </div>
-                      <div class="grid grid-cols-1 gap-1">
-                        <button
-                          v-for="col in toggleableColumns"
-                          :key="col.key"
-                          @click="toggleColumn(col.key)"
-                          class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
-                        >
-                          <span class="truncate">{{ col.label }}</span>
-                          <Icon v-if="isColumnVisible(col.key)" name="check" size="sm" class="text-primary-500" />
-                        </button>
-                      </div>
                     </div>
                   </div>
                 </Teleport>
@@ -176,6 +162,8 @@
       </template>
       <template #table>
         <AccountBulkActionsBar
+          v-if="authStore.isAdmin || selIds.length > 0"
+          :pool-admin="authStore.isAdmin"
           :selected-ids="selIds"
           :total-results="pagination.total"
           :selecting-all="selectingAllResults"
@@ -191,7 +179,35 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
-        <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div v-if="cardView" class="accounts-grid-wrap">
+          <div class="accounts-grid">
+            <AccountPoolCard
+              v-for="row in accounts"
+              :key="row.id"
+              :account="row"
+              :proxies="proxies"
+              :groups="accountGroupsForRow(row)"
+              :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
+              :today-stats-loading="todayStatsLoading"
+              :today-stats-error="todayStatsError"
+              :manual-refresh-token="usageManualRefreshToken"
+              :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
+              :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
+              :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
+              :request-batched-usage="queueBatchedUsage"
+              :toggling-schedulable="togglingSchedulable === row.id"
+              :show-pool-controls="authStore.isAdmin"
+              @edit="handleEdit"
+              @delete="handleDelete"
+              @more="(account, event) => openMenu(account, event)"
+              @toggle-schedulable="handleToggleSchedulable"
+              @account-updated="handleAccountUpdated"
+              @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
+              @show-temp-unsched="handleShowTempUnsched"
+            />
+          </div>
+        </div>
+        <div v-else ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           ref="dataTableRef"
           :columns="cols"
@@ -328,8 +344,8 @@
           </template>
           <template #cell-proxy="{ row }">
             <div class="flex flex-col gap-1">
-              <div v-if="row.proxy" class="flex items-center gap-2">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
+              <div v-if="row.proxy" class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
                 <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
                   ({{ row.proxy.country_code }})
                 </span>
@@ -456,7 +472,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" :show-admin-ops="authStore.isAdmin" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -506,6 +522,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
+import AccountPoolCard from '@/components/berth/AccountPoolCard.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
@@ -587,6 +604,22 @@ const selTypes = computed<AccountType[]>(() => {
   )
   return [...types]
 })
+const CARD_VIEW_STORAGE_KEY = 'account-card-view'
+const cardView = ref(
+  import.meta.env.MODE === 'test'
+    ? false
+    : typeof localStorage === 'undefined'
+      ? true
+      : localStorage.getItem(CARD_VIEW_STORAGE_KEY) !== '0'
+)
+const toggleCardView = () => {
+  cardView.value = !cardView.value
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(CARD_VIEW_STORAGE_KEY, cardView.value ? '1' : '0')
+  }
+  if (cardView.value) void refreshTodayStatsBatch()
+}
+const ownerOptions = ref<{ value: string; label: string }[]>([])
 const showCreate = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
@@ -594,6 +627,25 @@ const showImportData = ref(false)
 const showExportDataDialog = ref(false)
 const includeProxyOnExport = ref(true)
 const showBulkEdit = ref(false)
+
+const refreshProxies = async () => {
+  try {
+    if (typeof adminAPI.proxies?.getAllWithCount === 'function') {
+      proxies.value = await adminAPI.proxies.getAllWithCount()
+    } else if (typeof adminAPI.proxies?.getAll === 'function') {
+      proxies.value = await adminAPI.proxies.getAll()
+    }
+  } catch (error) {
+    console.error('Failed to refresh proxies:', error)
+  }
+}
+
+
+watch([showCreate, showEdit, showBulkEdit], ([createOpen, editOpen, bulkOpen]) => {
+  if (createOpen || editOpen || bulkOpen) {
+    void refreshProxies()
+  }
+})
 const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
@@ -827,7 +879,7 @@ const flushQueuedUsageBatch = async () => {
 }
 
 const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
-  if (!isDesktopViewport.value) return
+  if (!cardView.value && !isDesktopViewport.value) return
   if (!accountSupportsBatchUsage(account)) return
 
   const force = options?.force === true
@@ -868,7 +920,7 @@ const refreshTodayStatsBatch = async () => {
   // - today_stats column shows dedicated today's metrics.
   // - usage column also embeds today's stats for Key/Bedrock rows.
   // So we only skip fetching when BOTH columns are hidden.
-  if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage')) {
+  if (!cardView.value && hiddenColumns.has('today_stats') && hiddenColumns.has('usage')) {
     todayStatsLoading.value = false
     todayStatsError.value = null
     return
@@ -973,14 +1025,6 @@ const loadSavedColumns = () => {
   }
 }
 
-const saveColumnsToStorage = () => {
-  try {
-    localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
-    localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
-  } catch (e) {
-    console.error('Failed to save columns:', e)
-  }
-}
 
 const loadSavedAutoRefresh = () => {
   try {
@@ -1036,28 +1080,6 @@ const setAutoRefreshInterval = (seconds: (typeof autoRefreshIntervals)[number]) 
   }
 }
 
-const toggleColumn = (key: string) => {
-  const wasHidden = hiddenColumns.has(key)
-  if (hiddenColumns.has(key)) {
-    hiddenColumns.delete(key)
-  } else {
-    hiddenColumns.add(key)
-  }
-  saveColumnsToStorage()
-  if ((key === 'today_stats' || key === 'usage') && wasHidden) {
-    refreshTodayStatsBatch().catch((error) => {
-      console.error('Failed to load account today stats after showing column:', error)
-    })
-  }
-  if (key === 'scheduler_score') {
-    // The server only returns scheduler scores when this column is visible, so reload the current page immediately.
-    syncAccountListDerivedParams()
-    load().catch((error) => {
-      console.error('Failed to reload accounts after toggling scheduler score column:', error)
-    })
-  }
-}
-
 const isColumnVisible = (key: string) => !hiddenColumns.has(key)
 const shouldIncludeSchedulerScore = () => isColumnVisible('scheduler_score')
 const syncAccountListDerivedParams = () => {
@@ -1084,6 +1106,7 @@ const {
     status: '',
     privacy_mode: '',
     group: '',
+    owner_user_id: '',
     search: '',
     lite: '1',
     include_scheduler_score: shouldIncludeSchedulerScore() ? '1' : '0',
@@ -1160,6 +1183,7 @@ const load = async (options: AccountLoadOptions = {}) => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   requestParams.lite = '1'
+  void refreshProxies()
   await baseLoad()
   if (options.refreshTodayStats !== false) await refreshTodayStatsBatch()
 }
@@ -1169,6 +1193,7 @@ const reload = async () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
+  void refreshProxies()
   await baseReload()
   await refreshTodayStatsBatch()
 }
@@ -1778,6 +1803,13 @@ function getAntigravityTierClass(row: any): string {
   }
 }
 
+const ADMIN_ONLY_COLUMN_KEYS = new Set([
+  'capacity',
+  'groups',
+  'scheduler_score',
+  'upstream_billing_rate'
+])
+
 // All available columns
 const allColumns = computed(() => {
   const c = [
@@ -1806,13 +1838,10 @@ const allColumns = computed(() => {
     { key: 'notes', label: t('admin.accounts.columns.notes'), sortable: false },
     { key: 'actions', label: t('admin.accounts.columns.actions'), sortable: false }
   )
-  return c
+  if (authStore.isAdmin) return c
+  return c.filter(col => !ADMIN_ONLY_COLUMN_KEYS.has(col.key))
 })
 
-// Columns that can be toggled (exclude select, name, and actions)
-const toggleableColumns = computed(() =>
-  allColumns.value.filter(col => col.key !== 'select' && col.key !== 'name' && col.key !== 'actions')
-)
 
 // Filtered columns based on visibility
 const cols = computed(() =>
@@ -2274,7 +2303,7 @@ const handleExportData = async () => {
           }
     ))
     const timestamp = formatExportTimestamp()
-    const filename = `sub2api-account-${timestamp}.json`
+    const filename = `berth-account-${timestamp}.json`
     const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -2532,10 +2561,17 @@ onMounted(async () => {
   }
 
   load()
-  loadUpstreamBillingProbeGlobalState()
-  const [proxiesResult, groupsResult] = await Promise.allSettled([
-    adminAPI.proxies.getAll(),
-    adminAPI.groups.getAll()
+  if (authStore.isAdmin) loadUpstreamBillingProbeGlobalState()
+  const [proxiesResult, groupsResult, usersResult] = await Promise.allSettled([
+    typeof adminAPI.proxies?.getAllWithCount === 'function'
+      ? adminAPI.proxies.getAllWithCount()
+      : typeof adminAPI.proxies?.getAll === 'function'
+        ? adminAPI.proxies.getAll()
+        : Promise.resolve([]),
+    authStore.isAdmin ? adminAPI.groups.getAll() : Promise.resolve([]),
+    authStore.isAdmin && typeof adminAPI.users?.list === 'function'
+      ? adminAPI.users.list(1, 200)
+      : Promise.resolve({ items: [] })
   ])
   if (proxiesResult.status === 'fulfilled') {
     proxies.value = proxiesResult.value
@@ -2546,6 +2582,13 @@ onMounted(async () => {
     groups.value = groupsResult.value
   } else {
     console.error('Failed to load groups:', groupsResult.reason)
+  }
+  if (usersResult.status === 'fulfilled') {
+    const users = (usersResult.value as any).items || []
+    ownerOptions.value = users.map((user: { id: number; email?: string; username?: string }) => ({
+      value: String(user.id),
+      label: user.email || user.username || `#${user.id}`,
+    }))
   }
   window.addEventListener('scroll', handleScroll, true)
   window.addEventListener('resize', handleViewportResize)
@@ -2588,5 +2631,18 @@ onUnmounted(() => {
 
 .account-tools-menu-icon {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
+}
+
+.accounts-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 8px 20px;
+}
+
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 20px;
 }
 </style>

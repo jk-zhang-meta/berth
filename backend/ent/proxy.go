@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
 )
 
 // Proxy is the model entity for the Proxy schema.
@@ -45,6 +45,26 @@ type Proxy struct {
 	BackupProxyID *int64 `json:"backup_proxy_id,omitempty"`
 	// Days before expiry to flag as expiring-soon (per proxy).
 	ExpiryWarnDays int `json:"expiry_warn_days,omitempty"`
+	// Last verified public egress IP observed through this proxy.
+	ExitIP *string `json:"exit_ip,omitempty"`
+	// ExitCountry holds the value of the "exit_country" field.
+	ExitCountry *string `json:"exit_country,omitempty"`
+	// ExitCountryCode holds the value of the "exit_country_code" field.
+	ExitCountryCode *string `json:"exit_country_code,omitempty"`
+	// ExitRegion holds the value of the "exit_region" field.
+	ExitRegion *string `json:"exit_region,omitempty"`
+	// ExitCity holds the value of the "exit_city" field.
+	ExitCity *string `json:"exit_city,omitempty"`
+	// IANA timezone derived from the verified proxy egress.
+	ExitTimezone *string `json:"exit_timezone,omitempty"`
+	// ExitUtcOffsetSeconds holds the value of the "exit_utc_offset_seconds" field.
+	ExitUtcOffsetSeconds *int `json:"exit_utc_offset_seconds,omitempty"`
+	// ExitAsn holds the value of the "exit_asn" field.
+	ExitAsn *string `json:"exit_asn,omitempty"`
+	// ExitIsp holds the value of the "exit_isp" field.
+	ExitIsp *string `json:"exit_isp,omitempty"`
+	// ExitCheckedAt holds the value of the "exit_checked_at" field.
+	ExitCheckedAt *time.Time `json:"exit_checked_at,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the ProxyQuery when eager-loading is set.
 	Edges        ProxyEdges `json:"edges"`
@@ -98,11 +118,11 @@ func (*Proxy) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays:
+		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays, proxy.FieldExitUtcOffsetSeconds:
 			values[i] = new(sql.NullInt64)
-		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode:
+		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode, proxy.FieldExitIP, proxy.FieldExitCountry, proxy.FieldExitCountryCode, proxy.FieldExitRegion, proxy.FieldExitCity, proxy.FieldExitTimezone, proxy.FieldExitAsn, proxy.FieldExitIsp:
 			values[i] = new(sql.NullString)
-		case proxy.FieldCreatedAt, proxy.FieldUpdatedAt, proxy.FieldDeletedAt, proxy.FieldExpiresAt:
+		case proxy.FieldCreatedAt, proxy.FieldUpdatedAt, proxy.FieldDeletedAt, proxy.FieldExpiresAt, proxy.FieldExitCheckedAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -214,6 +234,76 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ExpiryWarnDays = int(value.Int64)
 			}
+		case proxy.FieldExitIP:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_ip", values[i])
+			} else if value.Valid {
+				_m.ExitIP = new(string)
+				*_m.ExitIP = value.String
+			}
+		case proxy.FieldExitCountry:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_country", values[i])
+			} else if value.Valid {
+				_m.ExitCountry = new(string)
+				*_m.ExitCountry = value.String
+			}
+		case proxy.FieldExitCountryCode:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_country_code", values[i])
+			} else if value.Valid {
+				_m.ExitCountryCode = new(string)
+				*_m.ExitCountryCode = value.String
+			}
+		case proxy.FieldExitRegion:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_region", values[i])
+			} else if value.Valid {
+				_m.ExitRegion = new(string)
+				*_m.ExitRegion = value.String
+			}
+		case proxy.FieldExitCity:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_city", values[i])
+			} else if value.Valid {
+				_m.ExitCity = new(string)
+				*_m.ExitCity = value.String
+			}
+		case proxy.FieldExitTimezone:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_timezone", values[i])
+			} else if value.Valid {
+				_m.ExitTimezone = new(string)
+				*_m.ExitTimezone = value.String
+			}
+		case proxy.FieldExitUtcOffsetSeconds:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_utc_offset_seconds", values[i])
+			} else if value.Valid {
+				_m.ExitUtcOffsetSeconds = new(int)
+				*_m.ExitUtcOffsetSeconds = int(value.Int64)
+			}
+		case proxy.FieldExitAsn:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_asn", values[i])
+			} else if value.Valid {
+				_m.ExitAsn = new(string)
+				*_m.ExitAsn = value.String
+			}
+		case proxy.FieldExitIsp:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_isp", values[i])
+			} else if value.Valid {
+				_m.ExitIsp = new(string)
+				*_m.ExitIsp = value.String
+			}
+		case proxy.FieldExitCheckedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field exit_checked_at", values[i])
+			} else if value.Valid {
+				_m.ExitCheckedAt = new(time.Time)
+				*_m.ExitCheckedAt = value.Time
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -316,6 +406,56 @@ func (_m *Proxy) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("expiry_warn_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ExpiryWarnDays))
+	builder.WriteString(", ")
+	if v := _m.ExitIP; v != nil {
+		builder.WriteString("exit_ip=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitCountry; v != nil {
+		builder.WriteString("exit_country=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitCountryCode; v != nil {
+		builder.WriteString("exit_country_code=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitRegion; v != nil {
+		builder.WriteString("exit_region=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitCity; v != nil {
+		builder.WriteString("exit_city=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitTimezone; v != nil {
+		builder.WriteString("exit_timezone=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitUtcOffsetSeconds; v != nil {
+		builder.WriteString("exit_utc_offset_seconds=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitAsn; v != nil {
+		builder.WriteString("exit_asn=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitIsp; v != nil {
+		builder.WriteString("exit_isp=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.ExitCheckedAt; v != nil {
+		builder.WriteString("exit_checked_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
 	builder.WriteByte(')')
 	return builder.String()
 }

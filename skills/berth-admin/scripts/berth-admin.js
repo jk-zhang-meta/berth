@@ -3,62 +3,62 @@
 const fs = require("fs");
 const path = require("path");
 
-const BASE_URL = (process.env.SUB2API_BASE_URL || "").replace(/\/$/, "");
-const ADMIN_API_KEY = process.env.SUB2API_ADMIN_API_KEY || "";
-const ADMIN_JWT = process.env.SUB2API_JWT || "";
+const BASE_URL = (process.env.BERTH_BASE_URL || "").replace(/\/$/, "");
+const ADMIN_API_KEY = process.env.BERTH_ADMIN_API_KEY || "";
+const ADMIN_JWT = process.env.BERTH_JWT || "";
 
 function usage() {
   console.log(`Usage:
-  sub2api-admin.js accounts list [--page-size 200] [--page N] [--search TEXT] [--platform openai] [--type oauth] [--status active] [--group NAME] [--privacy-mode MODE] [--sort-by name] [--sort-order asc]
-  sub2api-admin.js accounts export [--ids 1,2] [--file accounts.json] [--include-proxies false] [list filters...]
-  sub2api-admin.js accounts import-data --file accounts.json [--skip-default-group-bind]
-  sub2api-admin.js accounts create --json '{...}' | --file account.json
-  sub2api-admin.js accounts update <id> --json '{...}' | --file patch.json
-  sub2api-admin.js accounts get <id>
-  sub2api-admin.js accounts delete <id>
-  sub2api-admin.js accounts keep-only --name <account-name>
-  sub2api-admin.js accounts usage <id> [--source SOURCE] [--force]
-  sub2api-admin.js accounts stats <id> [--days 30]
-  sub2api-admin.js accounts today-stats <id>
-  sub2api-admin.js accounts batch-today-stats --ids 1,2
-  sub2api-admin.js accounts set-status <id> <active|paused|...>
-  sub2api-admin.js accounts set-schedulable <id> <true|false>
-  sub2api-admin.js accounts clear-error <id>
-  sub2api-admin.js accounts clear-rate-limit <id>
-  sub2api-admin.js accounts recover-state <id>
-  sub2api-admin.js accounts reset-quota <id>
-  sub2api-admin.js accounts refresh <id>
-  sub2api-admin.js accounts test <id>
-  sub2api-admin.js accounts models <id>
-  sub2api-admin.js accounts sync-models <id>
-  sub2api-admin.js accounts apply-oauth <id> --json '{...}' | --file credentials.json
-  sub2api-admin.js accounts batch-create --file accounts.json
-  sub2api-admin.js accounts batch-update-credentials --json '{...}' | --file payload.json
-  sub2api-admin.js accounts bulk-update --ids 1,2 --json '{...}' | --file patch.json
-  sub2api-admin.js accounts batch-refresh --ids 1,2
-  sub2api-admin.js accounts batch-clear-error --ids 1,2
-  sub2api-admin.js accounts temp-unschedulable <id>
-  sub2api-admin.js accounts reset-temp-unschedulable <id>
-  sub2api-admin.js accounts crs-preview --json '{...}' | --file payload.json
-  sub2api-admin.js accounts crs-sync --json '{...}' | --file payload.json
-  sub2api-admin.js accounts import-codex-session --json '{...}' | --file payload.json
-  sub2api-admin.js accounts antigravity-default-model-mapping
-  sub2api-admin.js accounts import-json --file <path> --template-name <name> [--skip-name <name>] [--dry-run]
-  sub2api-admin.js groups all
-  sub2api-admin.js proxies all
-  sub2api-admin.js redeem-codes list [--page-size 200] [--page N] [--type balance] [--status unused] [--search TEXT] [--sort-by id] [--sort-order desc]
-  sub2api-admin.js redeem-codes export [--file redeem-codes.csv] [list filters...]
-  sub2api-admin.js redeem-codes get <id>
-  sub2api-admin.js redeem-codes generate --json '{...}' | --file payload.json [--idempotency-key KEY]
-  sub2api-admin.js redeem-codes create-and-redeem --json '{...}' | --file payload.json [--idempotency-key KEY]
-  sub2api-admin.js redeem-codes batch-update --ids 1,2 --json '{...}' | --file fields.json
-  sub2api-admin.js redeem-codes delete <id>
-  sub2api-admin.js redeem-codes batch-delete --ids 1,2
-  sub2api-admin.js redeem-codes expire <id>
-  sub2api-admin.js redeem-codes stats
-  sub2api-admin.js error-rules list|get|create|update|delete|toggle ...
-  sub2api-admin.js tls-profiles list|get|create|update|delete ...
-  sub2api-admin.js api <GET|POST|PUT|DELETE> <admin-path> [--json '{...}' | --file payload.json]
+  berth-admin.js accounts list [--page-size 200] [--page N] [--search TEXT] [--platform openai] [--type oauth] [--status active] [--group NAME] [--privacy-mode MODE] [--sort-by name] [--sort-order asc]
+  berth-admin.js accounts export [--ids 1,2] [--file accounts.json] [--include-proxies false] [list filters...]
+  berth-admin.js accounts import-data --file accounts.json [--skip-default-group-bind]
+  berth-admin.js accounts create --json '{...}' | --file account.json
+  berth-admin.js accounts update <id> --json '{...}' | --file patch.json
+  berth-admin.js accounts get <id>
+  berth-admin.js accounts delete <id>
+  berth-admin.js accounts keep-only --name <account-name>
+  berth-admin.js accounts usage <id> [--source SOURCE] [--force]
+  berth-admin.js accounts stats <id> [--days 30]
+  berth-admin.js accounts today-stats <id>
+  berth-admin.js accounts batch-today-stats --ids 1,2
+  berth-admin.js accounts set-status <id> <active|paused|...>
+  berth-admin.js accounts set-schedulable <id> <true|false>
+  berth-admin.js accounts clear-error <id>
+  berth-admin.js accounts clear-rate-limit <id>
+  berth-admin.js accounts recover-state <id>
+  berth-admin.js accounts reset-quota <id>
+  berth-admin.js accounts refresh <id>
+  berth-admin.js accounts test <id>
+  berth-admin.js accounts models <id>
+  berth-admin.js accounts sync-models <id>
+  berth-admin.js accounts apply-oauth <id> --json '{...}' | --file credentials.json
+  berth-admin.js accounts batch-create --file accounts.json
+  berth-admin.js accounts batch-update-credentials --json '{...}' | --file payload.json
+  berth-admin.js accounts bulk-update --ids 1,2 --json '{...}' | --file patch.json
+  berth-admin.js accounts batch-refresh --ids 1,2
+  berth-admin.js accounts batch-clear-error --ids 1,2
+  berth-admin.js accounts temp-unschedulable <id>
+  berth-admin.js accounts reset-temp-unschedulable <id>
+  berth-admin.js accounts crs-preview --json '{...}' | --file payload.json
+  berth-admin.js accounts crs-sync --json '{...}' | --file payload.json
+  berth-admin.js accounts import-codex-session --json '{...}' | --file payload.json
+  berth-admin.js accounts antigravity-default-model-mapping
+  berth-admin.js accounts import-json --file <path> --template-name <name> [--skip-name <name>] [--dry-run]
+  berth-admin.js groups all
+  berth-admin.js proxies all
+  berth-admin.js redeem-codes list [--page-size 200] [--page N] [--type balance] [--status unused] [--search TEXT] [--sort-by id] [--sort-order desc]
+  berth-admin.js redeem-codes export [--file redeem-codes.csv] [list filters...]
+  berth-admin.js redeem-codes get <id>
+  berth-admin.js redeem-codes generate --json '{...}' | --file payload.json [--idempotency-key KEY]
+  berth-admin.js redeem-codes create-and-redeem --json '{...}' | --file payload.json [--idempotency-key KEY]
+  berth-admin.js redeem-codes batch-update --ids 1,2 --json '{...}' | --file fields.json
+  berth-admin.js redeem-codes delete <id>
+  berth-admin.js redeem-codes batch-delete --ids 1,2
+  berth-admin.js redeem-codes expire <id>
+  berth-admin.js redeem-codes stats
+  berth-admin.js error-rules list|get|create|update|delete|toggle ...
+  berth-admin.js tls-profiles list|get|create|update|delete ...
+  berth-admin.js api <GET|POST|PUT|DELETE> <admin-path> [--json '{...}' | --file payload.json]
 `);
 }
 
@@ -90,10 +90,10 @@ function parseArgs(argv) {
 }
 
 function authHeaders() {
-  if (!BASE_URL) throw new Error("Missing SUB2API_BASE_URL");
+  if (!BASE_URL) throw new Error("Missing BERTH_BASE_URL");
   if (ADMIN_API_KEY) return { "x-api-key": ADMIN_API_KEY };
   if (ADMIN_JWT) return { Authorization: `Bearer ${ADMIN_JWT}` };
-  throw new Error("Missing SUB2API_ADMIN_API_KEY or SUB2API_JWT");
+  throw new Error("Missing BERTH_ADMIN_API_KEY or BERTH_JWT");
 }
 
 async function apiRequest(method, pathname, body, extraHeaders = {}) {

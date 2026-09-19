@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/pkg/usagestats"
 )
 
 var (
@@ -60,6 +60,76 @@ type UsageService struct {
 	userRepo             UserRepository
 	entClient            *dbent.Client
 	authCacheInvalidator APIKeyAuthCacheInvalidator
+	workSessions         *WorkSessionStore
+}
+
+func (s *UsageService) SetWorkSessions(store *WorkSessionStore) {
+	if s != nil {
+		s.workSessions = store
+	}
+}
+
+func (s *UsageService) ListWorkSessions(ctx context.Context, userID int64) ([]WorkSession, error) {
+	if s == nil || s.workSessions == nil {
+		return nil, nil
+	}
+	return s.workSessions.List(ctx, userID)
+}
+
+func (s *UsageService) PatchWorkSession(ctx context.Context, id, userID int64, patch WorkSessionPatch) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.Patch(ctx, id, userID, patch)
+}
+
+func (s *UsageService) ListWorkSessionRequests(ctx context.Context, id, userID int64) ([]WorkSessionRequest, error) {
+	if s == nil || s.workSessions == nil {
+		return nil, nil
+	}
+	return s.workSessions.ListRequests(ctx, id, userID)
+}
+
+func (s *UsageService) ReplaceWorkSessionQueue(ctx context.Context, id, userID int64, accountIDs []int64) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.ReplaceQueue(ctx, id, userID, accountIDs)
+}
+
+func (s *UsageService) ReportAgentSession(ctx context.Context, userID, apiKeyID int64, report AgentSessionReport) (*WorkSession, error) {
+	if s == nil || s.workSessions == nil {
+		return nil, nil
+	}
+	return s.workSessions.ReportAgentSession(ctx, userID, apiKeyID, report)
+}
+
+func (s *UsageService) UpdateAgentSessionDescription(ctx context.Context, userID int64, deviceID, description string) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.UpdateAgentDescription(ctx, userID, deviceID, description)
+}
+
+func (s *UsageService) EndAgentSession(ctx context.Context, userID int64, deviceID string, endedAt time.Time) error {
+	if s == nil || s.workSessions == nil {
+		return nil
+	}
+	return s.workSessions.EndAgentSession(ctx, userID, deviceID, endedAt)
+}
+
+func (s *UsageService) ListAGSPoolAccounts(ctx context.Context, userID int64) ([]AGSPoolAccount, error) {
+	if s == nil || s.workSessions == nil {
+		return []AGSPoolAccount{}, nil
+	}
+	return s.workSessions.ListAGSPoolAccounts(ctx, userID)
+}
+
+func (s *UsageService) ResolveAGSPoolAccounts(ctx context.Context, userID int64, selectors []string) map[string]string {
+	if s == nil || s.workSessions == nil {
+		return map[string]string{}
+	}
+	return s.workSessions.ResolveAGSPoolAccounts(ctx, userID, selectors)
 }
 
 // NewUsageService 创建使用统计服务实例

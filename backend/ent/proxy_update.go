@@ -11,9 +11,9 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/predicate"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/predicate"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
 )
 
 // ProxyUpdate is the builder for updating Proxy entities.
@@ -247,6 +247,213 @@ func (_u *ProxyUpdate) AddExpiryWarnDays(v int) *ProxyUpdate {
 	return _u
 }
 
+// SetExitIP sets the "exit_ip" field.
+func (_u *ProxyUpdate) SetExitIP(v string) *ProxyUpdate {
+	_u.mutation.SetExitIP(v)
+	return _u
+}
+
+// SetNillableExitIP sets the "exit_ip" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitIP(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitIP(*v)
+	}
+	return _u
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (_u *ProxyUpdate) ClearExitIP() *ProxyUpdate {
+	_u.mutation.ClearExitIP()
+	return _u
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (_u *ProxyUpdate) SetExitCountry(v string) *ProxyUpdate {
+	_u.mutation.SetExitCountry(v)
+	return _u
+}
+
+// SetNillableExitCountry sets the "exit_country" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitCountry(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitCountry(*v)
+	}
+	return _u
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (_u *ProxyUpdate) ClearExitCountry() *ProxyUpdate {
+	_u.mutation.ClearExitCountry()
+	return _u
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (_u *ProxyUpdate) SetExitCountryCode(v string) *ProxyUpdate {
+	_u.mutation.SetExitCountryCode(v)
+	return _u
+}
+
+// SetNillableExitCountryCode sets the "exit_country_code" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitCountryCode(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitCountryCode(*v)
+	}
+	return _u
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (_u *ProxyUpdate) ClearExitCountryCode() *ProxyUpdate {
+	_u.mutation.ClearExitCountryCode()
+	return _u
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (_u *ProxyUpdate) SetExitRegion(v string) *ProxyUpdate {
+	_u.mutation.SetExitRegion(v)
+	return _u
+}
+
+// SetNillableExitRegion sets the "exit_region" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitRegion(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitRegion(*v)
+	}
+	return _u
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (_u *ProxyUpdate) ClearExitRegion() *ProxyUpdate {
+	_u.mutation.ClearExitRegion()
+	return _u
+}
+
+// SetExitCity sets the "exit_city" field.
+func (_u *ProxyUpdate) SetExitCity(v string) *ProxyUpdate {
+	_u.mutation.SetExitCity(v)
+	return _u
+}
+
+// SetNillableExitCity sets the "exit_city" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitCity(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitCity(*v)
+	}
+	return _u
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (_u *ProxyUpdate) ClearExitCity() *ProxyUpdate {
+	_u.mutation.ClearExitCity()
+	return _u
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (_u *ProxyUpdate) SetExitTimezone(v string) *ProxyUpdate {
+	_u.mutation.SetExitTimezone(v)
+	return _u
+}
+
+// SetNillableExitTimezone sets the "exit_timezone" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitTimezone(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitTimezone(*v)
+	}
+	return _u
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (_u *ProxyUpdate) ClearExitTimezone() *ProxyUpdate {
+	_u.mutation.ClearExitTimezone()
+	return _u
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdate) SetExitUtcOffsetSeconds(v int) *ProxyUpdate {
+	_u.mutation.ResetExitUtcOffsetSeconds()
+	_u.mutation.SetExitUtcOffsetSeconds(v)
+	return _u
+}
+
+// SetNillableExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitUtcOffsetSeconds(v *int) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitUtcOffsetSeconds(*v)
+	}
+	return _u
+}
+
+// AddExitUtcOffsetSeconds adds value to the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdate) AddExitUtcOffsetSeconds(v int) *ProxyUpdate {
+	_u.mutation.AddExitUtcOffsetSeconds(v)
+	return _u
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdate) ClearExitUtcOffsetSeconds() *ProxyUpdate {
+	_u.mutation.ClearExitUtcOffsetSeconds()
+	return _u
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (_u *ProxyUpdate) SetExitAsn(v string) *ProxyUpdate {
+	_u.mutation.SetExitAsn(v)
+	return _u
+}
+
+// SetNillableExitAsn sets the "exit_asn" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitAsn(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitAsn(*v)
+	}
+	return _u
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (_u *ProxyUpdate) ClearExitAsn() *ProxyUpdate {
+	_u.mutation.ClearExitAsn()
+	return _u
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (_u *ProxyUpdate) SetExitIsp(v string) *ProxyUpdate {
+	_u.mutation.SetExitIsp(v)
+	return _u
+}
+
+// SetNillableExitIsp sets the "exit_isp" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitIsp(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitIsp(*v)
+	}
+	return _u
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (_u *ProxyUpdate) ClearExitIsp() *ProxyUpdate {
+	_u.mutation.ClearExitIsp()
+	return _u
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (_u *ProxyUpdate) SetExitCheckedAt(v time.Time) *ProxyUpdate {
+	_u.mutation.SetExitCheckedAt(v)
+	return _u
+}
+
+// SetNillableExitCheckedAt sets the "exit_checked_at" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableExitCheckedAt(v *time.Time) *ProxyUpdate {
+	if v != nil {
+		_u.SetExitCheckedAt(*v)
+	}
+	return _u
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (_u *ProxyUpdate) ClearExitCheckedAt() *ProxyUpdate {
+	_u.mutation.ClearExitCheckedAt()
+	return _u
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdate) AddAccountIDs(ids ...int64) *ProxyUpdate {
 	_u.mutation.AddAccountIDs(ids...)
@@ -414,6 +621,46 @@ func (_u *ProxyUpdate) check() error {
 			return &ValidationError{Name: "fallback_mode", err: fmt.Errorf(`ent: validator failed for field "Proxy.fallback_mode": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ExitIP(); ok {
+		if err := proxy.ExitIPValidator(v); err != nil {
+			return &ValidationError{Name: "exit_ip", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_ip": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCountry(); ok {
+		if err := proxy.ExitCountryValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCountryCode(); ok {
+		if err := proxy.ExitCountryCodeValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country_code", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country_code": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitRegion(); ok {
+		if err := proxy.ExitRegionValidator(v); err != nil {
+			return &ValidationError{Name: "exit_region", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_region": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCity(); ok {
+		if err := proxy.ExitCityValidator(v); err != nil {
+			return &ValidationError{Name: "exit_city", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_city": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitTimezone(); ok {
+		if err := proxy.ExitTimezoneValidator(v); err != nil {
+			return &ValidationError{Name: "exit_timezone", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_timezone": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitAsn(); ok {
+		if err := proxy.ExitAsnValidator(v); err != nil {
+			return &ValidationError{Name: "exit_asn", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_asn": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitIsp(); ok {
+		if err := proxy.ExitIspValidator(v); err != nil {
+			return &ValidationError{Name: "exit_isp", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_isp": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -482,6 +729,69 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.ExitIP(); ok {
+		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)
+	}
+	if _u.mutation.ExitIPCleared() {
+		_spec.ClearField(proxy.FieldExitIP, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCountry(); ok {
+		_spec.SetField(proxy.FieldExitCountry, field.TypeString, value)
+	}
+	if _u.mutation.ExitCountryCleared() {
+		_spec.ClearField(proxy.FieldExitCountry, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCountryCode(); ok {
+		_spec.SetField(proxy.FieldExitCountryCode, field.TypeString, value)
+	}
+	if _u.mutation.ExitCountryCodeCleared() {
+		_spec.ClearField(proxy.FieldExitCountryCode, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitRegion(); ok {
+		_spec.SetField(proxy.FieldExitRegion, field.TypeString, value)
+	}
+	if _u.mutation.ExitRegionCleared() {
+		_spec.ClearField(proxy.FieldExitRegion, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCity(); ok {
+		_spec.SetField(proxy.FieldExitCity, field.TypeString, value)
+	}
+	if _u.mutation.ExitCityCleared() {
+		_spec.ClearField(proxy.FieldExitCity, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitTimezone(); ok {
+		_spec.SetField(proxy.FieldExitTimezone, field.TypeString, value)
+	}
+	if _u.mutation.ExitTimezoneCleared() {
+		_spec.ClearField(proxy.FieldExitTimezone, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitUtcOffsetSeconds(); ok {
+		_spec.SetField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedExitUtcOffsetSeconds(); ok {
+		_spec.AddField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt, value)
+	}
+	if _u.mutation.ExitUtcOffsetSecondsCleared() {
+		_spec.ClearField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt)
+	}
+	if value, ok := _u.mutation.ExitAsn(); ok {
+		_spec.SetField(proxy.FieldExitAsn, field.TypeString, value)
+	}
+	if _u.mutation.ExitAsnCleared() {
+		_spec.ClearField(proxy.FieldExitAsn, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitIsp(); ok {
+		_spec.SetField(proxy.FieldExitIsp, field.TypeString, value)
+	}
+	if _u.mutation.ExitIspCleared() {
+		_spec.ClearField(proxy.FieldExitIsp, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCheckedAt(); ok {
+		_spec.SetField(proxy.FieldExitCheckedAt, field.TypeTime, value)
+	}
+	if _u.mutation.ExitCheckedAtCleared() {
+		_spec.ClearField(proxy.FieldExitCheckedAt, field.TypeTime)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -840,6 +1150,213 @@ func (_u *ProxyUpdateOne) AddExpiryWarnDays(v int) *ProxyUpdateOne {
 	return _u
 }
 
+// SetExitIP sets the "exit_ip" field.
+func (_u *ProxyUpdateOne) SetExitIP(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitIP(v)
+	return _u
+}
+
+// SetNillableExitIP sets the "exit_ip" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitIP(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitIP(*v)
+	}
+	return _u
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (_u *ProxyUpdateOne) ClearExitIP() *ProxyUpdateOne {
+	_u.mutation.ClearExitIP()
+	return _u
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (_u *ProxyUpdateOne) SetExitCountry(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitCountry(v)
+	return _u
+}
+
+// SetNillableExitCountry sets the "exit_country" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitCountry(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitCountry(*v)
+	}
+	return _u
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (_u *ProxyUpdateOne) ClearExitCountry() *ProxyUpdateOne {
+	_u.mutation.ClearExitCountry()
+	return _u
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (_u *ProxyUpdateOne) SetExitCountryCode(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitCountryCode(v)
+	return _u
+}
+
+// SetNillableExitCountryCode sets the "exit_country_code" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitCountryCode(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitCountryCode(*v)
+	}
+	return _u
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (_u *ProxyUpdateOne) ClearExitCountryCode() *ProxyUpdateOne {
+	_u.mutation.ClearExitCountryCode()
+	return _u
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (_u *ProxyUpdateOne) SetExitRegion(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitRegion(v)
+	return _u
+}
+
+// SetNillableExitRegion sets the "exit_region" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitRegion(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitRegion(*v)
+	}
+	return _u
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (_u *ProxyUpdateOne) ClearExitRegion() *ProxyUpdateOne {
+	_u.mutation.ClearExitRegion()
+	return _u
+}
+
+// SetExitCity sets the "exit_city" field.
+func (_u *ProxyUpdateOne) SetExitCity(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitCity(v)
+	return _u
+}
+
+// SetNillableExitCity sets the "exit_city" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitCity(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitCity(*v)
+	}
+	return _u
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (_u *ProxyUpdateOne) ClearExitCity() *ProxyUpdateOne {
+	_u.mutation.ClearExitCity()
+	return _u
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (_u *ProxyUpdateOne) SetExitTimezone(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitTimezone(v)
+	return _u
+}
+
+// SetNillableExitTimezone sets the "exit_timezone" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitTimezone(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitTimezone(*v)
+	}
+	return _u
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (_u *ProxyUpdateOne) ClearExitTimezone() *ProxyUpdateOne {
+	_u.mutation.ClearExitTimezone()
+	return _u
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdateOne) SetExitUtcOffsetSeconds(v int) *ProxyUpdateOne {
+	_u.mutation.ResetExitUtcOffsetSeconds()
+	_u.mutation.SetExitUtcOffsetSeconds(v)
+	return _u
+}
+
+// SetNillableExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitUtcOffsetSeconds(v *int) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitUtcOffsetSeconds(*v)
+	}
+	return _u
+}
+
+// AddExitUtcOffsetSeconds adds value to the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdateOne) AddExitUtcOffsetSeconds(v int) *ProxyUpdateOne {
+	_u.mutation.AddExitUtcOffsetSeconds(v)
+	return _u
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (_u *ProxyUpdateOne) ClearExitUtcOffsetSeconds() *ProxyUpdateOne {
+	_u.mutation.ClearExitUtcOffsetSeconds()
+	return _u
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (_u *ProxyUpdateOne) SetExitAsn(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitAsn(v)
+	return _u
+}
+
+// SetNillableExitAsn sets the "exit_asn" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitAsn(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitAsn(*v)
+	}
+	return _u
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (_u *ProxyUpdateOne) ClearExitAsn() *ProxyUpdateOne {
+	_u.mutation.ClearExitAsn()
+	return _u
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (_u *ProxyUpdateOne) SetExitIsp(v string) *ProxyUpdateOne {
+	_u.mutation.SetExitIsp(v)
+	return _u
+}
+
+// SetNillableExitIsp sets the "exit_isp" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitIsp(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitIsp(*v)
+	}
+	return _u
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (_u *ProxyUpdateOne) ClearExitIsp() *ProxyUpdateOne {
+	_u.mutation.ClearExitIsp()
+	return _u
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (_u *ProxyUpdateOne) SetExitCheckedAt(v time.Time) *ProxyUpdateOne {
+	_u.mutation.SetExitCheckedAt(v)
+	return _u
+}
+
+// SetNillableExitCheckedAt sets the "exit_checked_at" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableExitCheckedAt(v *time.Time) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetExitCheckedAt(*v)
+	}
+	return _u
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (_u *ProxyUpdateOne) ClearExitCheckedAt() *ProxyUpdateOne {
+	_u.mutation.ClearExitCheckedAt()
+	return _u
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdateOne) AddAccountIDs(ids ...int64) *ProxyUpdateOne {
 	_u.mutation.AddAccountIDs(ids...)
@@ -1020,6 +1537,46 @@ func (_u *ProxyUpdateOne) check() error {
 			return &ValidationError{Name: "fallback_mode", err: fmt.Errorf(`ent: validator failed for field "Proxy.fallback_mode": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ExitIP(); ok {
+		if err := proxy.ExitIPValidator(v); err != nil {
+			return &ValidationError{Name: "exit_ip", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_ip": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCountry(); ok {
+		if err := proxy.ExitCountryValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCountryCode(); ok {
+		if err := proxy.ExitCountryCodeValidator(v); err != nil {
+			return &ValidationError{Name: "exit_country_code", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_country_code": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitRegion(); ok {
+		if err := proxy.ExitRegionValidator(v); err != nil {
+			return &ValidationError{Name: "exit_region", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_region": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitCity(); ok {
+		if err := proxy.ExitCityValidator(v); err != nil {
+			return &ValidationError{Name: "exit_city", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_city": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitTimezone(); ok {
+		if err := proxy.ExitTimezoneValidator(v); err != nil {
+			return &ValidationError{Name: "exit_timezone", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_timezone": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitAsn(); ok {
+		if err := proxy.ExitAsnValidator(v); err != nil {
+			return &ValidationError{Name: "exit_asn", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_asn": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ExitIsp(); ok {
+		if err := proxy.ExitIspValidator(v); err != nil {
+			return &ValidationError{Name: "exit_isp", err: fmt.Errorf(`ent: validator failed for field "Proxy.exit_isp": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -1105,6 +1662,69 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.ExitIP(); ok {
+		_spec.SetField(proxy.FieldExitIP, field.TypeString, value)
+	}
+	if _u.mutation.ExitIPCleared() {
+		_spec.ClearField(proxy.FieldExitIP, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCountry(); ok {
+		_spec.SetField(proxy.FieldExitCountry, field.TypeString, value)
+	}
+	if _u.mutation.ExitCountryCleared() {
+		_spec.ClearField(proxy.FieldExitCountry, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCountryCode(); ok {
+		_spec.SetField(proxy.FieldExitCountryCode, field.TypeString, value)
+	}
+	if _u.mutation.ExitCountryCodeCleared() {
+		_spec.ClearField(proxy.FieldExitCountryCode, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitRegion(); ok {
+		_spec.SetField(proxy.FieldExitRegion, field.TypeString, value)
+	}
+	if _u.mutation.ExitRegionCleared() {
+		_spec.ClearField(proxy.FieldExitRegion, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCity(); ok {
+		_spec.SetField(proxy.FieldExitCity, field.TypeString, value)
+	}
+	if _u.mutation.ExitCityCleared() {
+		_spec.ClearField(proxy.FieldExitCity, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitTimezone(); ok {
+		_spec.SetField(proxy.FieldExitTimezone, field.TypeString, value)
+	}
+	if _u.mutation.ExitTimezoneCleared() {
+		_spec.ClearField(proxy.FieldExitTimezone, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitUtcOffsetSeconds(); ok {
+		_spec.SetField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedExitUtcOffsetSeconds(); ok {
+		_spec.AddField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt, value)
+	}
+	if _u.mutation.ExitUtcOffsetSecondsCleared() {
+		_spec.ClearField(proxy.FieldExitUtcOffsetSeconds, field.TypeInt)
+	}
+	if value, ok := _u.mutation.ExitAsn(); ok {
+		_spec.SetField(proxy.FieldExitAsn, field.TypeString, value)
+	}
+	if _u.mutation.ExitAsnCleared() {
+		_spec.ClearField(proxy.FieldExitAsn, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitIsp(); ok {
+		_spec.SetField(proxy.FieldExitIsp, field.TypeString, value)
+	}
+	if _u.mutation.ExitIspCleared() {
+		_spec.ClearField(proxy.FieldExitIsp, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExitCheckedAt(); ok {
+		_spec.SetField(proxy.FieldExitCheckedAt, field.TypeTime, value)
+	}
+	if _u.mutation.ExitCheckedAtCleared() {
+		_spec.ClearField(proxy.FieldExitCheckedAt, field.TypeTime)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{

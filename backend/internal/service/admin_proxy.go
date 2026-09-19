@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/util/httputil"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/httpclient"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/util/httputil"
 )
 
 // Proxy management implementations
@@ -85,11 +87,14 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 		BackupProxyID:  input.BackupProxyID,
 		ExpiryWarnDays: input.ExpiryWarnDays,
 	}
+	exitInfo, latencyMs, checkedAt, err := s.probeVerifiedProxyExit(ctx, proxy)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.proxyRepo.Create(ctx, proxy); err != nil {
 		return nil, err
 	}
-	// Probe latency asynchronously so creation isn't blocked by network timeout.
-	go s.probeProxyLatency(context.Background(), proxy)
+	s.saveVerifiedProxyProbe(ctx, proxy.ID, exitInfo, latencyMs, checkedAt)
 	return proxy, nil
 }
 
@@ -105,6 +110,7 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	originalConnection := proxyConnectionIdentity(proxy)
 
 	// Merge only supplied fields, then validate the resulting fallback configuration.
 	mode := proxy.FallbackMode
@@ -152,8 +158,20 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		proxy.ExpiryWarnDays = *input.ExpiryWarnDays
 	}
 
+	var exitInfo *ProxyExitInfo
+	var latencyMs int64
+	var checkedAt time.Time
+	if originalConnection != proxyConnectionIdentity(proxy) {
+		exitInfo, latencyMs, checkedAt, err = s.probeVerifiedProxyExit(ctx, proxy)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
 		return nil, err
+	}
+	if exitInfo != nil {
+		s.saveVerifiedProxyProbe(ctx, proxy.ID, exitInfo, latencyMs, checkedAt)
 	}
 	return proxy, nil
 }
@@ -212,48 +230,147 @@ func (s *adminServiceImpl) CheckProxyExists(ctx context.Context, host string, po
 	return s.proxyRepo.ExistsByHostPortAuth(ctx, host, port, username, password)
 }
 
+func (s *adminServiceImpl) validateVerifiedProxyBinding(ctx context.Context, proxyID *int64) error {
+	if proxyID == nil || *proxyID == 0 {
+		return nil
+	}
+	if *proxyID < 0 {
+		return infraerrors.BadRequest("PROXY_ID_INVALID", "proxy ID must be positive")
+	}
+	if s.proxyRepo == nil {
+		return infraerrors.BadRequest("PROXY_EXIT_PROFILE_UNAVAILABLE", "proxy exit verification is unavailable")
+	}
+	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+	if err != nil {
+		return err
+	}
+	if !proxy.HasFreshVerifiedExitProfile(time.Now()) {
+		return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
+	}
+	return nil
+}
+
 func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error) {
 	proxy, err := s.proxyRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	proxyURL := proxy.URL()
-	exitInfo, latencyMs, err := s.proxyProber.ProbeProxy(ctx, proxyURL)
+	exitInfo, latencyMs, checkedAt, err := s.probeVerifiedProxyExit(ctx, proxy)
 	if err != nil {
-		s.saveProxyLatency(ctx, id, &ProxyLatencyInfo{
-			Success:   false,
-			Message:   err.Error(),
-			UpdatedAt: time.Now(),
-		})
-		return &ProxyTestResult{
-			Success: false,
-			Message: err.Error(),
-		}, nil
+		s.saveProxyLatency(ctx, id, &ProxyLatencyInfo{Success: false, Message: err.Error(), UpdatedAt: time.Now()})
+		return &ProxyTestResult{Success: false, Message: err.Error()}, nil
 	}
-
-	latency := latencyMs
-	s.saveProxyLatency(ctx, id, &ProxyLatencyInfo{
-		Success:     true,
-		LatencyMs:   &latency,
-		Message:     "Proxy is accessible",
-		IPAddress:   exitInfo.IP,
-		Country:     exitInfo.Country,
-		CountryCode: exitInfo.CountryCode,
-		Region:      exitInfo.Region,
-		City:        exitInfo.City,
-		UpdatedAt:   time.Now(),
-	})
+	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
+		return nil, err
+	}
+	s.saveVerifiedProxyProbe(ctx, id, exitInfo, latencyMs, checkedAt)
 	return &ProxyTestResult{
-		Success:     true,
-		Message:     "Proxy is accessible",
-		LatencyMs:   latencyMs,
-		IPAddress:   exitInfo.IP,
-		City:        exitInfo.City,
-		Region:      exitInfo.Region,
-		Country:     exitInfo.Country,
-		CountryCode: exitInfo.CountryCode,
+		Success:          true,
+		Message:          "Proxy is accessible and exit profile is verified",
+		LatencyMs:        latencyMs,
+		IPAddress:        exitInfo.IP,
+		City:             exitInfo.City,
+		Region:           exitInfo.Region,
+		Country:          exitInfo.Country,
+		CountryCode:      exitInfo.CountryCode,
+		Timezone:         exitInfo.Timezone,
+		UTCOffsetSeconds: exitInfo.UTCOffsetSeconds,
+		ASN:              exitInfo.ASN,
+		ISP:              exitInfo.ISP,
+		ExitCheckedAt:    checkedAt.Unix(),
 	}, nil
+}
+
+type proxyConnectionIdentityKey struct {
+	protocol string
+	host     string
+	port     int
+	username string
+	password string
+}
+
+func proxyConnectionIdentity(proxy *Proxy) proxyConnectionIdentityKey {
+	if proxy == nil {
+		return proxyConnectionIdentityKey{}
+	}
+	return proxyConnectionIdentityKey{
+		protocol: proxy.Protocol,
+		host:     proxy.Host,
+		port:     proxy.Port,
+		username: proxy.Username,
+		password: proxy.Password,
+	}
+}
+
+func applyVerifiedProxyExitProfile(proxy *Proxy, info *ProxyExitInfo, checkedAt time.Time) error {
+	if proxy == nil || info == nil {
+		return infraerrors.BadRequest("PROXY_EXIT_IP_REQUIRED", "proxy must expose a valid public exit IP")
+	}
+	exitIP := net.ParseIP(strings.TrimSpace(info.IP))
+	if exitIP == nil || exitIP.IsLoopback() || exitIP.IsPrivate() || exitIP.IsUnspecified() || exitIP.IsLinkLocalUnicast() || exitIP.IsLinkLocalMulticast() || exitIP.IsMulticast() {
+		return infraerrors.BadRequest("PROXY_EXIT_IP_REQUIRED", "proxy must expose a valid public exit IP")
+	}
+	info.IP = exitIP.String()
+	if info.Timezone == "" {
+		return infraerrors.BadRequest("PROXY_EXIT_TIMEZONE_REQUIRED", "proxy exit timezone could not be determined")
+	}
+	location, err := time.LoadLocation(info.Timezone)
+	if err != nil {
+		return infraerrors.BadRequest("PROXY_EXIT_TIMEZONE_INVALID", "proxy exit timezone is not a valid IANA timezone")
+	}
+	_, offset := checkedAt.In(location).Zone()
+	info.UTCOffsetSeconds = &offset
+	proxy.ExitIP = info.IP
+	proxy.ExitCountry = info.Country
+	proxy.ExitCountryCode = info.CountryCode
+	proxy.ExitRegion = info.Region
+	proxy.ExitCity = info.City
+	proxy.ExitTimezone = info.Timezone
+	proxy.ExitUTCOffsetSeconds = info.UTCOffsetSeconds
+	proxy.ExitASN = info.ASN
+	proxy.ExitISP = info.ISP
+	proxy.ExitCheckedAt = &checkedAt
+	return nil
+}
+
+func (s *adminServiceImpl) probeVerifiedProxyExit(ctx context.Context, proxy *Proxy) (*ProxyExitInfo, int64, time.Time, error) {
+	if s.proxyProber == nil {
+		return nil, 0, time.Time{}, infraerrors.BadRequest("PROXY_EXIT_PROFILE_UNAVAILABLE", "proxy exit verification service is unavailable")
+	}
+	info, latencyMs, err := s.proxyProber.ProbeProxy(ctx, proxy.connectionURL())
+	if err != nil {
+		return nil, latencyMs, time.Time{}, infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit verification failed: "+err.Error())
+	}
+	checkedAt := time.Now().UTC()
+	if err := applyVerifiedProxyExitProfile(proxy, info, checkedAt); err != nil {
+		return nil, latencyMs, time.Time{}, err
+	}
+	return info, latencyMs, checkedAt, nil
+}
+
+func (s *adminServiceImpl) saveVerifiedProxyProbe(ctx context.Context, proxyID int64, info *ProxyExitInfo, latencyMs int64, checkedAt time.Time) {
+	if info == nil {
+		return
+	}
+	latency := latencyMs
+	checkedUnix := checkedAt.Unix()
+	s.saveProxyLatency(ctx, proxyID, &ProxyLatencyInfo{
+		Success:          true,
+		LatencyMs:        &latency,
+		Message:          "Proxy is accessible and exit profile is verified",
+		IPAddress:        info.IP,
+		Country:          info.Country,
+		CountryCode:      info.CountryCode,
+		Region:           info.Region,
+		City:             info.City,
+		Timezone:         info.Timezone,
+		UTCOffsetSeconds: info.UTCOffsetSeconds,
+		ASN:              info.ASN,
+		ISP:              info.ISP,
+		ExitCheckedAt:    &checkedUnix,
+		UpdatedAt:        checkedAt,
+	})
 }
 
 func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*ProxyQualityCheckResult, error) {
@@ -296,6 +413,23 @@ func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*Pr
 		s.saveProxyQualitySnapshot(ctx, id, result, nil)
 		return result, nil
 	}
+	checkedAt := time.Now().UTC()
+	if err := applyVerifiedProxyExitProfile(proxy, exitInfo, checkedAt); err != nil {
+		result.Items = append(result.Items, ProxyQualityCheckItem{
+			Target:    "base_connectivity",
+			Status:    "fail",
+			LatencyMs: latencyMs,
+			Message:   err.Error(),
+		})
+		result.FailedCount++
+		finalizeProxyQualityResult(result)
+		s.saveProxyQualitySnapshot(ctx, id, result, nil)
+		return result, nil
+	}
+	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
+		return nil, err
+	}
+	s.saveVerifiedProxyProbe(ctx, id, exitInfo, latencyMs, checkedAt)
 
 	result.ExitIP = exitInfo.IP
 	result.Country = exitInfo.Country
@@ -517,40 +651,35 @@ func (s *adminServiceImpl) saveProxyQualitySnapshot(ctx context.Context, proxyID
 		info.CountryCode = exitInfo.CountryCode
 		info.Region = exitInfo.Region
 		info.City = exitInfo.City
+		info.Timezone = exitInfo.Timezone
+		info.UTCOffsetSeconds = exitInfo.UTCOffsetSeconds
+		info.ASN = exitInfo.ASN
+		info.ISP = exitInfo.ISP
+		info.ExitCheckedAt = &checkedAt
 	}
 	s.saveProxyLatency(ctx, proxyID, info)
 }
 
-func (s *adminServiceImpl) probeProxyLatency(ctx context.Context, proxy *Proxy) {
-	if s.proxyProber == nil || proxy == nil {
-		return
-	}
-	exitInfo, latencyMs, err := s.proxyProber.ProbeProxy(ctx, proxy.URL())
-	if err != nil {
-		s.saveProxyLatency(ctx, proxy.ID, &ProxyLatencyInfo{
-			Success:   false,
-			Message:   err.Error(),
-			UpdatedAt: time.Now(),
-		})
-		return
-	}
-
-	latency := latencyMs
-	s.saveProxyLatency(ctx, proxy.ID, &ProxyLatencyInfo{
-		Success:     true,
-		LatencyMs:   &latency,
-		Message:     "Proxy is accessible",
-		IPAddress:   exitInfo.IP,
-		Country:     exitInfo.Country,
-		CountryCode: exitInfo.CountryCode,
-		Region:      exitInfo.Region,
-		City:        exitInfo.City,
-		UpdatedAt:   time.Now(),
-	})
-}
-
 func (s *adminServiceImpl) attachProxyLatency(ctx context.Context, proxies []ProxyWithAccountCount) {
-	if s.proxyLatencyCache == nil || len(proxies) == 0 {
+	if len(proxies) == 0 {
+		return
+	}
+	for i := range proxies {
+		proxies[i].IPAddress = proxies[i].ExitIP
+		proxies[i].Country = proxies[i].ExitCountry
+		proxies[i].CountryCode = proxies[i].ExitCountryCode
+		proxies[i].Region = proxies[i].ExitRegion
+		proxies[i].City = proxies[i].ExitCity
+		proxies[i].Timezone = proxies[i].ExitTimezone
+		proxies[i].UTCOffsetSeconds = proxies[i].ExitUTCOffsetSeconds
+		proxies[i].ASN = proxies[i].ExitASN
+		proxies[i].ISP = proxies[i].ExitISP
+		if proxies[i].Proxy.ExitCheckedAt != nil {
+			checked := proxies[i].Proxy.ExitCheckedAt.Unix()
+			proxies[i].ExitCheckedAt = &checked
+		}
+	}
+	if s.proxyLatencyCache == nil {
 		return
 	}
 
@@ -577,11 +706,22 @@ func (s *adminServiceImpl) attachProxyLatency(ctx context.Context, proxies []Pro
 			proxies[i].LatencyStatus = "failed"
 		}
 		proxies[i].LatencyMessage = info.Message
-		proxies[i].IPAddress = info.IPAddress
-		proxies[i].Country = info.Country
-		proxies[i].CountryCode = info.CountryCode
-		proxies[i].Region = info.Region
-		proxies[i].City = info.City
+		// The durable database snapshot is authoritative. Redis may backfill
+		// legacy rows that have not yet persisted a verified exit profile.
+		if !proxies[i].HasVerifiedExitProfile() {
+			proxies[i].IPAddress = info.IPAddress
+			proxies[i].Country = info.Country
+			proxies[i].CountryCode = info.CountryCode
+			proxies[i].Region = info.Region
+			proxies[i].City = info.City
+			proxies[i].Timezone = info.Timezone
+			proxies[i].UTCOffsetSeconds = info.UTCOffsetSeconds
+			proxies[i].ASN = info.ASN
+			proxies[i].ISP = info.ISP
+			if info.ExitCheckedAt != nil {
+				proxies[i].ExitCheckedAt = info.ExitCheckedAt
+			}
+		}
 		proxies[i].QualityStatus = info.QualityStatus
 		proxies[i].QualityScore = info.QualityScore
 		proxies[i].QualityGrade = info.QualityGrade
@@ -598,6 +738,18 @@ func (s *adminServiceImpl) saveProxyLatency(ctx context.Context, proxyID int64, 
 	merged := *info
 	if latencies, err := s.proxyLatencyCache.GetProxyLatencies(ctx, []int64{proxyID}); err == nil {
 		if existing := latencies[proxyID]; existing != nil {
+			if merged.IPAddress == "" {
+				merged.IPAddress = existing.IPAddress
+				merged.Country = existing.Country
+				merged.CountryCode = existing.CountryCode
+				merged.Region = existing.Region
+				merged.City = existing.City
+				merged.Timezone = existing.Timezone
+				merged.UTCOffsetSeconds = existing.UTCOffsetSeconds
+				merged.ASN = existing.ASN
+				merged.ISP = existing.ISP
+				merged.ExitCheckedAt = existing.ExitCheckedAt
+			}
 			if merged.QualityCheckedAt == nil &&
 				merged.QualityScore == nil &&
 				merged.QualityGrade == "" &&

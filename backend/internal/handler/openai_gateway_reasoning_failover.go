@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"go.uber.org/zap"
 )
 

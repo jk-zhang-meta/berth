@@ -1,9 +1,10 @@
 package routes
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/handler"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/handler"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,6 +25,20 @@ func RegisterUserRoutes(
 	authenticated.Use(panelRateLimiter.Global())
 	// 用户管理面变更类操作入审计（含 TOTP 启用/禁用、step-up 验证、密码修改等安全事件）
 	authenticated.Use(gin.HandlerFunc(auditLog))
+	if h.Marketplace != nil {
+		market := authenticated.Group("/marketplace")
+		market.GET("/listings", h.Marketplace.List)
+		market.POST("/listings", h.Marketplace.Publish)
+		market.PATCH("/listings/:id", h.Marketplace.UpdateListing)
+		market.POST("/listings/:id/checkout", h.Marketplace.Checkout)
+		market.GET("/orders", h.Marketplace.Orders)
+		market.POST("/orders/:id/terminate", h.Marketplace.Terminate)
+		market.GET("/orders/:id/service", h.Marketplace.ServiceDetails)
+		market.GET("/resources", h.Marketplace.Resources)
+		market.GET("/settings", h.Marketplace.GetSettings)
+		market.GET("/revenue", h.Marketplace.Revenue)
+		market.PUT("/settings", h.Marketplace.UpdateSettings)
+	}
 	{
 		// 用户接口
 		user := authenticated.Group("/user")
@@ -102,6 +117,11 @@ func RegisterUserRoutes(
 			usage.GET("", h.Usage.List)
 			usage.GET("/errors", h.Usage.ListErrors)
 			usage.GET("/errors/:id", h.Usage.GetErrorDetail)
+			usage.GET("/sessions", h.Usage.ListSessions)
+			usage.GET("/sessions/accounts", h.Usage.ListSessionAccounts)
+			usage.PATCH("/sessions/:id", h.Usage.PatchSession)
+			usage.PUT("/sessions/:id/queue", h.Usage.ReplaceSessionQueue)
+			usage.GET("/sessions/:id/requests", h.Usage.ListSessionRequests)
 			usage.GET("/:id", h.Usage.GetByID)
 			usage.GET("/stats", h.Usage.Stats)
 			// User dashboard endpoints
@@ -127,6 +147,17 @@ func RegisterUserRoutes(
 		}
 
 		// 用户订阅
+		forbidExport := middleware.StepUpAuthMiddleware(func(c *gin.Context) {
+			response.Forbidden(c, "admin only")
+			c.Abort()
+		})
+		registerAccountRoutes(authenticated, h, forbidExport)
+		registerProxyRoutes(authenticated, h, forbidExport)
+		registerOpenAIOAuthRoutes(authenticated, h)
+		registerGeminiOAuthRoutes(authenticated, h)
+		registerAntigravityOAuthRoutes(authenticated, h)
+		registerGrokOAuthRoutes(authenticated, h)
+
 		subscriptions := authenticated.Group("/subscriptions")
 		{
 			subscriptions.GET("", h.Subscription.List)

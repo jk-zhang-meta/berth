@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 )
 
 var (
@@ -119,6 +119,7 @@ type schedulerActiveGroupIDLister interface {
 }
 
 type SchedulerSnapshotService struct {
+	marketplace                  *MarketplaceService
 	cache                        SchedulerCache
 	outboxRepo                   SchedulerOutboxRepository
 	accountRepo                  AccountRepository
@@ -225,7 +226,8 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil
+			accounts, err := s.filterMarketplacePublicAccounts(ctx, derefAccounts(cached), groupID)
+			return accounts, useMixed, err
 		}
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -268,7 +270,8 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
-	return accounts, useMixed, nil
+	accounts, err = s.filterMarketplacePublicAccounts(ctx, accounts, groupID)
+	return accounts, useMixed, err
 }
 
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {

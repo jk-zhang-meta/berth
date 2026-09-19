@@ -2,14 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ctxkey"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
 )
 
 func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
@@ -280,6 +281,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	}
 
 	cmd := &UsageBillingCommand{
+		MarketplaceUsage:   p.APIKey.MarketplaceUsage,
 		RequestID:          requestID,
 		APIKeyID:           p.APIKey.ID,
 		UserID:             p.User.ID,
@@ -335,6 +337,12 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	if p == nil || deps == nil {
 		return false, nil
 	}
+	if p.APIKey != nil && p.APIKey.MarketplaceUsage != nil {
+		m := p.APIKey.MarketplaceUsage
+		if repo == nil || p.APIKey.GroupID == nil || *p.APIKey.GroupID != m.GroupID || p.Account == nil || p.Account.ID != m.AccountID || p.IsSubscriptionBill {
+			return false, errors.New("marketplace requires matching resource and atomic balance billing")
+		}
+	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
@@ -368,6 +376,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
 	if p == nil || p.Cost == nil || deps == nil {
 		return
+	}
+	if result != nil && result.MarketplaceSellerID > 0 && deps.billingCacheService != nil {
+		_ = deps.billingCacheService.InvalidateUserBalance(ctx, result.MarketplaceSellerID)
 	}
 
 	if p.IsSubscriptionBill {
@@ -749,6 +760,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
 	}
 	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。高峰因子按请求时刻现算，
+	if apiKey.MarketplaceUsage != nil {
+		multiplier = apiKey.MarketplaceUsage.RateMultiplier
+	}
 	// 不并入上面的 getUserGroupRateMultiplier，以免污染 user:group 倍率缓存。
 	pricingAt := input.PricingAt
 	if pricingAt.IsZero() {

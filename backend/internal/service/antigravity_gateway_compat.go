@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
+	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 )
 
@@ -62,6 +62,15 @@ func (s *AntigravityGatewayService) ForwardAsChatCompletions(
 	if err := s.validateAntigravityCompatAccount(c, account); err != nil {
 		return nil, err
 	}
+	if agentPrivacyBodyHasSignals(body) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIChatCompletions, account.Proxy)
+		if privacyErr != nil {
+			return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		}
+		if changed {
+			body = privacyBody
+		}
+	}
 
 	var request apicompat.ChatCompletionsRequest
 	if json.Unmarshal(body, &request) != nil {
@@ -108,6 +117,15 @@ func (s *AntigravityGatewayService) ForwardAsResponses(
 ) (*ForwardResult, error) {
 	if err := s.validateAntigravityCompatAccount(c, account); err != nil {
 		return nil, err
+	}
+	if agentPrivacyBodyHasSignals(body) {
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIResponses, account.Proxy)
+		if privacyErr != nil {
+			return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		}
+		if changed {
+			body = privacyBody
+		}
 	}
 
 	var request apicompat.ResponsesRequest

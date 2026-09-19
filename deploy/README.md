@@ -1,6 +1,6 @@
-# Sub2API Deployment Files
+# Berth Deployment Files
 
-This directory contains files for deploying Sub2API on Linux servers and Apple-silicon Macs.
+This directory contains files for deploying Berth on Linux servers and Apple-silicon Macs.
 
 ## Deployment Methods
 
@@ -23,8 +23,8 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 | `DOCKER.md` | Docker Hub documentation |
 | `install.sh` | One-click binary installation script |
 | `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
-| `sub2api.service` | Systemd service unit file |
-| `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
+| `berth.service` | Systemd service unit file |
+| `berth-datamanagementd.service` | datamanagementd systemd service unit file |
 | `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
 | `config.example.yaml` | Example configuration file |
 | `EDGE_SECURITY.md` | Reverse proxy, CDN/WAF, trusted proxy, and ingress hardening guide |
@@ -33,7 +33,7 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 
 ## Apple container Deployment
 
-Apple-silicon Macs running macOS 26 can run the complete Sub2API, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
+Apple-silicon Macs running macOS 26 can run the complete Berth, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
 
 ```bash
 ./apple-container.sh init
@@ -56,10 +56,10 @@ Use the automated preparation script for the easiest setup:
 
 ```bash
 # Download and run the preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/jk-zhang-meta/berth/main/deploy/docker-deploy.sh | bash
 
 # Or download first, then run
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
+curl -sSL https://raw.githubusercontent.com/jk-zhang-meta/berth/main/deploy/docker-deploy.sh -o docker-deploy.sh
 chmod +x docker-deploy.sh
 ./docker-deploy.sh
 ```
@@ -77,10 +77,10 @@ chmod +x docker-deploy.sh
 docker compose -f docker-compose.local.yml up -d
 
 # View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose -f docker-compose.local.yml logs -f berth
 
 # If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose -f docker-compose.local.yml logs berth | grep "admin password"
 
 # Access Web UI
 # http://localhost:8080
@@ -92,8 +92,8 @@ If you prefer manual control:
 
 ```bash
 # Clone repository
-git clone https://github.com/Wei-Shaw/sub2api.git
-cd sub2api/deploy
+git clone https://github.com/jk-zhang-meta/berth.git
+cd berth/deploy
 
 # Configure environment
 cp .env.example .env
@@ -113,7 +113,7 @@ mkdir -p data postgres_data redis_data
 docker compose -f docker-compose.local.yml up -d
 
 # View logs (check for auto-generated admin password)
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose -f docker-compose.local.yml logs -f berth
 
 # Access Web UI
 # http://localhost:8080
@@ -143,12 +143,12 @@ When using Docker Compose with `AUTO_SETUP=true`:
 
 3. If `ADMIN_PASSWORD` is not set, check logs for the generated password:
    ```bash
-   docker compose logs sub2api | grep "admin password"
+   docker compose logs berth | grep "admin password"
    ```
 
 ### Startup and Database Recovery
 
-Sub2API applies database migrations during application startup. PostgreSQL can
+Berth applies database migrations during application startup. PostgreSQL can
 remain in its recovery/startup phase briefly after a host or Docker daemon
 restart. The application retries transient PostgreSQL startup and connection
 errors with bounded exponential backoff, then starts automatically when the
@@ -162,9 +162,9 @@ replacement for application-level retries when Docker restores existing
 containers after a host restart.
 
 For systemd deployments, keep `Restart=always` and `RestartSec` configured in
-`sub2api.service`; the application retry covers transient database startup,
+`berth.service`; the application retry covers transient database startup,
 while systemd remains the supervisor for permanent process exits. For
-Kubernetes, use a PostgreSQL readiness probe and retain the Sub2API startup
+Kubernetes, use a PostgreSQL readiness probe and retain the Berth startup
 retry behavior; configure the application liveness probe separately so a
 database recovery period is not treated as a permanent process failure.
 
@@ -196,7 +196,7 @@ SELECT
 
 如需启用管理后台“数据管理”功能，请额外部署宿主机 `datamanagementd`：
 
-- 主进程固定探测 `/tmp/sub2api-datamanagement.sock`
+- 主进程固定探测 `/tmp/berth-datamanagement.sock`
 - Docker 场景下需把宿主机 Socket 挂载到容器内同路径
 - 详细步骤见：`deploy/DATAMANAGEMENTD_CN.md`
 
@@ -212,10 +212,10 @@ docker compose -f docker-compose.local.yml up -d
 docker compose -f docker-compose.local.yml down
 
 # View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose -f docker-compose.local.yml logs -f berth
 
-# Restart Sub2API only
-docker compose -f docker-compose.local.yml restart sub2api
+# Restart Berth only
+docker compose -f docker-compose.local.yml restart berth
 
 # Update to latest version
 docker compose -f docker-compose.local.yml pull
@@ -236,10 +236,10 @@ docker compose up -d
 docker compose down
 
 # View logs
-docker compose logs -f sub2api
+docker compose logs -f berth
 
-# Restart Sub2API only
-docker compose restart sub2api
+# Restart Berth only
+docker compose restart berth
 
 # Update to latest version
 docker compose pull
@@ -257,7 +257,7 @@ docker compose down -v
 | `JWT_SECRET` | **Recommended** | *(auto-generated)* | JWT secret (fixed for persistent sessions) |
 | `TOTP_ENCRYPTION_KEY` | **Recommended** | *(auto-generated)* | TOTP encryption key (fixed for persistent 2FA) |
 | `SERVER_PORT` | No | `8080` | Server port |
-| `ADMIN_EMAIL` | No | `admin@sub2api.local` | Admin email |
+| `ADMIN_EMAIL` | No | `admin@berth.local` | Admin email |
 | `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password |
 | `TZ` | No | `Asia/Shanghai` | Timezone |
 | `UPDATE_GITHUB_TOKEN` | No | *(empty)* | Token for `api.github.com` release checks only; asset downloads remain anonymous. |
@@ -279,13 +279,13 @@ When using `docker-compose.local.yml`, all data is stored in local directories, 
 cd /path/to/deployment
 docker compose -f docker-compose.local.yml down
 cd ..
-tar czf sub2api-complete.tar.gz deployment/
+tar czf berth-complete.tar.gz deployment/
 
 # Transfer to new server
-scp sub2api-complete.tar.gz user@new-server:/path/to/destination/
+scp berth-complete.tar.gz user@new-server:/path/to/destination/
 
 # On new server: Extract and start
-tar xzf sub2api-complete.tar.gz
+tar xzf berth-complete.tar.gz
 cd deployment/
 docker compose -f docker-compose.local.yml up -d
 ```
@@ -296,7 +296,7 @@ Your entire deployment (configuration + data) is migrated!
 
 ## Gemini OAuth Configuration
 
-Sub2API supports three methods to connect to Gemini:
+Berth supports three methods to connect to Gemini:
 
 ### Method 1: Code Assist OAuth (Recommended for GCP Users)
 
@@ -341,7 +341,7 @@ Requires your own OAuth client credentials.
    - Go to "APIs & Services" → "Credentials"
    - Click "Create Credentials" → "OAuth client ID"
    - Application type: **Web application** (or **Desktop app**)
-   - Name: e.g., "Sub2API Gemini"
+   - Name: e.g., "Berth Gemini"
    - Authorized redirect URIs: Add `http://localhost:1455/auth/callback`
 6. Copy the **Client ID** and **Client Secret**
 7. **⚠️ Publish to Production (IMPORTANT):**
@@ -398,19 +398,19 @@ For production servers using systemd.
 ### One-Line Installation
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/jk-zhang-meta/berth/main/deploy/install.sh | sudo bash
 ```
 
 ### Manual Installation
 
-1. Download the latest release from [GitHub Releases](https://github.com/Wei-Shaw/sub2api/releases)
-2. Extract and copy the binary to `/opt/sub2api/`
-3. Copy `sub2api.service` to `/etc/systemd/system/`
+1. Download the latest release from [GitHub Releases](https://github.com/jk-zhang-meta/berth/releases)
+2. Extract and copy the binary to `/opt/berth/`
+3. Copy `berth.service` to `/etc/systemd/system/`
 4. Run:
    ```bash
    sudo systemctl daemon-reload
-   sudo systemctl enable sub2api
-   sudo systemctl start sub2api
+   sudo systemctl enable berth
+   sudo systemctl start berth
    ```
 5. Open the Setup Wizard in your browser to complete configuration
 
@@ -431,22 +431,22 @@ sudo ./install.sh uninstall
 
 ```bash
 # Start the service
-sudo systemctl start sub2api
+sudo systemctl start berth
 
 # Stop the service
-sudo systemctl stop sub2api
+sudo systemctl stop berth
 
 # Restart the service
-sudo systemctl restart sub2api
+sudo systemctl restart berth
 
 # Check status
-sudo systemctl status sub2api
+sudo systemctl status berth
 
 # View logs
-sudo journalctl -u sub2api -f
+sudo journalctl -u berth -f
 
 # Enable auto-start on boot
-sudo systemctl enable sub2api
+sudo systemctl enable berth
 ```
 
 ### Configuration
@@ -459,7 +459,7 @@ To change after installation:
 
 1. Edit the systemd service:
    ```bash
-   sudo systemctl edit sub2api
+   sudo systemctl edit berth
    ```
 
 2. Add or modify:
@@ -472,7 +472,7 @@ To change after installation:
 3. Reload and restart:
    ```bash
    sudo systemctl daemon-reload
-   sudo systemctl restart sub2api
+   sudo systemctl restart berth
    ```
 
 #### Gemini OAuth Configuration
@@ -481,7 +481,7 @@ If you need to use AI Studio OAuth for Gemini accounts, add the OAuth client cre
 
 1. Edit the service file:
    ```bash
-   sudo nano /etc/systemd/system/sub2api.service
+   sudo nano /etc/systemd/system/berth.service
    ```
 
 2. Add your OAuth credentials in the `[Service]` section (after the existing `Environment=` lines):
@@ -498,7 +498,7 @@ If you need to use AI Studio OAuth for Gemini accounts, add the OAuth client cre
 3. Reload and restart:
    ```bash
    sudo systemctl daemon-reload
-   sudo systemctl restart sub2api
+   sudo systemctl restart berth
    ```
 
 > **Note:** Code Assist OAuth does not require any configuration - it uses the built-in Gemini CLI client.
@@ -506,7 +506,7 @@ If you need to use AI Studio OAuth for Gemini accounts, add the OAuth client cre
 
 #### Application Configuration
 
-The main config file is at `/etc/sub2api/config.yaml` (created by Setup Wizard).
+The main config file is at `/etc/berth/config.yaml` (created by Setup Wizard).
 
 ### Prerequisites
 
@@ -518,12 +518,12 @@ The main config file is at `/etc/sub2api/config.yaml` (created by Setup Wizard).
 ### Directory Structure
 
 ```
-/opt/sub2api/
-├── sub2api              # Main binary
-├── sub2api.backup       # Backup (after upgrade)
+/opt/berth/
+├── berth              # Main binary
+├── berth.backup       # Backup (after upgrade)
 └── data/                # Runtime data
 
-/etc/sub2api/
+/etc/berth/
 └── config.yaml          # Configuration file
 ```
 
@@ -540,7 +540,7 @@ For **local directory version**:
 docker compose -f docker-compose.local.yml ps
 
 # View detailed logs
-docker compose -f docker-compose.local.yml logs --tail=100 sub2api
+docker compose -f docker-compose.local.yml logs --tail=100 berth
 
 # Check database connection
 docker compose -f docker-compose.local.yml exec postgres pg_isready
@@ -562,7 +562,7 @@ For **named volumes version**:
 docker compose ps
 
 # View detailed logs
-docker compose logs --tail=100 sub2api
+docker compose logs --tail=100 berth
 
 # Check database connection
 docker compose exec postgres pg_isready
@@ -578,13 +578,13 @@ docker compose restart
 
 ```bash
 # Check service status
-sudo systemctl status sub2api
+sudo systemctl status berth
 
 # View recent logs
-sudo journalctl -u sub2api -n 50
+sudo journalctl -u berth -n 50
 
 # Check config file
-sudo cat /etc/sub2api/config.yaml
+sudo cat /etc/berth/config.yaml
 
 # Check PostgreSQL
 sudo systemctl status postgresql
@@ -604,9 +604,9 @@ sudo systemctl status redis
 
 ## TLS Fingerprint Configuration
 
-Sub2API supports TLS fingerprint simulation to make requests appear as if they come from the official Claude CLI (Node.js client).
+Berth supports TLS fingerprint simulation to make requests appear as if they come from the official Claude CLI (Node.js client).
 
-> **💡 Tip:** Visit **[tls.sub2api.org](https://tls.sub2api.org/)** to get TLS fingerprint information for different devices and browsers.
+> **💡 Tip:** Use a trusted TLS fingerprint collector to capture the device or browser profile, then paste its YAML output into Berth.
 
 ### Default Behavior
 

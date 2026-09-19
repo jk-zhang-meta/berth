@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/tlsfingerprint"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 type grokQuotaHandlerAccountRepo struct {
@@ -361,7 +361,7 @@ func TestGrokSSOImportCredentialsDefaultsToOfficialBaseURL(t *testing.T) {
 
 func TestGrokSSOImportWorkerHandlesMissingOAuthService(t *testing.T) {
 	h := &GrokOAuthHandler{}
-	result := h.safeCreateAccountFromSSOToken(context.Background(), GrokSSOToOAuthRequest{}, "token", 2, 3)
+	result := h.safeCreateAccountFromSSOToken(context.Background(), 0, GrokSSOToOAuthRequest{}, "token", 2, 3)
 	require.False(t, result.created)
 	require.Equal(t, 2, result.item.Index)
 	require.Contains(t, result.item.Error, "GROK_OAUTH_CLIENT_NOT_CONFIGURED")

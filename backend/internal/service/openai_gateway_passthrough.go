@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -163,8 +163,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			})
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
-		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
-			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
+		instructions := gjson.GetBytes(body, "instructions")
+		instructionsNeedDefault := !instructions.Exists()
+		if instructions.Type == gjson.String && strings.Contains(instructions.String(), agentNetworkEgressMarker) {
+			instructionsNeedDefault = strings.TrimSpace(strings.SplitN(instructions.String(), agentNetworkEgressMarker, 2)[0]) == ""
+		}
+		if isOpenAICodexModel(reqModel) && instructionsNeedDefault {
+			nextBody, setErr := sjson.SetBytes(body, "instructions", mergeInstructionsWithNetworkEgress(instructions.String(), defaultCodexSynthInstructions(reqModel)))
 			if setErr != nil {
 				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
 			}
@@ -726,6 +731,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// 保证不被覆盖丢失）。
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
+	sanitizeNativeCodexHeaders(c, req.Header)
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http_passthrough", req.Header, body, "not_applicable")
 
 	return req, nil
@@ -1766,7 +1772,7 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithModel(
 
 // nonStreamingTerminalFailureFailover applies the streaming path's terminal-event
 // verdict to a stream=false request whose upstream answered with SSE anyway
-// (other sub2api instances and several OpenAI-compatible upstreams do this).
+// (other berth instances and several OpenAI-compatible upstreams do this).
 //
 // Both handleSSEToJSON and handlePassthroughSSEToJSON collapsed every terminal
 // `response.failed` / `error` frame into writeOpenAINonStreamingProtocolError, a
@@ -2283,7 +2289,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 
 	// Detect SSE responses from upstream and convert to JSON.
-	// Some upstreams (e.g. other sub2api instances) may return SSE even when
+	// Some upstreams (e.g. other berth instances) may return SSE even when
 	// stream=false was requested. Without this conversion the client would
 	// receive raw SSE text or a terminal event with empty output.
 	if isEventStreamResponse(resp.Header) {

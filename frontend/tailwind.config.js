@@ -50,16 +50,25 @@ export default {
       },
       fontFamily: {
         sans: [
-          'system-ui',
-          '-apple-system',
-          'BlinkMacSystemFont',
+          'Inter',
+          'SF Pro Text',
+          'Segoe UI Variable Text',
           'Segoe UI',
-          'Roboto',
-          'Helvetica Neue',
-          'Arial',
           'PingFang SC',
           'Hiragino Sans GB',
           'Microsoft YaHei',
+          'system-ui',
+          'sans-serif'
+        ],
+        display: [
+          'Avenir Next',
+          'SF Pro Display',
+          'Segoe UI Variable Display',
+          'Segoe UI',
+          'PingFang SC',
+          'Hiragino Sans GB',
+          'Microsoft YaHei',
+          'system-ui',
           'sans-serif'
         ],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']

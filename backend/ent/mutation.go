@@ -12,47 +12,47 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
-	"github.com/Wei-Shaw/sub2api/ent/announcement"
-	"github.com/Wei-Shaw/sub2api/ent/announcementread"
-	"github.com/Wei-Shaw/sub2api/ent/apikey"
-	"github.com/Wei-Shaw/sub2api/ent/authidentity"
-	"github.com/Wei-Shaw/sub2api/ent/authidentitychannel"
-	"github.com/Wei-Shaw/sub2api/ent/batchimageevent"
-	"github.com/Wei-Shaw/sub2api/ent/batchimageitem"
-	"github.com/Wei-Shaw/sub2api/ent/batchimagejob"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitor"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
-	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
-	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
-	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
-	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
-	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
-	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
-	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
-	"github.com/Wei-Shaw/sub2api/ent/predicate"
-	"github.com/Wei-Shaw/sub2api/ent/promocode"
-	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
-	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
-	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
-	"github.com/Wei-Shaw/sub2api/ent/setting"
-	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
-	"github.com/Wei-Shaw/sub2api/ent/tlsfingerprintprofile"
-	"github.com/Wei-Shaw/sub2api/ent/usagecleanuptask"
-	"github.com/Wei-Shaw/sub2api/ent/usagelog"
-	"github.com/Wei-Shaw/sub2api/ent/user"
-	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
-	"github.com/Wei-Shaw/sub2api/ent/userattributedefinition"
-	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
-	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
-	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/accountgroup"
+	"github.com/jk-zhang-meta/berth/ent/announcement"
+	"github.com/jk-zhang-meta/berth/ent/announcementread"
+	"github.com/jk-zhang-meta/berth/ent/apikey"
+	"github.com/jk-zhang-meta/berth/ent/authidentity"
+	"github.com/jk-zhang-meta/berth/ent/authidentitychannel"
+	"github.com/jk-zhang-meta/berth/ent/batchimageevent"
+	"github.com/jk-zhang-meta/berth/ent/batchimageitem"
+	"github.com/jk-zhang-meta/berth/ent/batchimagejob"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitor"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitordailyrollup"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitorhistory"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitorrequesttemplate"
+	"github.com/jk-zhang-meta/berth/ent/compositemodelroute"
+	"github.com/jk-zhang-meta/berth/ent/errorpassthroughrule"
+	"github.com/jk-zhang-meta/berth/ent/group"
+	"github.com/jk-zhang-meta/berth/ent/idempotencyrecord"
+	"github.com/jk-zhang-meta/berth/ent/identityadoptiondecision"
+	"github.com/jk-zhang-meta/berth/ent/paymentauditlog"
+	"github.com/jk-zhang-meta/berth/ent/paymentorder"
+	"github.com/jk-zhang-meta/berth/ent/paymentproviderinstance"
+	"github.com/jk-zhang-meta/berth/ent/pendingauthsession"
+	"github.com/jk-zhang-meta/berth/ent/predicate"
+	"github.com/jk-zhang-meta/berth/ent/promocode"
+	"github.com/jk-zhang-meta/berth/ent/promocodeusage"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/redeemcode"
+	"github.com/jk-zhang-meta/berth/ent/securitysecret"
+	"github.com/jk-zhang-meta/berth/ent/setting"
+	"github.com/jk-zhang-meta/berth/ent/subscriptionplan"
+	"github.com/jk-zhang-meta/berth/ent/tlsfingerprintprofile"
+	"github.com/jk-zhang-meta/berth/ent/usagecleanuptask"
+	"github.com/jk-zhang-meta/berth/ent/usagelog"
+	"github.com/jk-zhang-meta/berth/ent/user"
+	"github.com/jk-zhang-meta/berth/ent/userallowedgroup"
+	"github.com/jk-zhang-meta/berth/ent/userattributedefinition"
+	"github.com/jk-zhang-meta/berth/ent/userattributevalue"
+	"github.com/jk-zhang-meta/berth/ent/userplatformquota"
+	"github.com/jk-zhang-meta/berth/ent/usersubscription"
+	"github.com/jk-zhang-meta/berth/internal/domain"
 )
 
 const (
@@ -37366,36 +37366,47 @@ func (m *PromoCodeUsageMutation) ResetEdge(name string) error {
 // ProxyMutation represents an operation that mutates the Proxy nodes in the graph.
 type ProxyMutation struct {
 	config
-	op                     Op
-	typ                    string
-	id                     *int64
-	created_at             *time.Time
-	updated_at             *time.Time
-	deleted_at             *time.Time
-	name                   *string
-	protocol               *string
-	host                   *string
-	port                   *int
-	addport                *int
-	username               *string
-	password               *string
-	status                 *string
-	expires_at             *time.Time
-	fallback_mode          *string
-	expiry_warn_days       *int
-	addexpiry_warn_days    *int
-	clearedFields          map[string]struct{}
-	accounts               map[int64]struct{}
-	removedaccounts        map[int64]struct{}
-	clearedaccounts        bool
-	primary_proxies        map[int64]struct{}
-	removedprimary_proxies map[int64]struct{}
-	clearedprimary_proxies bool
-	backup_proxy           *int64
-	clearedbackup_proxy    bool
-	done                   bool
-	oldValue               func(context.Context) (*Proxy, error)
-	predicates             []predicate.Proxy
+	op                         Op
+	typ                        string
+	id                         *int64
+	created_at                 *time.Time
+	updated_at                 *time.Time
+	deleted_at                 *time.Time
+	name                       *string
+	protocol                   *string
+	host                       *string
+	port                       *int
+	addport                    *int
+	username                   *string
+	password                   *string
+	status                     *string
+	expires_at                 *time.Time
+	fallback_mode              *string
+	expiry_warn_days           *int
+	addexpiry_warn_days        *int
+	exit_ip                    *string
+	exit_country               *string
+	exit_country_code          *string
+	exit_region                *string
+	exit_city                  *string
+	exit_timezone              *string
+	exit_utc_offset_seconds    *int
+	addexit_utc_offset_seconds *int
+	exit_asn                   *string
+	exit_isp                   *string
+	exit_checked_at            *time.Time
+	clearedFields              map[string]struct{}
+	accounts                   map[int64]struct{}
+	removedaccounts            map[int64]struct{}
+	clearedaccounts            bool
+	primary_proxies            map[int64]struct{}
+	removedprimary_proxies     map[int64]struct{}
+	clearedprimary_proxies     bool
+	backup_proxy               *int64
+	clearedbackup_proxy        bool
+	done                       bool
+	oldValue                   func(context.Context) (*Proxy, error)
+	predicates                 []predicate.Proxy
 }
 
 var _ ent.Mutation = (*ProxyMutation)(nil)
@@ -38105,6 +38116,517 @@ func (m *ProxyMutation) ResetExpiryWarnDays() {
 	m.addexpiry_warn_days = nil
 }
 
+// SetExitIP sets the "exit_ip" field.
+func (m *ProxyMutation) SetExitIP(s string) {
+	m.exit_ip = &s
+}
+
+// ExitIP returns the value of the "exit_ip" field in the mutation.
+func (m *ProxyMutation) ExitIP() (r string, exists bool) {
+	v := m.exit_ip
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitIP returns the old "exit_ip" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitIP(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitIP is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitIP requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitIP: %w", err)
+	}
+	return oldValue.ExitIP, nil
+}
+
+// ClearExitIP clears the value of the "exit_ip" field.
+func (m *ProxyMutation) ClearExitIP() {
+	m.exit_ip = nil
+	m.clearedFields[proxy.FieldExitIP] = struct{}{}
+}
+
+// ExitIPCleared returns if the "exit_ip" field was cleared in this mutation.
+func (m *ProxyMutation) ExitIPCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitIP]
+	return ok
+}
+
+// ResetExitIP resets all changes to the "exit_ip" field.
+func (m *ProxyMutation) ResetExitIP() {
+	m.exit_ip = nil
+	delete(m.clearedFields, proxy.FieldExitIP)
+}
+
+// SetExitCountry sets the "exit_country" field.
+func (m *ProxyMutation) SetExitCountry(s string) {
+	m.exit_country = &s
+}
+
+// ExitCountry returns the value of the "exit_country" field in the mutation.
+func (m *ProxyMutation) ExitCountry() (r string, exists bool) {
+	v := m.exit_country
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitCountry returns the old "exit_country" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitCountry(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitCountry is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitCountry requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitCountry: %w", err)
+	}
+	return oldValue.ExitCountry, nil
+}
+
+// ClearExitCountry clears the value of the "exit_country" field.
+func (m *ProxyMutation) ClearExitCountry() {
+	m.exit_country = nil
+	m.clearedFields[proxy.FieldExitCountry] = struct{}{}
+}
+
+// ExitCountryCleared returns if the "exit_country" field was cleared in this mutation.
+func (m *ProxyMutation) ExitCountryCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitCountry]
+	return ok
+}
+
+// ResetExitCountry resets all changes to the "exit_country" field.
+func (m *ProxyMutation) ResetExitCountry() {
+	m.exit_country = nil
+	delete(m.clearedFields, proxy.FieldExitCountry)
+}
+
+// SetExitCountryCode sets the "exit_country_code" field.
+func (m *ProxyMutation) SetExitCountryCode(s string) {
+	m.exit_country_code = &s
+}
+
+// ExitCountryCode returns the value of the "exit_country_code" field in the mutation.
+func (m *ProxyMutation) ExitCountryCode() (r string, exists bool) {
+	v := m.exit_country_code
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitCountryCode returns the old "exit_country_code" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitCountryCode(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitCountryCode is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitCountryCode requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitCountryCode: %w", err)
+	}
+	return oldValue.ExitCountryCode, nil
+}
+
+// ClearExitCountryCode clears the value of the "exit_country_code" field.
+func (m *ProxyMutation) ClearExitCountryCode() {
+	m.exit_country_code = nil
+	m.clearedFields[proxy.FieldExitCountryCode] = struct{}{}
+}
+
+// ExitCountryCodeCleared returns if the "exit_country_code" field was cleared in this mutation.
+func (m *ProxyMutation) ExitCountryCodeCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitCountryCode]
+	return ok
+}
+
+// ResetExitCountryCode resets all changes to the "exit_country_code" field.
+func (m *ProxyMutation) ResetExitCountryCode() {
+	m.exit_country_code = nil
+	delete(m.clearedFields, proxy.FieldExitCountryCode)
+}
+
+// SetExitRegion sets the "exit_region" field.
+func (m *ProxyMutation) SetExitRegion(s string) {
+	m.exit_region = &s
+}
+
+// ExitRegion returns the value of the "exit_region" field in the mutation.
+func (m *ProxyMutation) ExitRegion() (r string, exists bool) {
+	v := m.exit_region
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitRegion returns the old "exit_region" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitRegion(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitRegion is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitRegion requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitRegion: %w", err)
+	}
+	return oldValue.ExitRegion, nil
+}
+
+// ClearExitRegion clears the value of the "exit_region" field.
+func (m *ProxyMutation) ClearExitRegion() {
+	m.exit_region = nil
+	m.clearedFields[proxy.FieldExitRegion] = struct{}{}
+}
+
+// ExitRegionCleared returns if the "exit_region" field was cleared in this mutation.
+func (m *ProxyMutation) ExitRegionCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitRegion]
+	return ok
+}
+
+// ResetExitRegion resets all changes to the "exit_region" field.
+func (m *ProxyMutation) ResetExitRegion() {
+	m.exit_region = nil
+	delete(m.clearedFields, proxy.FieldExitRegion)
+}
+
+// SetExitCity sets the "exit_city" field.
+func (m *ProxyMutation) SetExitCity(s string) {
+	m.exit_city = &s
+}
+
+// ExitCity returns the value of the "exit_city" field in the mutation.
+func (m *ProxyMutation) ExitCity() (r string, exists bool) {
+	v := m.exit_city
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitCity returns the old "exit_city" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitCity(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitCity is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitCity requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitCity: %w", err)
+	}
+	return oldValue.ExitCity, nil
+}
+
+// ClearExitCity clears the value of the "exit_city" field.
+func (m *ProxyMutation) ClearExitCity() {
+	m.exit_city = nil
+	m.clearedFields[proxy.FieldExitCity] = struct{}{}
+}
+
+// ExitCityCleared returns if the "exit_city" field was cleared in this mutation.
+func (m *ProxyMutation) ExitCityCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitCity]
+	return ok
+}
+
+// ResetExitCity resets all changes to the "exit_city" field.
+func (m *ProxyMutation) ResetExitCity() {
+	m.exit_city = nil
+	delete(m.clearedFields, proxy.FieldExitCity)
+}
+
+// SetExitTimezone sets the "exit_timezone" field.
+func (m *ProxyMutation) SetExitTimezone(s string) {
+	m.exit_timezone = &s
+}
+
+// ExitTimezone returns the value of the "exit_timezone" field in the mutation.
+func (m *ProxyMutation) ExitTimezone() (r string, exists bool) {
+	v := m.exit_timezone
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitTimezone returns the old "exit_timezone" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitTimezone(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitTimezone is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitTimezone requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitTimezone: %w", err)
+	}
+	return oldValue.ExitTimezone, nil
+}
+
+// ClearExitTimezone clears the value of the "exit_timezone" field.
+func (m *ProxyMutation) ClearExitTimezone() {
+	m.exit_timezone = nil
+	m.clearedFields[proxy.FieldExitTimezone] = struct{}{}
+}
+
+// ExitTimezoneCleared returns if the "exit_timezone" field was cleared in this mutation.
+func (m *ProxyMutation) ExitTimezoneCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitTimezone]
+	return ok
+}
+
+// ResetExitTimezone resets all changes to the "exit_timezone" field.
+func (m *ProxyMutation) ResetExitTimezone() {
+	m.exit_timezone = nil
+	delete(m.clearedFields, proxy.FieldExitTimezone)
+}
+
+// SetExitUtcOffsetSeconds sets the "exit_utc_offset_seconds" field.
+func (m *ProxyMutation) SetExitUtcOffsetSeconds(i int) {
+	m.exit_utc_offset_seconds = &i
+	m.addexit_utc_offset_seconds = nil
+}
+
+// ExitUtcOffsetSeconds returns the value of the "exit_utc_offset_seconds" field in the mutation.
+func (m *ProxyMutation) ExitUtcOffsetSeconds() (r int, exists bool) {
+	v := m.exit_utc_offset_seconds
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitUtcOffsetSeconds returns the old "exit_utc_offset_seconds" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitUtcOffsetSeconds(ctx context.Context) (v *int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitUtcOffsetSeconds is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitUtcOffsetSeconds requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitUtcOffsetSeconds: %w", err)
+	}
+	return oldValue.ExitUtcOffsetSeconds, nil
+}
+
+// AddExitUtcOffsetSeconds adds i to the "exit_utc_offset_seconds" field.
+func (m *ProxyMutation) AddExitUtcOffsetSeconds(i int) {
+	if m.addexit_utc_offset_seconds != nil {
+		*m.addexit_utc_offset_seconds += i
+	} else {
+		m.addexit_utc_offset_seconds = &i
+	}
+}
+
+// AddedExitUtcOffsetSeconds returns the value that was added to the "exit_utc_offset_seconds" field in this mutation.
+func (m *ProxyMutation) AddedExitUtcOffsetSeconds() (r int, exists bool) {
+	v := m.addexit_utc_offset_seconds
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearExitUtcOffsetSeconds clears the value of the "exit_utc_offset_seconds" field.
+func (m *ProxyMutation) ClearExitUtcOffsetSeconds() {
+	m.exit_utc_offset_seconds = nil
+	m.addexit_utc_offset_seconds = nil
+	m.clearedFields[proxy.FieldExitUtcOffsetSeconds] = struct{}{}
+}
+
+// ExitUtcOffsetSecondsCleared returns if the "exit_utc_offset_seconds" field was cleared in this mutation.
+func (m *ProxyMutation) ExitUtcOffsetSecondsCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitUtcOffsetSeconds]
+	return ok
+}
+
+// ResetExitUtcOffsetSeconds resets all changes to the "exit_utc_offset_seconds" field.
+func (m *ProxyMutation) ResetExitUtcOffsetSeconds() {
+	m.exit_utc_offset_seconds = nil
+	m.addexit_utc_offset_seconds = nil
+	delete(m.clearedFields, proxy.FieldExitUtcOffsetSeconds)
+}
+
+// SetExitAsn sets the "exit_asn" field.
+func (m *ProxyMutation) SetExitAsn(s string) {
+	m.exit_asn = &s
+}
+
+// ExitAsn returns the value of the "exit_asn" field in the mutation.
+func (m *ProxyMutation) ExitAsn() (r string, exists bool) {
+	v := m.exit_asn
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitAsn returns the old "exit_asn" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitAsn(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitAsn is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitAsn requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitAsn: %w", err)
+	}
+	return oldValue.ExitAsn, nil
+}
+
+// ClearExitAsn clears the value of the "exit_asn" field.
+func (m *ProxyMutation) ClearExitAsn() {
+	m.exit_asn = nil
+	m.clearedFields[proxy.FieldExitAsn] = struct{}{}
+}
+
+// ExitAsnCleared returns if the "exit_asn" field was cleared in this mutation.
+func (m *ProxyMutation) ExitAsnCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitAsn]
+	return ok
+}
+
+// ResetExitAsn resets all changes to the "exit_asn" field.
+func (m *ProxyMutation) ResetExitAsn() {
+	m.exit_asn = nil
+	delete(m.clearedFields, proxy.FieldExitAsn)
+}
+
+// SetExitIsp sets the "exit_isp" field.
+func (m *ProxyMutation) SetExitIsp(s string) {
+	m.exit_isp = &s
+}
+
+// ExitIsp returns the value of the "exit_isp" field in the mutation.
+func (m *ProxyMutation) ExitIsp() (r string, exists bool) {
+	v := m.exit_isp
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitIsp returns the old "exit_isp" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitIsp(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitIsp is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitIsp requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitIsp: %w", err)
+	}
+	return oldValue.ExitIsp, nil
+}
+
+// ClearExitIsp clears the value of the "exit_isp" field.
+func (m *ProxyMutation) ClearExitIsp() {
+	m.exit_isp = nil
+	m.clearedFields[proxy.FieldExitIsp] = struct{}{}
+}
+
+// ExitIspCleared returns if the "exit_isp" field was cleared in this mutation.
+func (m *ProxyMutation) ExitIspCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitIsp]
+	return ok
+}
+
+// ResetExitIsp resets all changes to the "exit_isp" field.
+func (m *ProxyMutation) ResetExitIsp() {
+	m.exit_isp = nil
+	delete(m.clearedFields, proxy.FieldExitIsp)
+}
+
+// SetExitCheckedAt sets the "exit_checked_at" field.
+func (m *ProxyMutation) SetExitCheckedAt(t time.Time) {
+	m.exit_checked_at = &t
+}
+
+// ExitCheckedAt returns the value of the "exit_checked_at" field in the mutation.
+func (m *ProxyMutation) ExitCheckedAt() (r time.Time, exists bool) {
+	v := m.exit_checked_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExitCheckedAt returns the old "exit_checked_at" field's value of the Proxy entity.
+// If the Proxy object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ProxyMutation) OldExitCheckedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExitCheckedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExitCheckedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExitCheckedAt: %w", err)
+	}
+	return oldValue.ExitCheckedAt, nil
+}
+
+// ClearExitCheckedAt clears the value of the "exit_checked_at" field.
+func (m *ProxyMutation) ClearExitCheckedAt() {
+	m.exit_checked_at = nil
+	m.clearedFields[proxy.FieldExitCheckedAt] = struct{}{}
+}
+
+// ExitCheckedAtCleared returns if the "exit_checked_at" field was cleared in this mutation.
+func (m *ProxyMutation) ExitCheckedAtCleared() bool {
+	_, ok := m.clearedFields[proxy.FieldExitCheckedAt]
+	return ok
+}
+
+// ResetExitCheckedAt resets all changes to the "exit_checked_at" field.
+func (m *ProxyMutation) ResetExitCheckedAt() {
+	m.exit_checked_at = nil
+	delete(m.clearedFields, proxy.FieldExitCheckedAt)
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by ids.
 func (m *ProxyMutation) AddAccountIDs(ids ...int64) {
 	if m.accounts == nil {
@@ -38274,7 +38796,7 @@ func (m *ProxyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *ProxyMutation) Fields() []string {
-	fields := make([]string, 0, 14)
+	fields := make([]string, 0, 24)
 	if m.created_at != nil {
 		fields = append(fields, proxy.FieldCreatedAt)
 	}
@@ -38317,6 +38839,36 @@ func (m *ProxyMutation) Fields() []string {
 	if m.expiry_warn_days != nil {
 		fields = append(fields, proxy.FieldExpiryWarnDays)
 	}
+	if m.exit_ip != nil {
+		fields = append(fields, proxy.FieldExitIP)
+	}
+	if m.exit_country != nil {
+		fields = append(fields, proxy.FieldExitCountry)
+	}
+	if m.exit_country_code != nil {
+		fields = append(fields, proxy.FieldExitCountryCode)
+	}
+	if m.exit_region != nil {
+		fields = append(fields, proxy.FieldExitRegion)
+	}
+	if m.exit_city != nil {
+		fields = append(fields, proxy.FieldExitCity)
+	}
+	if m.exit_timezone != nil {
+		fields = append(fields, proxy.FieldExitTimezone)
+	}
+	if m.exit_utc_offset_seconds != nil {
+		fields = append(fields, proxy.FieldExitUtcOffsetSeconds)
+	}
+	if m.exit_asn != nil {
+		fields = append(fields, proxy.FieldExitAsn)
+	}
+	if m.exit_isp != nil {
+		fields = append(fields, proxy.FieldExitIsp)
+	}
+	if m.exit_checked_at != nil {
+		fields = append(fields, proxy.FieldExitCheckedAt)
+	}
 	return fields
 }
 
@@ -38353,6 +38905,26 @@ func (m *ProxyMutation) Field(name string) (ent.Value, bool) {
 		return m.BackupProxyID()
 	case proxy.FieldExpiryWarnDays:
 		return m.ExpiryWarnDays()
+	case proxy.FieldExitIP:
+		return m.ExitIP()
+	case proxy.FieldExitCountry:
+		return m.ExitCountry()
+	case proxy.FieldExitCountryCode:
+		return m.ExitCountryCode()
+	case proxy.FieldExitRegion:
+		return m.ExitRegion()
+	case proxy.FieldExitCity:
+		return m.ExitCity()
+	case proxy.FieldExitTimezone:
+		return m.ExitTimezone()
+	case proxy.FieldExitUtcOffsetSeconds:
+		return m.ExitUtcOffsetSeconds()
+	case proxy.FieldExitAsn:
+		return m.ExitAsn()
+	case proxy.FieldExitIsp:
+		return m.ExitIsp()
+	case proxy.FieldExitCheckedAt:
+		return m.ExitCheckedAt()
 	}
 	return nil, false
 }
@@ -38390,6 +38962,26 @@ func (m *ProxyMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldBackupProxyID(ctx)
 	case proxy.FieldExpiryWarnDays:
 		return m.OldExpiryWarnDays(ctx)
+	case proxy.FieldExitIP:
+		return m.OldExitIP(ctx)
+	case proxy.FieldExitCountry:
+		return m.OldExitCountry(ctx)
+	case proxy.FieldExitCountryCode:
+		return m.OldExitCountryCode(ctx)
+	case proxy.FieldExitRegion:
+		return m.OldExitRegion(ctx)
+	case proxy.FieldExitCity:
+		return m.OldExitCity(ctx)
+	case proxy.FieldExitTimezone:
+		return m.OldExitTimezone(ctx)
+	case proxy.FieldExitUtcOffsetSeconds:
+		return m.OldExitUtcOffsetSeconds(ctx)
+	case proxy.FieldExitAsn:
+		return m.OldExitAsn(ctx)
+	case proxy.FieldExitIsp:
+		return m.OldExitIsp(ctx)
+	case proxy.FieldExitCheckedAt:
+		return m.OldExitCheckedAt(ctx)
 	}
 	return nil, fmt.Errorf("unknown Proxy field %s", name)
 }
@@ -38497,6 +39089,76 @@ func (m *ProxyMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetExpiryWarnDays(v)
 		return nil
+	case proxy.FieldExitIP:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitIP(v)
+		return nil
+	case proxy.FieldExitCountry:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitCountry(v)
+		return nil
+	case proxy.FieldExitCountryCode:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitCountryCode(v)
+		return nil
+	case proxy.FieldExitRegion:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitRegion(v)
+		return nil
+	case proxy.FieldExitCity:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitCity(v)
+		return nil
+	case proxy.FieldExitTimezone:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitTimezone(v)
+		return nil
+	case proxy.FieldExitUtcOffsetSeconds:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitUtcOffsetSeconds(v)
+		return nil
+	case proxy.FieldExitAsn:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitAsn(v)
+		return nil
+	case proxy.FieldExitIsp:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitIsp(v)
+		return nil
+	case proxy.FieldExitCheckedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExitCheckedAt(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Proxy field %s", name)
 }
@@ -38511,6 +39173,9 @@ func (m *ProxyMutation) AddedFields() []string {
 	if m.addexpiry_warn_days != nil {
 		fields = append(fields, proxy.FieldExpiryWarnDays)
 	}
+	if m.addexit_utc_offset_seconds != nil {
+		fields = append(fields, proxy.FieldExitUtcOffsetSeconds)
+	}
 	return fields
 }
 
@@ -38523,6 +39188,8 @@ func (m *ProxyMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedPort()
 	case proxy.FieldExpiryWarnDays:
 		return m.AddedExpiryWarnDays()
+	case proxy.FieldExitUtcOffsetSeconds:
+		return m.AddedExitUtcOffsetSeconds()
 	}
 	return nil, false
 }
@@ -38546,6 +39213,13 @@ func (m *ProxyMutation) AddField(name string, value ent.Value) error {
 		}
 		m.AddExpiryWarnDays(v)
 		return nil
+	case proxy.FieldExitUtcOffsetSeconds:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddExitUtcOffsetSeconds(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Proxy numeric field %s", name)
 }
@@ -38568,6 +39242,36 @@ func (m *ProxyMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(proxy.FieldBackupProxyID) {
 		fields = append(fields, proxy.FieldBackupProxyID)
+	}
+	if m.FieldCleared(proxy.FieldExitIP) {
+		fields = append(fields, proxy.FieldExitIP)
+	}
+	if m.FieldCleared(proxy.FieldExitCountry) {
+		fields = append(fields, proxy.FieldExitCountry)
+	}
+	if m.FieldCleared(proxy.FieldExitCountryCode) {
+		fields = append(fields, proxy.FieldExitCountryCode)
+	}
+	if m.FieldCleared(proxy.FieldExitRegion) {
+		fields = append(fields, proxy.FieldExitRegion)
+	}
+	if m.FieldCleared(proxy.FieldExitCity) {
+		fields = append(fields, proxy.FieldExitCity)
+	}
+	if m.FieldCleared(proxy.FieldExitTimezone) {
+		fields = append(fields, proxy.FieldExitTimezone)
+	}
+	if m.FieldCleared(proxy.FieldExitUtcOffsetSeconds) {
+		fields = append(fields, proxy.FieldExitUtcOffsetSeconds)
+	}
+	if m.FieldCleared(proxy.FieldExitAsn) {
+		fields = append(fields, proxy.FieldExitAsn)
+	}
+	if m.FieldCleared(proxy.FieldExitIsp) {
+		fields = append(fields, proxy.FieldExitIsp)
+	}
+	if m.FieldCleared(proxy.FieldExitCheckedAt) {
+		fields = append(fields, proxy.FieldExitCheckedAt)
 	}
 	return fields
 }
@@ -38597,6 +39301,36 @@ func (m *ProxyMutation) ClearField(name string) error {
 		return nil
 	case proxy.FieldBackupProxyID:
 		m.ClearBackupProxyID()
+		return nil
+	case proxy.FieldExitIP:
+		m.ClearExitIP()
+		return nil
+	case proxy.FieldExitCountry:
+		m.ClearExitCountry()
+		return nil
+	case proxy.FieldExitCountryCode:
+		m.ClearExitCountryCode()
+		return nil
+	case proxy.FieldExitRegion:
+		m.ClearExitRegion()
+		return nil
+	case proxy.FieldExitCity:
+		m.ClearExitCity()
+		return nil
+	case proxy.FieldExitTimezone:
+		m.ClearExitTimezone()
+		return nil
+	case proxy.FieldExitUtcOffsetSeconds:
+		m.ClearExitUtcOffsetSeconds()
+		return nil
+	case proxy.FieldExitAsn:
+		m.ClearExitAsn()
+		return nil
+	case proxy.FieldExitIsp:
+		m.ClearExitIsp()
+		return nil
+	case proxy.FieldExitCheckedAt:
+		m.ClearExitCheckedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown Proxy nullable field %s", name)
@@ -38647,6 +39381,36 @@ func (m *ProxyMutation) ResetField(name string) error {
 		return nil
 	case proxy.FieldExpiryWarnDays:
 		m.ResetExpiryWarnDays()
+		return nil
+	case proxy.FieldExitIP:
+		m.ResetExitIP()
+		return nil
+	case proxy.FieldExitCountry:
+		m.ResetExitCountry()
+		return nil
+	case proxy.FieldExitCountryCode:
+		m.ResetExitCountryCode()
+		return nil
+	case proxy.FieldExitRegion:
+		m.ResetExitRegion()
+		return nil
+	case proxy.FieldExitCity:
+		m.ResetExitCity()
+		return nil
+	case proxy.FieldExitTimezone:
+		m.ResetExitTimezone()
+		return nil
+	case proxy.FieldExitUtcOffsetSeconds:
+		m.ResetExitUtcOffsetSeconds()
+		return nil
+	case proxy.FieldExitAsn:
+		m.ResetExitAsn()
+		return nil
+	case proxy.FieldExitIsp:
+		m.ResetExitIsp()
+		return nil
+	case proxy.FieldExitCheckedAt:
+		m.ResetExitCheckedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown Proxy field %s", name)

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -895,7 +895,7 @@ func grokMediaSignedVideoContentURL(body []byte, requestID string) (string, erro
 	if rawURL == "" {
 		return "", nil
 	}
-	// An upstream Sub2API rewrites protected content URLs to its own proxy
+	// An upstream Berth rewrites protected content URLs to its own proxy
 	// endpoint. Treat that as an authenticated relay path, not as a signed URL;
 	// the caller will rebuild it against the configured account base URL and
 	// attach the upstream API key.

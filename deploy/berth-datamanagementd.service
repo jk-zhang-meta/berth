@@ -1,0 +1,22 @@
+[Unit]
+Description=Berth Data Management Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=berth
+Group=berth
+WorkingDirectory=/opt/berth
+ExecStart=/opt/berth/datamanagementd \
+  -socket-path /tmp/berth-datamanagement.sock \
+  -sqlite-path /var/lib/berth/datamanagement/datamanagementd.db \
+  -version 1.0.0
+Restart=always
+RestartSec=5s
+LimitNOFILE=100000
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

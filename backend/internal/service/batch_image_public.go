@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"go.uber.org/zap"
 )
 
@@ -34,6 +34,7 @@ const (
 )
 
 type BatchImageAccountSelectionRepository interface {
+	ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error)
 	GetByID(ctx context.Context, id int64) (*Account, error)
 	ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error)
 	ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error)
@@ -76,9 +77,10 @@ type BatchImageReferenceInput struct {
 }
 
 type BatchImageOwner struct {
-	UserID   int64
-	APIKeyID int64
-	GroupID  *int64
+	MarketplaceUsage bool
+	UserID           int64
+	APIKeyID         int64
+	GroupID          *int64
 }
 
 type BatchImagePublicService struct {
@@ -198,6 +200,9 @@ func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRe
 }
 
 func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOwner, req BatchImageSubmitRequest, idempotencyKey string) (*BatchImagePublicBatch, error) {
+	if owner.MarketplaceUsage {
+		return nil, ErrBatchImageGroupDisabled
+	}
 	if !s.enabled() {
 		return nil, ErrBatchImageDisabled
 	}
@@ -615,6 +620,9 @@ func (s *BatchImagePublicService) DeleteRecord(ctx context.Context, owner BatchI
 }
 
 func (s *BatchImagePublicService) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchImagePublicModelsResponse, error) {
+	if owner.MarketplaceUsage {
+		return nil, ErrBatchImageGroupDisabled
+	}
 	if !s.enabled() {
 		return nil, ErrBatchImageDisabled
 	}
@@ -973,7 +981,7 @@ func (s *BatchImagePublicService) listCandidateAccounts(ctx context.Context, gro
 	if groupID != nil && *groupID > 0 {
 		return s.AccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
 	}
-	return s.AccountRepo.ListSchedulableByPlatform(ctx, platform)
+	return s.AccountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
 }
 
 func (s *BatchImagePublicService) ensureGroupAllowsBatchImage(ctx context.Context, groupID *int64) error {

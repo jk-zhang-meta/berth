@@ -5,13 +5,16 @@ package service
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/enttest"
-	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
+	dbent "github.com/jk-zhang-meta/berth/ent"
+	"github.com/jk-zhang-meta/berth/ent/enttest"
+	"github.com/jk-zhang-meta/berth/ent/identityadoptiondecision"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
 	"entgo.io/ent/dialect"
@@ -362,10 +365,25 @@ func TestAuthPendingIdentityService_UpsertAdoptionDecision_IsIdempotentUnderConc
 }
 
 func TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference(t *testing.T) {
-	t.Skip("legacy NULL pending_auth_session_id rows only exist in production PostgreSQL history; sqlite unit schema rejects NULL")
-
-	svc, client := newAuthPendingIdentityServiceTestClient(t)
+	dsn := strings.TrimSpace(os.Getenv("BERTH_LEGACY_NULL_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("BERTH_LEGACY_NULL_TEST_DSN is not set; legacy NULL rows require PostgreSQL history simulation")
+	}
+	db, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
+	require.NoError(t, db.PingContext(ctx))
+	var databaseName string
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT current_database()").Scan(&databaseName))
+	require.True(t, strings.HasPrefix(databaseName, "berth_marketplace_test_legacy_null_"), "refusing non-test database %q", databaseName)
+	_, err = db.ExecContext(ctx, `ALTER TABLE identity_adoption_decisions ALTER COLUMN pending_auth_session_id DROP NOT NULL`)
+	require.NoError(t, err)
+
+	drv := entsql.OpenDB(dialect.Postgres, db)
+	client := dbent.NewClient(dbent.Driver(drv))
+	t.Cleanup(func() { _ = client.Close() })
+	svc := NewAuthPendingIdentityService(client)
 
 	user, err := client.User.Create().
 		SetEmail("legacy-null-session@example.com").
@@ -388,7 +406,7 @@ func TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessi
 		ctx,
 		`INSERT INTO identity_adoption_decisions
 			(identity_id, adopt_display_name, adopt_avatar, decided_at, created_at, updated_at, pending_auth_session_id)
-		VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+		VALUES ($1, $2, $3, $4, $5, $6, NULL)`,
 		identity.ID,
 		true,
 		false,

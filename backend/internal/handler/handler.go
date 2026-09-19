@@ -1,8 +1,8 @@
 package handler
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
-	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
+	"github.com/jk-zhang-meta/berth/internal/handler/admin"
+	"github.com/jk-zhang-meta/berth/internal/securityaudit"
 )
 
 // AdminHandlers contains all admin-related HTTP handlers
@@ -47,6 +47,7 @@ type AdminHandlers struct {
 
 // Handlers contains all HTTP handlers
 type Handlers struct {
+	Marketplace      *MarketplaceHandler
 	Auth             *AuthHandler
 	User             *UserHandler
 	APIKey           *APIKeyHandler

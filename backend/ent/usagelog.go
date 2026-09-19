@@ -10,12 +10,12 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/apikey"
-	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/usagelog"
-	"github.com/Wei-Shaw/sub2api/ent/user"
-	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/apikey"
+	"github.com/jk-zhang-meta/berth/ent/group"
+	"github.com/jk-zhang-meta/berth/ent/usagelog"
+	"github.com/jk-zhang-meta/berth/ent/user"
+	"github.com/jk-zhang-meta/berth/ent/usersubscription"
 )
 
 // UsageLog is the model entity for the UsageLog schema.

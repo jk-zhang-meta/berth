@@ -3,7 +3,7 @@ package service
 import (
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
 )
 
 // API Key status constants
@@ -28,14 +28,15 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
-	Name        string
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
+	MarketplaceUsage *MarketplaceUsageSnapshot `json:"-"`
+	ID               int64
+	UserID           int64
+	Key              string
+	Name             string
+	GroupID          *int64
+	Status           string
+	IPWhitelist      []string
+	IPBlacklist      []string
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`

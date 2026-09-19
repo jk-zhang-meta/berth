@@ -30,6 +30,7 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
+    get isAdmin() { return authRole.isAdmin },
     get isSimpleMode() {
       return authIsSimpleMode.value
     },
@@ -69,6 +70,24 @@ vi.mock('vue-i18n', async () => {
 })
 
 import CreateAccountModal from '../CreateAccountModal.vue'
+import { adminAPI } from '@/api/admin'
+
+const authRole = vi.hoisted(() => ({ isAdmin: true }))
+
+describe('Create modal settings access', () => {
+  afterEach(() => { authRole.isAdmin = true })
+
+  it.each([false, true])('loads global settings only for admin=%s', async (isAdmin) => {
+    authRole.isAdmin = isAdmin
+    vi.mocked(adminAPI.settings.getSettings).mockClear()
+    vi.mocked(adminAPI.settings.getWebSearchEmulationConfig).mockClear()
+    const wrapper = mountModal()
+    await wrapper.setProps({ show: false })
+    expect(adminAPI.settings.getSettings).toHaveBeenCalledTimes(isAdmin ? 1 : 0)
+    expect(adminAPI.settings.getWebSearchEmulationConfig).toHaveBeenCalledTimes(isAdmin ? 1 : 0)
+    wrapper.unmount()
+  })
+})
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',

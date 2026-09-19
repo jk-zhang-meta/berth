@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
@@ -59,6 +59,12 @@ type APIKeyConcurrencyCache interface {
 	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error)
+}
+
+type ProxyConcurrencyCache interface {
+	TrackProxySlot(ctx context.Context, proxyID int64, requestID string) error
+	ReleaseProxySlot(ctx context.Context, proxyID int64, requestID string) error
+	GetProxyConcurrencyBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error)
 }
 
 // OpenAIWSIngressLeaseCache owns the short-lived distributed lease used to
@@ -229,7 +235,8 @@ const (
 
 // ConcurrencyService 管理账号和用户的并发限制。
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache    ConcurrencyCache
+	rpmCache RPMCache
 
 	accountLoadCacheTTL atomic.Int64
 	accountLoadCacheMu  sync.RWMutex
@@ -250,6 +257,15 @@ func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	}
 	svc.SetAccountLoadBatchCacheTTL(defaultAccountLoadBatchCacheTTL)
 	return svc
+}
+
+// SetRPMCache enables hard per-account RPM admission. It is kept separate from
+// the constructor so existing isolated concurrency tests and call sites remain
+// lightweight.
+func (s *ConcurrencyService) SetRPMCache(cache RPMCache) {
+	if s != nil {
+		s.rpmCache = cache
+	}
 }
 
 // AcquireOpenAIWSIngressLease atomically reserves one live ingress connection
@@ -306,10 +322,23 @@ func (s *ConcurrencyService) SetAccountLoadBatchCacheTTL(ttl time.Duration) {
 	}
 }
 
-// AcquireResult represents the result of acquiring a concurrency slot
+type AcquireBlockReason uint8
+
+const (
+	AcquireBlockNone AcquireBlockReason = iota
+	AcquireBlockConcurrency
+	AcquireBlockRPM
+)
+
+// AcquireResult represents the result of acquiring account request capacity.
 type AcquireResult struct {
 	Acquired    bool
 	ReleaseFunc func() // Must be called when done (typically via defer)
+	BlockReason AcquireBlockReason
+}
+
+func (r *AcquireResult) BlockedByRPM() bool {
+	return r != nil && !r.Acquired && r.BlockReason == AcquireBlockRPM
 }
 
 type AccountWithConcurrency struct {
@@ -372,7 +401,35 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	return &AcquireResult{
 		Acquired:    false,
 		ReleaseFunc: nil,
+		BlockReason: AcquireBlockConcurrency,
 	}, nil
+}
+
+// AcquireAccountCapacity acquires the concurrency slot and, when maxRPM is
+// configured, atomically reserves one request in the current minute. If the
+// RPM cap is full the just-acquired concurrency slot is released immediately.
+// RPM reservations are intentionally not released: they represent request
+// admission for the current minute rather than live concurrency.
+func (s *ConcurrencyService) AcquireAccountCapacity(ctx context.Context, accountID int64, maxConcurrency, maxRPM int) (*AcquireResult, error) {
+	result, err := s.AcquireAccountSlot(ctx, accountID, maxConcurrency)
+	if err != nil || result == nil || !result.Acquired || maxRPM <= 0 {
+		return result, err
+	}
+	if s.rpmCache == nil {
+		result.ReleaseFunc()
+		return nil, errors.New("hard rpm admission cache is unavailable")
+	}
+
+	_, reserved, err := s.rpmCache.ReserveRPM(ctx, accountID, maxRPM)
+	if err != nil {
+		result.ReleaseFunc()
+		return nil, err
+	}
+	if !reserved {
+		result.ReleaseFunc()
+		return &AcquireResult{Acquired: false, BlockReason: AcquireBlockRPM}, nil
+	}
+	return result, nil
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.
@@ -481,6 +538,77 @@ func zeroAPIKeyConcurrencyMap(apiKeyIDs []int64) map[int64]int {
 	result := make(map[int64]int, len(apiKeyIDs))
 	for _, apiKeyID := range apiKeyIDs {
 		result[apiKeyID] = 0
+	}
+	return result
+}
+
+// TrackProxySlot records one active request slot for a proxy without
+// applying proxy-level concurrency limits. It is fail-open: Redis errors are
+// logged and return a no-op release function.
+func (s *ConcurrencyService) TrackProxySlot(ctx context.Context, proxyID int64) func() {
+	if s == nil || s.cache == nil || proxyID <= 0 {
+		return func() {}
+	}
+	cache, ok := s.cache.(ProxyConcurrencyCache)
+	if !ok {
+		return func() {}
+	}
+
+	requestID := generateRequestID()
+	baseCtx := context.Background()
+	if ctx != nil {
+		baseCtx = context.WithoutCancel(ctx)
+	}
+	trackCtx, cancel := context.WithTimeout(baseCtx, apiKeySlotTrackTimeout)
+	err := cache.TrackProxySlot(trackCtx, proxyID, requestID)
+	cancel()
+	if err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: failed to track proxy slot for %d (req=%s): %v", proxyID, requestID, err)
+		return func() {}
+	}
+
+	return func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := cache.ReleaseProxySlot(bgCtx, proxyID, requestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release proxy slot for %d (req=%s): %v", proxyID, requestID, err)
+		}
+	}
+}
+
+// GetProxyConcurrencyBatch gets real-time active request counts for proxies.
+// Stats are best-effort: missing Redis support or Redis errors return zeroes.
+func (s *ConcurrencyService) GetProxyConcurrencyBatch(ctx context.Context, proxyIDs []int64) (map[int64]int, error) {
+	result := zeroProxyConcurrencyMap(proxyIDs)
+	if len(proxyIDs) == 0 {
+		return result, nil
+	}
+	if s == nil || s.cache == nil {
+		return result, nil
+	}
+	cache, ok := s.cache.(ProxyConcurrencyCache)
+	if !ok {
+		return result, nil
+	}
+
+	redisCtx, cancel := context.WithTimeout(context.Background(), apiKeyConcurrencyFetchTimeout)
+	defer cancel()
+
+	counts, err := cache.GetProxyConcurrencyBatch(redisCtx, proxyIDs)
+	if err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: get proxy concurrency batch failed: %v", err)
+		return result, nil
+	}
+	for _, proxyID := range proxyIDs {
+		result[proxyID] = counts[proxyID]
+	}
+	return result, nil
+}
+
+func zeroProxyConcurrencyMap(proxyIDs []int64) map[int64]int {
+	result := make(map[int64]int, len(proxyIDs))
+	for _, proxyID := range proxyIDs {
+		result[proxyID] = 0
 	}
 	return result
 }

@@ -10,16 +10,17 @@ import (
 
 	"log/slog"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
+	"github.com/jk-zhang-meta/berth/internal/pkg/response"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	dataType       = "sub2api-data"
-	legacyDataType = "sub2api-bundle"
+	dataType       = "berth-data"
+	legacyDataType = "berth-bundle"
 	dataVersion    = 1
 	dataPageCap    = 1000
 )
@@ -98,6 +99,10 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	ctx := c.Request.Context()
 
 	selectedIDs, err := parseAccountIDs(c)
@@ -226,6 +231,10 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {
+	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+		response.Forbidden(c, "admin only")
+		return
+	}
 	var req DataImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())

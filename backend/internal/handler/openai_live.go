@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -243,6 +243,7 @@ func (h *OpenAIGatewayHandler) LiveSideband(c *gin.Context) {
 
 func liveEnabledForAPIKey(apiKey *service.APIKey) bool {
 	return apiKey != nil &&
+		apiKey.MarketplaceUsage == nil &&
 		apiKey.Group != nil &&
 		(apiKey.Group.Platform == service.PlatformOpenAI || apiKey.Group.Platform == service.PlatformComposite) &&
 		apiKey.Group.AllowLive

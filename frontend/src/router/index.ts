@@ -1,5 +1,5 @@
 /**
- * Vue Router configuration for Sub2API frontend
+ * Vue Router configuration for Berth frontend
  * Defines all application routes with lazy loading and navigation guards
  */
 
@@ -188,8 +188,26 @@ const routes: RouteRecordRaw[] = [
 
   // ==================== User Routes ====================
   {
+    path: '/marketplace',
+    name: 'Marketplace',
+    component: () => import('@/features/marketplace/MarketplaceView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: '租赁市场' }
+  },
+  {
     path: '/',
     redirect: '/home'
+  },
+  {
+    path: '/accounts',
+    name: 'MyAccounts',
+    component: () => import('@/views/admin/AccountsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: '账号管理' }
+  },
+  {
+    path: '/proxies',
+    name: 'MyProxies',
+    component: () => import('@/views/admin/ProxiesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'IP管理' }
   },
   {
     path: '/dashboard',
@@ -238,6 +256,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Usage Records',
       titleKey: 'usage.title',
       descriptionKey: 'usage.description'
+    }
+  },
+  {
+    path: '/sessions',
+    name: 'Sessions',
+    component: () => import('@/views/user/SessionsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Sessions',
+      titleKey: 'sessions.title',
+      descriptionKey: 'sessions.description'
     }
   },
   {
@@ -511,6 +541,12 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'admin.subscriptions.title',
       descriptionKey: 'admin.subscriptions.description'
     }
+  },
+  {
+    path: '/admin/pelican-test',
+    name: 'AdminPelicanTest',
+    component: () => import('@/views/admin/PelicanTestView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: '鹈鹕测智' }
   },
   {
     path: '/admin/accounts',

@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/handler"
-	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/handler"
+	pkghttputil "github.com/jk-zhang-meta/berth/internal/pkg/httputil"
+	"github.com/jk-zhang-meta/berth/internal/pkg/requestmodel"
+	"github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -44,6 +44,20 @@ func RegisterGatewayRoutes(
 	// 分组级模型白名单准入：在 apiKeyAuth 之后、compositeTarget 之前，
 	// 保证校验发生在合成路由改写与调度之前，且只看客户端书写的模型名。
 	groupModelAllowlist := middleware.GroupModelAllowlist()
+
+	// AGS keeps this legacy PersonalWeb-compatible path so existing agents can
+	// switch their server to Berth without a client-side protocol migration.
+	agsSessions := r.Group("/x8Rk3Nq6Vd2")
+	agsSessions.Use(gin.HandlerFunc(apiKeyAuth))
+	agsSessions.GET("/ping", h.Usage.AGSPing)
+	agsSessions.POST("/ping", h.Usage.AGSPing)
+	agsSessions.GET("/accounts", h.Usage.AGSAccounts)
+	agsSessions.POST("/accounts", h.Usage.AGSAccounts)
+	agsSessions.POST("/sessions", h.Usage.AGSSessions)
+	agsSessions.POST("/session", h.Usage.AGSReportSession)
+	agsSessions.POST("/session/description", h.Usage.AGSDescribeSession)
+	agsSessions.POST("/session/end", h.Usage.AGSEndSession)
+	agsSessions.POST("/resolve", h.Usage.AGSResolveAccounts)
 
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
@@ -188,7 +202,7 @@ func RegisterGatewayRoutes(
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
-	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
+	gateway.GET("/berth/billing", h.Gateway.KeyBillingInfo)
 	gateway.Use(groupModelAllowlist)
 	gateway.Use(compositeTarget)
 	gateway.Use(requireGroupAnthropic)

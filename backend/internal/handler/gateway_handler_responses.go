@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
@@ -165,6 +165,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		APIKeyID:  apiKey.ID,
 	}
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
+		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), service.PlatformOpenAI,
+	))
 
 	// 3. Account selection + failover loop
 	fs := NewFailoverState(h.maxAccountSwitches, false)
@@ -215,10 +218,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				h.responsesErrorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
 				return
 			}
-			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountCapacityWithWaitTimeout(
 				c,
 				account.ID,
 				selection.WaitPlan.MaxConcurrency,
+				selection.WaitPlan.MaxRPM,
 				selection.WaitPlan.Timeout,
 				reqStream,
 				&streamStarted,
@@ -229,6 +233,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 		}
+		accountReleaseFunc = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account.ProxyID, accountReleaseFunc)
 		// 终检与准入后绑定必须使用选号结果携带的门：门安装在调度栈的局部
 		// ctx 上（composite/fallback 还可能解析出与入口分组不同的门），直接用
 		// requestCtx 会退化为空操作。
@@ -253,6 +258,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				reqLog.Warn("gateway.responses.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
+		h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
 		// 5. Forward request

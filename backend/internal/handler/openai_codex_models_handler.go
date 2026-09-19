@@ -6,9 +6,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	middleware2 "github.com/jk-zhang-meta/berth/internal/server/middleware"
+	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 // CodexModels serves the Codex models manifest for Codex clients.

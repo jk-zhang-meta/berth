@@ -26,14 +26,14 @@ import (
 	"golang.org/x/mod/semver"
 	"golang.org/x/net/http2"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
-	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/pkg/proxyurl"
+	"github.com/jk-zhang-meta/berth/internal/pkg/proxyutil"
+	"github.com/jk-zhang-meta/berth/internal/pkg/servertiming"
+	"github.com/jk-zhang-meta/berth/internal/pkg/tlsfingerprint"
+	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
+	"github.com/jk-zhang-meta/berth/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/util/urlvalidator"
 )
 
 // 默认配置常量
@@ -198,6 +198,14 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil {
+		if err := service.CheckProxyRentalURL(req.Context(), proxyURL); err != nil {
+			return nil, err
+		}
+		if err := service.CheckAccountProxyRental(req.Context(), accountID); err != nil {
+			return nil, err
+		}
+	}
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -251,6 +259,14 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	// so a configured HTTP or SOCKS proxy is not bypassed.
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
+	}
+	if req != nil {
+		if err := service.CheckProxyRentalURL(req.Context(), proxyURL); err != nil {
+			return nil, err
+		}
+		if err := service.CheckAccountProxyRental(req.Context(), accountID); err != nil {
+			return nil, err
+		}
 	}
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault

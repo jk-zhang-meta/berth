@@ -5,47 +5,47 @@ package runtime
 import (
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/ent/account"
-	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
-	"github.com/Wei-Shaw/sub2api/ent/announcement"
-	"github.com/Wei-Shaw/sub2api/ent/announcementread"
-	"github.com/Wei-Shaw/sub2api/ent/apikey"
-	"github.com/Wei-Shaw/sub2api/ent/authidentity"
-	"github.com/Wei-Shaw/sub2api/ent/authidentitychannel"
-	"github.com/Wei-Shaw/sub2api/ent/batchimageevent"
-	"github.com/Wei-Shaw/sub2api/ent/batchimageitem"
-	"github.com/Wei-Shaw/sub2api/ent/batchimagejob"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitor"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
-	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
-	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
-	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
-	"github.com/Wei-Shaw/sub2api/ent/group"
-	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
-	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
-	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
-	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
-	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
-	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
-	"github.com/Wei-Shaw/sub2api/ent/promocode"
-	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
-	"github.com/Wei-Shaw/sub2api/ent/proxy"
-	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
-	"github.com/Wei-Shaw/sub2api/ent/schema"
-	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
-	"github.com/Wei-Shaw/sub2api/ent/setting"
-	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
-	"github.com/Wei-Shaw/sub2api/ent/tlsfingerprintprofile"
-	"github.com/Wei-Shaw/sub2api/ent/usagecleanuptask"
-	"github.com/Wei-Shaw/sub2api/ent/usagelog"
-	"github.com/Wei-Shaw/sub2api/ent/user"
-	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
-	"github.com/Wei-Shaw/sub2api/ent/userattributedefinition"
-	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
-	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
-	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/jk-zhang-meta/berth/ent/account"
+	"github.com/jk-zhang-meta/berth/ent/accountgroup"
+	"github.com/jk-zhang-meta/berth/ent/announcement"
+	"github.com/jk-zhang-meta/berth/ent/announcementread"
+	"github.com/jk-zhang-meta/berth/ent/apikey"
+	"github.com/jk-zhang-meta/berth/ent/authidentity"
+	"github.com/jk-zhang-meta/berth/ent/authidentitychannel"
+	"github.com/jk-zhang-meta/berth/ent/batchimageevent"
+	"github.com/jk-zhang-meta/berth/ent/batchimageitem"
+	"github.com/jk-zhang-meta/berth/ent/batchimagejob"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitor"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitordailyrollup"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitorhistory"
+	"github.com/jk-zhang-meta/berth/ent/channelmonitorrequesttemplate"
+	"github.com/jk-zhang-meta/berth/ent/compositemodelroute"
+	"github.com/jk-zhang-meta/berth/ent/errorpassthroughrule"
+	"github.com/jk-zhang-meta/berth/ent/group"
+	"github.com/jk-zhang-meta/berth/ent/idempotencyrecord"
+	"github.com/jk-zhang-meta/berth/ent/identityadoptiondecision"
+	"github.com/jk-zhang-meta/berth/ent/paymentauditlog"
+	"github.com/jk-zhang-meta/berth/ent/paymentorder"
+	"github.com/jk-zhang-meta/berth/ent/paymentproviderinstance"
+	"github.com/jk-zhang-meta/berth/ent/pendingauthsession"
+	"github.com/jk-zhang-meta/berth/ent/promocode"
+	"github.com/jk-zhang-meta/berth/ent/promocodeusage"
+	"github.com/jk-zhang-meta/berth/ent/proxy"
+	"github.com/jk-zhang-meta/berth/ent/redeemcode"
+	"github.com/jk-zhang-meta/berth/ent/schema"
+	"github.com/jk-zhang-meta/berth/ent/securitysecret"
+	"github.com/jk-zhang-meta/berth/ent/setting"
+	"github.com/jk-zhang-meta/berth/ent/subscriptionplan"
+	"github.com/jk-zhang-meta/berth/ent/tlsfingerprintprofile"
+	"github.com/jk-zhang-meta/berth/ent/usagecleanuptask"
+	"github.com/jk-zhang-meta/berth/ent/usagelog"
+	"github.com/jk-zhang-meta/berth/ent/user"
+	"github.com/jk-zhang-meta/berth/ent/userallowedgroup"
+	"github.com/jk-zhang-meta/berth/ent/userattributedefinition"
+	"github.com/jk-zhang-meta/berth/ent/userattributevalue"
+	"github.com/jk-zhang-meta/berth/ent/userplatformquota"
+	"github.com/jk-zhang-meta/berth/ent/usersubscription"
+	"github.com/jk-zhang-meta/berth/internal/domain"
 )
 
 // The init function reads all schema descriptors with runtime code
@@ -1717,6 +1717,38 @@ func init() {
 	proxyDescExpiryWarnDays := proxyFields[10].Descriptor()
 	// proxy.DefaultExpiryWarnDays holds the default value on creation for the expiry_warn_days field.
 	proxy.DefaultExpiryWarnDays = proxyDescExpiryWarnDays.Default.(int)
+	// proxyDescExitIP is the schema descriptor for exit_ip field.
+	proxyDescExitIP := proxyFields[11].Descriptor()
+	// proxy.ExitIPValidator is a validator for the "exit_ip" field. It is called by the builders before save.
+	proxy.ExitIPValidator = proxyDescExitIP.Validators[0].(func(string) error)
+	// proxyDescExitCountry is the schema descriptor for exit_country field.
+	proxyDescExitCountry := proxyFields[12].Descriptor()
+	// proxy.ExitCountryValidator is a validator for the "exit_country" field. It is called by the builders before save.
+	proxy.ExitCountryValidator = proxyDescExitCountry.Validators[0].(func(string) error)
+	// proxyDescExitCountryCode is the schema descriptor for exit_country_code field.
+	proxyDescExitCountryCode := proxyFields[13].Descriptor()
+	// proxy.ExitCountryCodeValidator is a validator for the "exit_country_code" field. It is called by the builders before save.
+	proxy.ExitCountryCodeValidator = proxyDescExitCountryCode.Validators[0].(func(string) error)
+	// proxyDescExitRegion is the schema descriptor for exit_region field.
+	proxyDescExitRegion := proxyFields[14].Descriptor()
+	// proxy.ExitRegionValidator is a validator for the "exit_region" field. It is called by the builders before save.
+	proxy.ExitRegionValidator = proxyDescExitRegion.Validators[0].(func(string) error)
+	// proxyDescExitCity is the schema descriptor for exit_city field.
+	proxyDescExitCity := proxyFields[15].Descriptor()
+	// proxy.ExitCityValidator is a validator for the "exit_city" field. It is called by the builders before save.
+	proxy.ExitCityValidator = proxyDescExitCity.Validators[0].(func(string) error)
+	// proxyDescExitTimezone is the schema descriptor for exit_timezone field.
+	proxyDescExitTimezone := proxyFields[16].Descriptor()
+	// proxy.ExitTimezoneValidator is a validator for the "exit_timezone" field. It is called by the builders before save.
+	proxy.ExitTimezoneValidator = proxyDescExitTimezone.Validators[0].(func(string) error)
+	// proxyDescExitAsn is the schema descriptor for exit_asn field.
+	proxyDescExitAsn := proxyFields[18].Descriptor()
+	// proxy.ExitAsnValidator is a validator for the "exit_asn" field. It is called by the builders before save.
+	proxy.ExitAsnValidator = proxyDescExitAsn.Validators[0].(func(string) error)
+	// proxyDescExitIsp is the schema descriptor for exit_isp field.
+	proxyDescExitIsp := proxyFields[19].Descriptor()
+	// proxy.ExitIspValidator is a validator for the "exit_isp" field. It is called by the builders before save.
+	proxy.ExitIspValidator = proxyDescExitIsp.Validators[0].(func(string) error)
 	redeemcodeFields := schema.RedeemCode{}.Fields()
 	_ = redeemcodeFields
 	// redeemcodeDescCode is the schema descriptor for code field.

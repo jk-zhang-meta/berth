@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/jk-zhang-meta/berth/internal/config"
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
+	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
+	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
+	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
 	"golang.org/x/sync/singleflight"
 )
@@ -283,6 +283,7 @@ type RateLimitCacheInvalidator interface {
 }
 
 type APIKeyService struct {
+	marketplace               *MarketplaceService
 	apiKeyRepo                APIKeyRepository
 	userRepo                  UserRepository
 	groupRepo                 GroupRepository
@@ -448,6 +449,12 @@ func (s *APIKeyService) incrementAPIKeyErrorCount(ctx context.Context, userID in
 // 对于订阅类型分组：检查用户是否有有效订阅
 // 对于标准类型分组：使用原有的 AllowedGroups 和 IsExclusive 逻辑
 func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group *Group) bool {
+	if s.marketplace != nil {
+		managed, allowed, err := s.marketplace.GroupAccess(ctx, user.ID, group.ID)
+		if err != nil || managed {
+			return err == nil && allowed
+		}
+	}
 	// 订阅类型分组：需要有效订阅
 	if group.IsSubscriptionType() {
 		_, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, user.ID, group.ID)
@@ -702,6 +709,38 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 
 // GetByKey 根据Key字符串获取API Key（用于认证）
 func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, error) {
+	apiKey, err := s.getByKeyCached(ctx, key)
+	if err != nil || s.marketplace == nil || apiKey == nil || apiKey.GroupID == nil || apiKey.User == nil {
+		return apiKey, err
+	}
+	managed, allowed, err := s.marketplace.GroupAccess(ctx, apiKey.User.ID, *apiKey.GroupID)
+	if err != nil {
+		return nil, fmt.Errorf("check resource entitlement: %w", err)
+	}
+	if !managed {
+		return apiKey, nil
+	}
+	if !allowed || (s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
+		return nil, ErrGroupNotAllowed
+	}
+	// Do not mutate the cached user snapshot: this entitlement is request-local.
+	keyCopy, userCopy := *apiKey, *apiKey.User
+	userCopy.AllowedGroups = append(append([]int64(nil), userCopy.AllowedGroups...), *apiKey.GroupID)
+	keyCopy.User = &userCopy
+	snapshot, err := s.marketplace.usageSnapshot(ctx, *apiKey.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	keyCopy.MarketplaceUsage = snapshot
+	if apiKey.Group != nil {
+		groupCopy := *apiKey.Group
+		groupCopy.RateMultiplier = snapshot.RateMultiplier
+		keyCopy.Group = &groupCopy
+	}
+	return &keyCopy, nil
+}
+
+func (s *APIKeyService) getByKeyCached(ctx context.Context, key string) (*APIKey, error) {
 	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes {
 		return nil, ErrAPIKeyNotFound
 	}
@@ -1045,6 +1084,18 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 	// 过滤出用户有权限的分组
 	availableGroups := make([]Group, 0)
 	for _, group := range allGroups {
+		if s.marketplace != nil {
+			managed, allowed, err := s.marketplace.GroupAccess(ctx, userID, group.ID)
+			if err != nil {
+				return nil, err
+			}
+			if managed {
+				if allowed {
+					availableGroups = append(availableGroups, group)
+				}
+				continue
+			}
+		}
 		if s.canUserBindGroupInternal(user, &group, subscribedGroupIDs) {
 			availableGroups = append(availableGroups, group)
 		}

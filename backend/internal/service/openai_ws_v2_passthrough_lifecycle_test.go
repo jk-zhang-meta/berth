@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/jk-zhang-meta/berth/internal/config"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -209,6 +209,80 @@ func startPassthroughLifecycleServerWithHooks(
 		serverErr <- svc.ProxyResponsesWebSocketFromClient(controlCtx, ginCtx, conn, account, "sk-test", firstMessage, hooks)
 	}))
 	return server, serverErr
+}
+
+func TestPassthroughLifecycle_NativeCodexPrivacyUsesVerifiedProxySnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	upstream := newStagedPassthroughConn()
+	account := passthroughLifecycleAccount()
+	proxyID := int64(904)
+	offset := -4 * 60 * 60
+	checkedAt := time.Now().UTC()
+	account.ProxyID = &proxyID
+	account.Proxy = &Proxy{
+		ID:                   proxyID,
+		Protocol:             "http",
+		Host:                 "proxy.example",
+		Port:                 8080,
+		ExitIP:               "198.51.100.77",
+		ExitCountry:          "United States",
+		ExitCountryCode:      "US",
+		ExitRegion:           "New York",
+		ExitCity:             "New York",
+		ExitTimezone:         "America/New_York",
+		ExitUTCOffsetSeconds: &offset,
+		ExitASN:              "AS64500",
+		ExitISP:              "Example ISP",
+		ExitCheckedAt:        &checkedAt,
+	}
+
+	server, serverErr := startPassthroughLifecycleServer(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
+		account,
+	)
+	defer server.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(server.URL, "http"), &coderws.DialOptions{
+		HTTPHeader: http.Header{
+			"User-Agent": []string{"codex_cli_rs/0.1.0 (Windows 11; x86_64) xterm-256color"},
+			"originator": []string{"codex_cli_rs"},
+		},
+	})
+	cancelDial()
+	require.NoError(t, err)
+	defer func() { _ = clientConn.CloseNow() }()
+
+	payload := `{"type":"response.create","model":"gpt-5.1","stream":false,"input":[{"role":"user","content":[{"type":"input_text","text":"<environment_context><cwd>C:\\Users\\alice\\secret</cwd><shell>powershell</shell><timezone>Asia/Shanghai</timezone></environment_context>"}]}]}`
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(payload))
+	cancelWrite()
+	require.NoError(t, err)
+
+	upstreamBody := requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
+	require.Contains(t, string(upstreamBody), `C:\\Users\\alice\\secret`)
+	require.Contains(t, string(upstreamBody), "powershell")
+	require.NotContains(t, string(upstreamBody), "Asia/Shanghai")
+	require.Contains(t, string(upstreamBody), "<timezone>America/New_York</timezone>")
+	require.NotContains(t, string(upstreamBody), agentNetworkEgressMarker)
+	require.NotContains(t, string(upstreamBody), "198.51.100.77")
+
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_privacy","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	completed, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "response.completed", gjson.GetBytes(completed, "type").String())
+	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
+
+	select {
+	case <-serverErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("privacy passthrough session did not exit")
+	}
 }
 
 func TestPassthroughLifecycle_LaterTurnPreOutputRateLimitRequestsReconnect(t *testing.T) {

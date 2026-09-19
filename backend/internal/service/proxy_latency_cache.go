@@ -14,6 +14,11 @@ type ProxyLatencyInfo struct {
 	CountryCode      string    `json:"country_code,omitempty"`
 	Region           string    `json:"region,omitempty"`
 	City             string    `json:"city,omitempty"`
+	Timezone         string    `json:"timezone,omitempty"`
+	UTCOffsetSeconds *int      `json:"utc_offset_seconds,omitempty"`
+	ASN              string    `json:"asn,omitempty"`
+	ISP              string    `json:"isp,omitempty"`
+	ExitCheckedAt    *int64    `json:"exit_checked_at,omitempty"`
 	QualityStatus    string    `json:"quality_status,omitempty"`
 	QualityScore     *int      `json:"quality_score,omitempty"`
 	QualityGrade     string    `json:"quality_grade,omitempty"`

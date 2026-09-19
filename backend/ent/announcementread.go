@@ -9,9 +9,9 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/Wei-Shaw/sub2api/ent/announcement"
-	"github.com/Wei-Shaw/sub2api/ent/announcementread"
-	"github.com/Wei-Shaw/sub2api/ent/user"
+	"github.com/jk-zhang-meta/berth/ent/announcement"
+	"github.com/jk-zhang-meta/berth/ent/announcementread"
+	"github.com/jk-zhang-meta/berth/ent/user"
 )
 
 // AnnouncementRead is the model entity for the AnnouncementRead schema.

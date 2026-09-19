@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/claude"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
@@ -112,6 +112,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body.Bytes()
+		isNativeClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+		if !isNativeClaudeCode && parsed.MetadataUserID != "" {
+			isNativeClaudeCode = systemHasBillingAttributionBlock(passthroughBody)
+		}
+		if isNativeClaudeCode {
+			markNativeClaudeCodePrivacyRequest(c)
+			var privacyErr error
+			passthroughBody, _, privacyErr = sanitizeAgentRequestBody(passthroughBody, agentPrivacyAnthropicMessages, account.Proxy)
+			if privacyErr != nil {
+				return nil, privacyErr
+			}
+		}
 		passthroughModel := parsed.Model
 		if passthroughModel != "" {
 			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
@@ -191,6 +203,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// 通过检查 body 中的 billing attribution block 来识别被代理的真实 CC 流量。
 	if !isClaudeCode && parsed.MetadataUserID != "" {
 		isClaudeCode = systemHasBillingAttributionBlock(body)
+	}
+	if isClaudeCode {
+		markNativeClaudeCodePrivacyRequest(c)
+		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
+		if privacyErr != nil {
+			return nil, privacyErr
+		}
+		if changed {
+			if err := replaceBody(privacyBody); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode

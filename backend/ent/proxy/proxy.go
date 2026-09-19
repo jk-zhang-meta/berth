@@ -43,6 +43,26 @@ const (
 	FieldBackupProxyID = "backup_proxy_id"
 	// FieldExpiryWarnDays holds the string denoting the expiry_warn_days field in the database.
 	FieldExpiryWarnDays = "expiry_warn_days"
+	// FieldExitIP holds the string denoting the exit_ip field in the database.
+	FieldExitIP = "exit_ip"
+	// FieldExitCountry holds the string denoting the exit_country field in the database.
+	FieldExitCountry = "exit_country"
+	// FieldExitCountryCode holds the string denoting the exit_country_code field in the database.
+	FieldExitCountryCode = "exit_country_code"
+	// FieldExitRegion holds the string denoting the exit_region field in the database.
+	FieldExitRegion = "exit_region"
+	// FieldExitCity holds the string denoting the exit_city field in the database.
+	FieldExitCity = "exit_city"
+	// FieldExitTimezone holds the string denoting the exit_timezone field in the database.
+	FieldExitTimezone = "exit_timezone"
+	// FieldExitUtcOffsetSeconds holds the string denoting the exit_utc_offset_seconds field in the database.
+	FieldExitUtcOffsetSeconds = "exit_utc_offset_seconds"
+	// FieldExitAsn holds the string denoting the exit_asn field in the database.
+	FieldExitAsn = "exit_asn"
+	// FieldExitIsp holds the string denoting the exit_isp field in the database.
+	FieldExitIsp = "exit_isp"
+	// FieldExitCheckedAt holds the string denoting the exit_checked_at field in the database.
+	FieldExitCheckedAt = "exit_checked_at"
 	// EdgeAccounts holds the string denoting the accounts edge name in mutations.
 	EdgeAccounts = "accounts"
 	// EdgePrimaryProxies holds the string denoting the primary_proxies edge name in mutations.
@@ -85,6 +105,16 @@ var Columns = []string{
 	FieldFallbackMode,
 	FieldBackupProxyID,
 	FieldExpiryWarnDays,
+	FieldExitIP,
+	FieldExitCountry,
+	FieldExitCountryCode,
+	FieldExitRegion,
+	FieldExitCity,
+	FieldExitTimezone,
+	FieldExitUtcOffsetSeconds,
+	FieldExitAsn,
+	FieldExitIsp,
+	FieldExitCheckedAt,
 }
 
 // ValidColumn reports if the column name is valid (part of the table columns).
@@ -101,7 +131,7 @@ func ValidColumn(column string) bool {
 // package on the initialization of the application. Therefore,
 // it should be imported in the main as follows:
 //
-//	import _ "github.com/Wei-Shaw/sub2api/ent/runtime"
+//	import _ "github.com/jk-zhang-meta/berth/ent/runtime"
 var (
 	Hooks        [1]ent.Hook
 	Interceptors [1]ent.Interceptor
@@ -131,6 +161,22 @@ var (
 	FallbackModeValidator func(string) error
 	// DefaultExpiryWarnDays holds the default value on creation for the "expiry_warn_days" field.
 	DefaultExpiryWarnDays int
+	// ExitIPValidator is a validator for the "exit_ip" field. It is called by the builders before save.
+	ExitIPValidator func(string) error
+	// ExitCountryValidator is a validator for the "exit_country" field. It is called by the builders before save.
+	ExitCountryValidator func(string) error
+	// ExitCountryCodeValidator is a validator for the "exit_country_code" field. It is called by the builders before save.
+	ExitCountryCodeValidator func(string) error
+	// ExitRegionValidator is a validator for the "exit_region" field. It is called by the builders before save.
+	ExitRegionValidator func(string) error
+	// ExitCityValidator is a validator for the "exit_city" field. It is called by the builders before save.
+	ExitCityValidator func(string) error
+	// ExitTimezoneValidator is a validator for the "exit_timezone" field. It is called by the builders before save.
+	ExitTimezoneValidator func(string) error
+	// ExitAsnValidator is a validator for the "exit_asn" field. It is called by the builders before save.
+	ExitAsnValidator func(string) error
+	// ExitIspValidator is a validator for the "exit_isp" field. It is called by the builders before save.
+	ExitIspValidator func(string) error
 )
 
 // OrderOption defines the ordering options for the Proxy queries.
@@ -209,6 +255,56 @@ func ByBackupProxyID(opts ...sql.OrderTermOption) OrderOption {
 // ByExpiryWarnDays orders the results by the expiry_warn_days field.
 func ByExpiryWarnDays(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldExpiryWarnDays, opts...).ToFunc()
+}
+
+// ByExitIP orders the results by the exit_ip field.
+func ByExitIP(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitIP, opts...).ToFunc()
+}
+
+// ByExitCountry orders the results by the exit_country field.
+func ByExitCountry(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitCountry, opts...).ToFunc()
+}
+
+// ByExitCountryCode orders the results by the exit_country_code field.
+func ByExitCountryCode(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitCountryCode, opts...).ToFunc()
+}
+
+// ByExitRegion orders the results by the exit_region field.
+func ByExitRegion(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitRegion, opts...).ToFunc()
+}
+
+// ByExitCity orders the results by the exit_city field.
+func ByExitCity(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitCity, opts...).ToFunc()
+}
+
+// ByExitTimezone orders the results by the exit_timezone field.
+func ByExitTimezone(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitTimezone, opts...).ToFunc()
+}
+
+// ByExitUtcOffsetSeconds orders the results by the exit_utc_offset_seconds field.
+func ByExitUtcOffsetSeconds(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitUtcOffsetSeconds, opts...).ToFunc()
+}
+
+// ByExitAsn orders the results by the exit_asn field.
+func ByExitAsn(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitAsn, opts...).ToFunc()
+}
+
+// ByExitIsp orders the results by the exit_isp field.
+func ByExitIsp(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitIsp, opts...).ToFunc()
+}
+
+// ByExitCheckedAt orders the results by the exit_checked_at field.
+func ByExitCheckedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExitCheckedAt, opts...).ToFunc()
 }
 
 // ByAccountsCount orders the results by accounts count.

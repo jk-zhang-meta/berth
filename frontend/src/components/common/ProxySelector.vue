@@ -89,8 +89,25 @@
                 <span
                   v-if="proxy.account_count !== undefined"
                   class="inline-flex flex-shrink-0 items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-dark-600 dark:text-gray-400"
+                  :title="t('admin.proxies.columns.accounts')"
                 >
-                  {{ proxy.account_count }}
+                  {{ proxy.account_count }} 账号
+                </span>
+                <!-- Concurrency badge -->
+                <span
+                  class="inline-flex flex-shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs font-mono font-medium"
+                  :class="[
+                    (proxy.concurrency || 0) > 0
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 ring-1 ring-amber-500/30'
+                      : 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-400'
+                  ]"
+                  :title="t('admin.proxies.columns.concurrency')"
+                >
+                  <span
+                    v-if="(proxy.concurrency || 0) > 0"
+                    class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
+                  />
+                  {{ t('admin.proxies.columns.concurrency') }}: {{ proxy.concurrency || 0 }}
                 </span>
                 <!-- Test result badges -->
                 <template v-if="testResults[proxy.id]">
@@ -220,7 +237,9 @@ const selectedLabel = computed(() => {
     return t('admin.accounts.noProxy')
   }
   const proxy = selectedProxy.value
-  return `${proxy.name} (${proxy.protocol}://${proxy.host}:${proxy.port})`
+  const accountText = proxy.account_count !== undefined ? ` [${proxy.account_count} 账号]` : ''
+  const concurrencySuffix = ` [${t('admin.proxies.columns.concurrency')}: ${proxy.concurrency ?? 0}]`
+  return `${proxy.name} (${proxy.protocol}://${proxy.host}:${proxy.port})${accountText}${concurrencySuffix}`
 })
 
 const filteredProxies = computed(() => {

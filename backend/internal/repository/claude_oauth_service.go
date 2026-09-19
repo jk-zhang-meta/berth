@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
-	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
+	"github.com/jk-zhang-meta/berth/internal/pkg/logger"
+	"github.com/jk-zhang-meta/berth/internal/pkg/oauth"
+	"github.com/jk-zhang-meta/berth/internal/pkg/proxyurl"
+	"github.com/jk-zhang-meta/berth/internal/service"
+	"github.com/jk-zhang-meta/berth/internal/util/logredact"
 
 	"github.com/imroc/req/v3"
 )

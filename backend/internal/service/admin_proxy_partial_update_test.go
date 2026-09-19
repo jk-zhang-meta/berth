@@ -16,7 +16,7 @@ func TestAdminProxyPartialUpdatePreservesOmittedSettings(t *testing.T) {
 		backup := int64(10)
 		original := &Proxy{ID: 9, Name: "original", Host: "old.example", Status: StatusActive, ExpiresAt: &expiry, FallbackMode: FallbackModeProxy, BackupProxyID: &backup, ExpiryWarnDays: 7}
 		repo := &updatingProxyRepoStub{proxyRepoStub: &proxyRepoStub{}, proxy: original}
-		svc := &adminServiceImpl{proxyRepo: repo}
+		svc := &adminServiceImpl{proxyRepo: repo, proxyProber: &recordingProxyExitProber{}}
 		got, err := svc.UpdateProxy(context.Background(), 9, input)
 		require.NoError(t, err)
 		require.Equal(t, original.ExpiresAt, got.ExpiresAt)

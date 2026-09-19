@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
+	"github.com/jk-zhang-meta/berth/ent/userplatformquota"
 	"github.com/stretchr/testify/require"
 )
 
