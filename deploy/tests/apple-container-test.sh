@@ -48,6 +48,16 @@ assert_exists "${STATE_DIR}/containers/berth-apple"
 assert_exists "${STATE_DIR}/containers/berth-apple-postgres"
 assert_exists "${STATE_DIR}/containers/berth-apple-redis"
 assert_exists "${STATE_DIR}/running/berth-apple"
+grep -q '^while true; do$' "${STATE_DIR}/create-arguments/berth-apple" || \
+    fail "app container does not supervise the Berth process"
+grep -q '^    su-exec berth "$runtime_binary" &$' "${STATE_DIR}/create-arguments/berth-apple" || \
+    fail "app supervisor does not launch the selected Berth image binary"
+grep -q '^trap stop TERM INT$' "${STATE_DIR}/create-arguments/berth-apple" || \
+    fail "app supervisor does not handle container stop signals"
+grep -q '^runtime_binary=/app/berth$' "${STATE_DIR}/create-arguments/berth-apple" || \
+    fail "app container does not run the selected image binary"
+grep -q '^APPLE_CONTAINER_BERTH_IMAGE_ID=fake-image-id$' "${STATE_DIR}/env-files/berth-apple" || \
+    fail "app container did not receive the inspected base image ID"
 [[ ! -s "${STATE_DIR}/network-subnets/berth-apple" ]] || \
     fail "up passed a subnet when APPLE_CONTAINER_NETWORK_SUBNET was unset"
 "${SCRIPT}" status >/dev/null

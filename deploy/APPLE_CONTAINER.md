@@ -6,7 +6,7 @@ Berth can run as a native three-service stack with Apple's `container` CLI. This
 
 Apple `container` support is intended for local development and operator-managed deployments on a Mac. Docker Compose remains the recommended production deployment path.
 
-Apple `container` 1.1 does not provide restart policies, automatic startup, workload health scheduling, a Docker API socket, or full Compose orchestration. `apple-container.sh` supplies ordered startup and readiness checks when you invoke it, but it is not a continuously running supervisor.
+Apple `container` 1.1 does not provide restart policies, automatic startup, workload health scheduling, a Docker API socket, or full Compose orchestration. `apple-container.sh` supplies ordered startup and readiness checks when you invoke it. Inside the application container, a small supervisor relaunches the Berth process if it exits; it does not restart stopped containers or the stack itself.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ nano .env
 ./apple-container.sh status
 ```
 
-Open `http://localhost:8080`. If `ADMIN_PASSWORD` is empty, retrieve the generated password with:
+Open `http://localhost:8080`. If `ADMIN_EMAIL` / `ADMIN_PASSWORD` are empty, retrieve the generated admin email (login username) and password with:
 
 ```bash
 ./apple-container.sh logs app
@@ -100,7 +100,7 @@ export BERTH_ENV_FILE=/absolute/path/to/berth.env
 Apple-specific image overrides are available:
 
 ```dotenv
-APPLE_CONTAINER_BERTH_IMAGE=ghcr.io/jk-zhang-meta/berth:latest
+APPLE_CONTAINER_BERTH_IMAGE=berth:local
 APPLE_CONTAINER_POSTGRES_IMAGE=postgres:18-alpine
 APPLE_CONTAINER_REDIS_IMAGE=redis:8-alpine
 ```
@@ -146,7 +146,7 @@ The script creates only resources carrying the `org.berth.stack=apple-container`
 | Network | `berth-apple` |
 | Volumes | `berth-apple-data`, `berth-apple-postgres-data`, `berth-apple-redis-data` |
 
-The PostgreSQL volume is mounted at `/var/lib/postgresql`, retaining PostgreSQL 18's default child data directory. Berth and Redis also store data in child directories below their Apple volume mount points. This is required because Apple named volumes do not have Docker's copy-up and mount-point ownership behavior.
+The PostgreSQL volume is mounted at `/var/lib/postgresql`, retaining PostgreSQL 18's default child data directory. Berth data and its updatable runtime binary use separate child directories in `berth-apple-data`; Redis also stores data below its Apple volume mount point. This is required because Apple named volumes do not have Docker's copy-up and mount-point ownership behavior.
 
 ## Networking
 
@@ -157,6 +157,12 @@ All three services attach only to the private `berth-apple` network. Only the ap
 The application container is intentionally recreated by every `up` and `restart` operation because dependency VM addresses can change after they stop. Application data remains in `berth-apple-data`.
 
 The script checks the published `/health` endpoint from macOS before reporting success. Approve the Local Network prompt on first startup. If the internal probe succeeds but the host-port probe fails with a connection reset, enable Local Network access for `container-runtime-linux`, run `container system stop` followed by `container system start`, and then run `up` again. Runtime upgrades may prompt for permission again.
+
+## Application Updates
+
+Berth production updates require explicit upstream absorption, verification, and a build from this repository. Do not use the Web UI updater to replace the deployed executable. The process supervisor always launches the selected image's `/app/berth`; application-container recreation preserves data without carrying an updated binary forward.
+
+Set `APPLE_CONTAINER_BERTH_IMAGE` to the verified local build identity or pinned image digest, import that image, then run `up --recreate`. The script never implicitly pulls a missing application image. The `pull` command is an explicit operator action.
 
 ## Backup and Upgrade
 
@@ -191,7 +197,7 @@ To restore these backups into an existing stack, first ensure the image versions
 
 # Remove only the app container so a helper can mount its named volume.
 container delete berth-apple
-BERTH_IMAGE=ghcr.io/jk-zhang-meta/berth:latest # Match APPLE_CONTAINER_BERTH_IMAGE in .env.
+BERTH_IMAGE=berth:local # Match APPLE_CONTAINER_BERTH_IMAGE in .env.
 container run --rm --name berth-apple-data-restore \
   --entrypoint /bin/sh \
   --volume berth-apple-data:/restore \

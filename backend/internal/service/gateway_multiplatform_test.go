@@ -2098,6 +2098,7 @@ func (m *mockConcurrencyService) GetAccountWaitingCount(ctx context.Context, acc
 
 type mockConcurrencyCache struct {
 	acquireAccountCalls int
+	acquiredAccountIDs  []int64
 	loadBatchCalls      int
 	acquireResults      map[int64]bool
 	loadBatchErr        error
@@ -2108,6 +2109,7 @@ type mockConcurrencyCache struct {
 
 func (m *mockConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	m.acquireAccountCalls++
+	m.acquiredAccountIDs = append(m.acquiredAccountIDs, accountID)
 	if m.acquireResults != nil {
 		if result, ok := m.acquireResults[accountID]; ok {
 			return result, nil
@@ -2581,7 +2583,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID, "应跳过过载账号，选择可用账号")
 	})
 
-	t.Run("粘性账号槽位满-返回粘性等待计划", func(t *testing.T) {
+	t.Run("粘性账号槽位满-全池耗尽后返回兜底等待计划", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
 				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
@@ -2599,6 +2601,9 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		cfg := testConfig()
 		cfg.Gateway.Scheduling.LoadBatchEnabled = true
 		cfg.Gateway.Scheduling.StickySessionMaxWaiting = 1
+		cfg.Gateway.Scheduling.StickySessionWaitTimeout = 17 * time.Second
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 31 * time.Second
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 4
 
 		concurrencyCache := &mockConcurrencyCache{
 			acquireResults: map[int64]bool{1: false},
@@ -2617,7 +2622,12 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
 		require.Equal(t, int64(1), result.Account.ID)
-		require.Equal(t, 0, concurrencyCache.loadBatchCalls)
+		require.False(t, result.Acquired)
+		require.Equal(t, int64(1), result.WaitPlan.AccountID)
+		require.Equal(t, 31*time.Second, result.WaitPlan.Timeout)
+		require.Equal(t, 4, result.WaitPlan.MaxWaiting)
+		require.Equal(t, 1, concurrencyCache.loadBatchCalls, "must inspect the eligible pool before waiting")
+		require.Equal(t, []int64{1, 1}, concurrencyCache.acquiredAccountIDs)
 	})
 
 	t.Run("负载批量查询失败-降级旧顺序选择", func(t *testing.T) {
@@ -2656,7 +2666,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), cache.sessionBindings["legacy"])
 	})
 
-	t.Run("模型路由-粘性账号等待计划", func(t *testing.T) {
+	t.Run("模型路由-粘性账号满时使用可用路由账号", func(t *testing.T) {
 		groupID := int64(20)
 		sessionHash := "route-sticky"
 
@@ -2710,8 +2720,14 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		result, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil, "", int64(0))
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		require.NotNil(t, result.WaitPlan)
-		require.Equal(t, int64(1), result.Account.ID)
+		require.Nil(t, result.WaitPlan)
+		require.True(t, result.Acquired)
+		require.Equal(t, int64(2), result.Account.ID)
+		require.Contains(t, concurrencyCache.acquiredAccountIDs, int64(1))
+		require.Contains(t, concurrencyCache.acquiredAccountIDs, int64(2))
+		require.Equal(t, int64(2), cache.sessionBindings[sessionHash])
+		require.NotNil(t, result.ReleaseFunc)
+		result.ReleaseFunc()
 	})
 
 	t.Run("模型路由-粘性账号命中", func(t *testing.T) {
@@ -2883,11 +2899,13 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 	t.Run("模型路由-路由账号全满返回等待计划", func(t *testing.T) {
 		groupID := int64(23)
+		older := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &older},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &newer},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2914,6 +2932,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 		cfg := testConfig()
 		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 31 * time.Second
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 4
 
 		concurrencyCache := &mockConcurrencyCache{
 			acquireResults: map[int64]bool{1: false, 2: false},
@@ -2935,7 +2955,13 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.WaitPlan)
-		require.Equal(t, int64(1), result.Account.ID)
+		require.Equal(t, int64(1), result.Account.ID, "fallback follows LRU after routed and ordinary pool attempts")
+		require.False(t, result.Acquired)
+		require.Equal(t, int64(1), result.WaitPlan.AccountID)
+		require.Equal(t, 31*time.Second, result.WaitPlan.Timeout)
+		require.Equal(t, 4, result.WaitPlan.MaxWaiting)
+		require.Equal(t, []int64{1, 2, 1, 2}, concurrencyCache.acquiredAccountIDs)
+		require.Positive(t, concurrencyCache.loadBatchCalls, "both phases may share the cached load snapshot")
 	})
 
 	t.Run("模型路由-路由账号全满-回退普通选择", func(t *testing.T) {
@@ -3361,8 +3387,8 @@ func TestGatewayService_GroupResolution_ReusesContextGroup(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
-	require.Equal(t, 0, groupRepo.getByIDLiteCalls)
+	require.Equal(t, 0, groupRepo.getByIDCalls)
+	require.Equal(t, 1, groupRepo.getByIDLiteCalls) // require_privacy_set，不走账号计数聚合
 }
 
 func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T) {
@@ -3404,8 +3430,8 @@ func TestGatewayService_GroupResolution_IgnoresInvalidContextGroup(t *testing.T)
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
-	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
+	require.Equal(t, 0, groupRepo.getByIDCalls)
+	require.Equal(t, 2, groupRepo.getByIDLiteCalls) // 分组解析 + require_privacy_set
 }
 
 func TestGatewayService_GroupContext_OverwritesInvalidContextGroup(t *testing.T) {
@@ -3474,8 +3500,8 @@ func TestGatewayService_GroupResolution_FallbackUsesLiteOnce(t *testing.T) {
 	account, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "claude-3-5-sonnet-20241022", nil)
 	require.NoError(t, err)
 	require.NotNil(t, account)
-	require.Equal(t, 1, groupRepo.getByIDCalls) // +1 for require_privacy_set check
-	require.Equal(t, 1, groupRepo.getByIDLiteCalls)
+	require.Equal(t, 0, groupRepo.getByIDCalls)
+	require.Equal(t, 2, groupRepo.getByIDLiteCalls) // fallback 解析 + require_privacy_set
 }
 
 func TestGatewayService_ResolveGatewayGroup_DetectsFallbackCycle(t *testing.T) {

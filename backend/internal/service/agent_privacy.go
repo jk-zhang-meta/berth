@@ -115,10 +115,11 @@ func sanitizeNativeClaudeCodeHeaders(header http.Header) {
 	if header == nil {
 		return
 	}
-	if userAgent := strings.TrimSpace(defaultFingerprint.UserAgent); userAgent != "" {
+	fingerprint := defaultFingerprint()
+	if userAgent := strings.TrimSpace(fingerprint.UserAgent); userAgent != "" {
 		setHeaderRaw(header, "User-Agent", userAgent)
 	}
-	if packageVersion := strings.TrimSpace(defaultFingerprint.StainlessPackageVersion); packageVersion != "" {
+	if packageVersion := strings.TrimSpace(fingerprint.StainlessPackageVersion); packageVersion != "" {
 		setHeaderRaw(header, "X-Stainless-Package-Version", packageVersion)
 	}
 	for _, key := range []string{

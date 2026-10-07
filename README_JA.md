@@ -25,6 +25,7 @@
 - **📖 免責事項**：本プロジェクトは技術的な学習および研究の目的でのみ提供されます。本プロジェクトの使用により生じたアカウントの停止、サービスの中断、データの損失、その他一切の直接的または間接的な損害について、作者は一切の責任を負いません。
 - **🚫 商用利用の非許諾**：本プロジェクトの開発者は、いかなる個人または組織に対しても、本プロジェクトを利用したいかなる形態の商業運営も一切許諾していません。本プロジェクトの名義で、または本プロジェクトに基づいて行われる商業行為はすべて本プロジェクトおよびその開発者とは無関係であり、それにより生じる一切の紛争、損失、法的責任は行為者自身が負うものとします。
 
+
 ## 概要
 
 Berth は、AI 製品のサブスクリプションから API クォータを配分・管理するために設計された AI API ゲートウェイプラットフォームです。ユーザーはプラットフォームが生成した API キーを通じて上流の AI サービスにアクセスでき、プラットフォームは認証、課金、負荷分散、リクエスト転送を処理します。
@@ -110,12 +111,7 @@ sudo systemctl enable berth
 
 #### アップグレード
 
-**管理ダッシュボード**の左上にある**アップデートを確認**ボタンをクリックすることで、ダッシュボードから直接アップグレードできます。
-
-Web インターフェースでは以下が可能です:
-- 新しいバージョンの自動確認
-- ワンクリックでのアップデートのダウンロードと適用
-- 必要に応じたロールバック
+Berth の本番更新には、明示的な依頼、上流変更の取り込み、検証、およびこのリポジトリからのビルドが必要です。バージョン確認は情報提供のみです。管理画面からの自己更新や、新しいリリースの自動取得・デプロイは使用しないでください。
 
 #### よく使うコマンド
 
@@ -199,8 +195,10 @@ JWT_SECRET=your_jwt_secret_here
 TOTP_ENCRYPTION_KEY=your_totp_key_here
 
 # オプション: 管理者アカウント
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your_admin_password
+# 空欄の場合、初回起動時にランダムなメールアドレス（ログインユーザー名）とパスワードが自動生成され、ログに出力されます。
+# admin@example.com のような推測されやすい値は総当たり攻撃の標的になるため避けてください。
+ADMIN_EMAIL=
+ADMIN_PASSWORD=
 
 # オプション: カスタムポート
 SERVER_PORT=8080
@@ -249,16 +247,16 @@ docker compose -f docker-compose.local.yml logs -f berth
 
 ブラウザで `http://YOUR_SERVER_IP:8080` を開いてください。
 
-管理者パスワードが自動生成された場合は、ログで確認できます:
+管理者メールアドレス（ログインユーザー名）またはパスワードが自動生成された場合は、ログで確認できます:
 ```bash
-docker compose -f docker-compose.local.yml logs berth | grep "admin password"
+docker compose -f docker-compose.local.yml logs berth | grep "Generated admin"
 ```
 
 #### アップグレード
 
 ```bash
 # 最新イメージをプルしてコンテナを再作成
-docker compose -f docker-compose.local.yml pull
+docker compose -f docker-compose.local.yml build berth
 docker compose -f docker-compose.local.yml up -d
 ```
 

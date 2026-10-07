@@ -255,6 +255,8 @@ ensure_image_available() {
     if container image inspect "${image}" >/dev/null 2>&1; then
         return
     fi
+    [[ "${image}" != "${APP_IMAGE}" ]] || \
+        die "Selected Berth image is unavailable locally: ${image}. Build verified Berth source and import it before up."
     info "Pulling ${image}..."
     container image pull --platform "${PLATFORM}" "${image}"
 }
@@ -414,7 +416,7 @@ validate_env_file_security() {
 prepare_environment() {
     validate_env_file_security
 
-    APP_IMAGE="$(read_env_value APPLE_CONTAINER_BERTH_IMAGE ghcr.io/jk-zhang-meta/berth:latest)"
+    APP_IMAGE="$(read_env_value APPLE_CONTAINER_BERTH_IMAGE berth:local)"
     POSTGRES_IMAGE="$(read_env_value APPLE_CONTAINER_POSTGRES_IMAGE postgres:18-alpine)"
     REDIS_IMAGE="$(read_env_value APPLE_CONTAINER_REDIS_IMAGE redis:8-alpine)"
     BIND_HOST="$(read_env_value BIND_HOST 0.0.0.0)"
@@ -469,8 +471,8 @@ EOF
 }
 
 prepare_app_environment() {
-    [[ -n "${POSTGRES_ADDRESS}" && -n "${REDIS_ADDRESS}" ]] || \
-        die "Dependency network addresses are not available."
+    [[ -n "${POSTGRES_ADDRESS}" && -n "${REDIS_ADDRESS}" && -n "${APP_IMAGE_ID}" ]] || \
+        die "Dependency network addresses or application image ID are not available."
 
     cp "${ENV_FILE}" "${APP_ENV_FILE}"
     cat >>"${APP_ENV_FILE}" <<EOF
@@ -488,6 +490,7 @@ REDIS_HOST=${REDIS_ADDRESS}
 REDIS_PORT=6379
 REDIS_PASSWORD=${REDIS_PASSWORD}
 DATA_DIR=/app/storage/data
+APPLE_CONTAINER_BERTH_IMAGE_ID=${APP_IMAGE_ID}
 EOF
     chmod 600 "${APP_ENV_FILE}"
 }
@@ -533,8 +536,42 @@ create_app_container() {
         --volume "${APP_VOLUME}:/app/storage" \
         --entrypoint /bin/sh \
         "${APP_IMAGE}" \
-        -c 'set -e; mkdir -p "$DATA_DIR"; chown -R berth:berth "$DATA_DIR"; exec su-exec berth /app/berth' \
+        -c '
+set -e
+mkdir -p "$DATA_DIR"
+chown -R berth:berth "$DATA_DIR"
+
+# Run the selected image binary; upgrades require a verified Berth source build.
+runtime_binary=/app/berth
+child_pid=""
+stop() {
+    trap - TERM INT
+    if [ -n "$child_pid" ]; then
+        kill -TERM "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+    fi
+    exit 0
+}
+trap stop TERM INT
+
+while true; do
+    su-exec berth "$runtime_binary" &
+    child_pid=$!
+    set +e
+    wait "$child_pid"
+    status=$?
+    set -e
+    child_pid=""
+    echo "Berth exited with status ${status}; restarting in 1 second..." >&2
+    sleep 1
+done
+' \
         >/dev/null
+}
+
+application_image_id() {
+    container image inspect "${APP_IMAGE}" | \
+        plutil -extract 0.id raw -o - -
 }
 
 ensure_container() {
@@ -680,6 +717,9 @@ cmd_up() {
     ensure_image_available "${APP_IMAGE}"
     ensure_image_available "${POSTGRES_IMAGE}"
     ensure_image_available "${REDIS_IMAGE}"
+    APP_IMAGE_ID="$(application_image_id)" || \
+        die "Unable to inspect application image ID for ${APP_IMAGE}."
+    [[ -n "${APP_IMAGE_ID}" ]] || die "Application image ID must not be empty."
 
     if [[ "${recreate}" == true ]]; then
         delete_container_if_present "${APP_CONTAINER}"

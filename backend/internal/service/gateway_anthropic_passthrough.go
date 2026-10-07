@@ -367,6 +367,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if isNativeClaudeCodePrivacyRequest(c) {
 		sanitizeNativeClaudeCodeHeaders(req.Header)
 	}
+	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 
 	return req, body, nil
 }

@@ -235,14 +235,28 @@ func TestSanitizeNativeClaudeCodeHeadersRemovesMachineSignals(t *testing.T) {
 
 	sanitizeNativeClaudeCodeHeaders(header)
 
-	require.Equal(t, defaultFingerprint.UserAgent, getHeaderRaw(header, "User-Agent"))
-	require.Equal(t, defaultFingerprint.StainlessPackageVersion, getHeaderRaw(header, "X-Stainless-Package-Version"))
+	require.Equal(t, defaultFingerprint().UserAgent, getHeaderRaw(header, "User-Agent"))
+	require.Equal(t, defaultFingerprint().StainlessPackageVersion, getHeaderRaw(header, "X-Stainless-Package-Version"))
 	require.Empty(t, getHeaderRaw(header, "X-Stainless-OS"))
 	require.Empty(t, getHeaderRaw(header, "X-Stainless-Arch"))
 	require.Empty(t, getHeaderRaw(header, "X-Stainless-Runtime"))
 	require.Empty(t, getHeaderRaw(header, "X-Stainless-Runtime-Version"))
 	require.Equal(t, "example-beta", getHeaderRaw(header, "Anthropic-Beta"))
 	require.Equal(t, "session-123", getHeaderRaw(header, "X-Claude-Code-Session-Id"))
+}
+
+func TestSanitizeNativeClaudeCodeHeadersUsesRuntimeVersion(t *testing.T) {
+	version := "9.9.8"
+	withCLIVersionResolverForTest(t, func() string { return version })
+	header := make(http.Header)
+
+	sanitizeNativeClaudeCodeHeaders(header)
+	require.Equal(t, "claude-cli/9.9.8 (external, cli)", getHeaderRaw(header, "User-Agent"))
+
+	version = "9.9.9"
+	sanitizeNativeClaudeCodeHeaders(header)
+	require.Equal(t, "claude-cli/9.9.9 (external, cli)", getHeaderRaw(header, "User-Agent"))
+	require.Equal(t, defaultFingerprint().StainlessPackageVersion, getHeaderRaw(header, "X-Stainless-Package-Version"))
 }
 
 func TestSanitizeNativeCodexHeadersReplacesOnlyClientDerivedMachineUserAgent(t *testing.T) {
