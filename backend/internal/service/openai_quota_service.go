@@ -30,8 +30,8 @@ const (
 	chatGPTRateLimitResetURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 	openaiQuotaUpstreamTimeout  = 20 * time.Second
 	openaiQuotaCodexBeta        = "codex-1"
-	openaiQuotaCodexOriginator  = "Codex Desktop"
-	openaiQuotaCodexLanguageTag = "zh-CN"
+	openaiQuotaCodexOriginator  = "codex_cli_rs"
+	openaiQuotaCodexLanguageTag = "en-US"
 	openaiQuotaSecFetchSite     = "none"
 	openaiQuotaSecFetchMode     = "no-cors"
 	openaiQuotaSecFetchDest     = "empty"
@@ -514,20 +514,14 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 	}
 	fedRAMP = account.IsChatGPTAccountFedRAMP()
 
-	// account.Proxy is eager-loaded by accountRepo.GetByID (see
-	// repository.accountsToService), so we can read the proxy URL directly
-	// instead of round-tripping the DB again. Fall back to proxyRepo only
-	// when Proxy isn't pre-populated (defensive — e.g. callers that built
-	// the Account by hand).
-	if account.ProxyID != nil {
-		switch {
-		case account.Proxy != nil:
-			proxyURL = account.Proxy.URL()
-		case s.proxyRepo != nil:
-			if proxy, perr := s.proxyRepo.GetByID(ctx, *account.ProxyID); perr == nil && proxy != nil {
-				proxyURL = proxy.URL()
-			}
+	// Fail-closed proxy resolution: when account.ProxyID > 0, missing/inactive/errored
+	// proxy lookups MUST error instead of silently falling back to direct host IP.
+	if account.ProxyID != nil && *account.ProxyID > 0 {
+		resolvedProxyURL, proxyErr := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+		if proxyErr != nil {
+			return "", "", "", false, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_PROXY_UNAVAILABLE", "bound proxy unavailable: %v", proxyErr)
 		}
+		proxyURL = resolvedProxyURL
 	}
 
 	return accessToken, chatGPTAccountID, proxyURL, fedRAMP, nil
@@ -608,6 +602,10 @@ func (s *OpenAIQuotaService) buildCodexQuotaHeaders(ctx context.Context, account
 		} else if strings.TrimSpace(accessToken) == "" {
 			return nil, "", fmt.Errorf("agent identity shadow credentials are unavailable")
 		}
+	}
+	if oaiLang, acceptLang := DeriveOAILanguageFromAccount(account); oaiLang != "" {
+		headers["oai-language"] = oaiLang
+		headers["accept-language"] = acceptLang
 	}
 	if !account.IsOpenAIAgentIdentity() {
 		return headers, "", nil

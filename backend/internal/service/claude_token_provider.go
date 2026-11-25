@@ -11,7 +11,7 @@ import (
 const (
 	claudeTokenRefreshSkew = 3 * time.Minute
 	claudeTokenCacheSkew   = 5 * time.Minute
-	claudeLockWaitTime     = 200 * time.Millisecond
+	claudeLockWaitMax      = 4 * time.Second
 )
 
 // ClaudeTokenCache token cache interface.
@@ -92,8 +92,7 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			refreshFailed = true
 		} else if result.LockHeld {
 			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
-				time.Sleep(claudeLockWaitTime)
-				if token, cacheErr := p.tokenCache.GetAccessToken(ctx, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
+				if token, waitErr := waitForRefreshedTokenWithJitter(ctx, p.tokenCache, cacheKey, claudeLockWaitMax); waitErr == nil && strings.TrimSpace(token) != "" {
 					slog.Debug("claude_token_cache_hit_after_wait", "account_id", account.ID)
 					return token, nil
 				}
@@ -110,8 +109,7 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		} else if lockErr != nil {
 			slog.Warn("claude_token_lock_failed", "account_id", account.ID, "error", lockErr)
 		} else {
-			time.Sleep(claudeLockWaitTime)
-			if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+			if token, waitErr := waitForRefreshedTokenWithJitter(ctx, p.tokenCache, cacheKey, claudeLockWaitMax); waitErr == nil && strings.TrimSpace(token) != "" {
 				slog.Debug("claude_token_cache_hit_after_wait", "account_id", account.ID)
 				return token, nil
 			}

@@ -116,7 +116,7 @@ func createGeminiCliReqClient(proxyURL string) (*req.Client, error) {
 func defaultLoadCodeAssistRequest() *geminicli.LoadCodeAssistRequest {
 	return &geminicli.LoadCodeAssistRequest{
 		Metadata: geminicli.LoadCodeAssistMetadata{
-			IDEType:    "ANTIGRAVITY",
+			IDEType:    "GEMINI_CLI",
 			Platform:   "PLATFORM_UNSPECIFIED",
 			PluginType: "GEMINI",
 		},
@@ -127,7 +127,7 @@ func defaultOnboardUserRequest() *geminicli.OnboardUserRequest {
 	return &geminicli.OnboardUserRequest{
 		TierID: "LEGACY",
 		Metadata: geminicli.LoadCodeAssistMetadata{
-			IDEType:    "ANTIGRAVITY",
+			IDEType:    "GEMINI_CLI",
 			Platform:   "PLATFORM_UNSPECIFIED",
 			PluginType: "GEMINI",
 		},

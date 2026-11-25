@@ -13,9 +13,10 @@ import (
 const (
 	openAITokenRefreshSkew    = 3 * time.Minute
 	openAITokenCacheSkew      = 5 * time.Minute
-	openAILockInitialWait     = 20 * time.Millisecond
-	openAILockMaxWait         = 120 * time.Millisecond
-	openAILockMaxAttempts     = 5
+	openAILockInitialWait     = 50 * time.Millisecond
+	openAILockMaxWait         = 500 * time.Millisecond
+	openAILockMaxAttempts     = 10
+	openAILockMaxTotalWait    = 4 * time.Second
 	openAILockJitterRatio     = 0.2
 	openAILockWarnThresholdMs = 250
 )
@@ -309,8 +310,16 @@ func (p *OpenAITokenProvider) disableAccountMissingRefreshToken(account *Account
 func (p *OpenAITokenProvider) waitForTokenAfterLockRace(ctx context.Context, cacheKey string) (string, error) {
 	wait := openAILockInitialWait
 	totalWaitMs := int64(0)
+	deadline := time.Now().Add(openAILockMaxTotalWait)
 	for i := 0; i < openAILockMaxAttempts; i++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
 		actualWait := jitterLockWait(wait)
+		if actualWait > remaining {
+			actualWait = remaining
+		}
 		timer := time.NewTimer(actualWait)
 		select {
 		case <-ctx.Done():

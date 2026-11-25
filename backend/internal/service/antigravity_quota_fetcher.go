@@ -268,16 +268,21 @@ func buildAntigravityQuotaGroups(summary *antigravity.QuotaSummaryResponse) []*A
 	return groups
 }
 
-// GetProxyURL 获取账户的代理 URL
+// ResolveProxyURL 获取账户的代理 URL（fail-closed：当 account.ProxyID > 0 且代理缺失、查询失败或非 active 时返回显式错误）。
+func (f *AntigravityQuotaFetcher) ResolveProxyURL(ctx context.Context, account *Account) (string, error) {
+	if account == nil {
+		return "", nil
+	}
+	return resolveRequiredProxyURL(ctx, f.proxyRepo, account.ProxyID, account.Proxy)
+}
+
+// GetProxyURL 获取账户的代理 URL（兼容旧签名；推荐调用 ResolveProxyURL）。
 func (f *AntigravityQuotaFetcher) GetProxyURL(ctx context.Context, account *Account) string {
-	if account.ProxyID == nil || f.proxyRepo == nil {
+	proxyURL, err := f.ResolveProxyURL(ctx, account)
+	if err != nil {
 		return ""
 	}
-	proxy, err := f.proxyRepo.GetByID(ctx, *account.ProxyID)
-	if err != nil || proxy == nil {
-		return ""
-	}
-	return proxy.URL()
+	return proxyURL
 }
 
 // classifyForbiddenType 根据 403 响应体判断禁止类型

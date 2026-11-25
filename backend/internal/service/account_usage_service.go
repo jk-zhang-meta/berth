@@ -1190,7 +1190,16 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		fetchCtx, fetchCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer fetchCancel()
 
-		proxyURL := s.antigravityQuotaFetcher.GetProxyURL(fetchCtx, account)
+		proxyURL, proxyErr := s.antigravityQuotaFetcher.ResolveProxyURL(fetchCtx, account)
+		if proxyErr != nil {
+			degraded := buildAntigravityDegradedUsage(proxyErr)
+			enrichUsageWithAccountError(degraded, account)
+			s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
+				usageInfo: degraded,
+				timestamp: time.Now(),
+			})
+			return degraded, nil
+		}
 		fetchResult, err := s.antigravityQuotaFetcher.FetchQuota(fetchCtx, account, proxyURL)
 		if err != nil {
 			degraded := buildAntigravityDegradedUsage(err)

@@ -150,7 +150,7 @@ func TestEnforceCacheControlLimit_PreservesTopLevelFieldOrder(t *testing.T) {
 	require.Equal(t, 4, strings.Count(resultStr, `"cache_control"`))
 }
 
-func TestEnforceCacheControlLimit_CountsToolsAndPreservesMessageAnchorsFirst(t *testing.T) {
+func TestEnforceCacheControlLimit_CountsToolsAndPrunesMessagesBeforeTools(t *testing.T) {
 	body := []byte(`{"alpha":1,"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"m1","cache_control":{"type":"ephemeral"}},{"type":"text","text":"m2","cache_control":{"type":"ephemeral"}},{"type":"text","text":"m3","cache_control":{"type":"ephemeral"}}]}],"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral"}}],"omega":2}`)
 
 	result := enforceCacheControlLimit(body)
@@ -159,10 +159,10 @@ func TestEnforceCacheControlLimit_CountsToolsAndPreservesMessageAnchorsFirst(t *
 	assertJSONTokenOrder(t, resultStr, `"alpha"`, `"system"`, `"messages"`, `"tools"`, `"omega"`)
 	require.Equal(t, 4, strings.Count(resultStr, `"cache_control"`))
 	require.True(t, gjson.GetBytes(result, "system.0.cache_control").Exists())
-	require.True(t, gjson.GetBytes(result, "messages.0.content.0.cache_control").Exists())
+	require.True(t, gjson.GetBytes(result, "tools.0.cache_control").Exists(), "tools breakpoint must be preserved ahead of messages breakpoints")
+	require.False(t, gjson.GetBytes(result, "messages.0.content.0.cache_control").Exists(), "oldest message breakpoint pruned first")
 	require.True(t, gjson.GetBytes(result, "messages.0.content.1.cache_control").Exists())
 	require.True(t, gjson.GetBytes(result, "messages.0.content.2.cache_control").Exists())
-	require.False(t, gjson.GetBytes(result, "tools.0.cache_control").Exists())
 }
 
 func TestInjectAnthropicCacheControlTTL1h_OnlyUpdatesExistingEphemeralCacheControl(t *testing.T) {

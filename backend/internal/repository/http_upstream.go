@@ -6,7 +6,9 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -587,9 +589,10 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
-	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
+	// TLS 指纹客户端使用独立的缓存键，包含 profile 内容哈希避免 profile 变更后复用旧连接池
+	profileHash := tlsProfileCacheKey(profile)
+	cacheKey := "tls:" + profileHash + ":" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls:" + profileHash
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -1502,14 +1505,12 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
 			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
 			transport.DialTLSContext = socks5Dialer.DialTLSContext
-		case "https":
-			// The fingerprint dialer emits a plaintext CONNECT preface and cannot
-			// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
-			return buildUpstreamTransport(settings, proxyURL, upstreamProtocolModeDefault)
-		case "http":
-			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
-			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
+		case "http", "https":
+			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（https:// 代理先完成外层 TLS 握手，再发 CONNECT 隧道 + 内层 uTLS 握手）
+			// 同时保留 Proxy 用于非 TLS 回退路径，确保明文 HTTP 也不绕过代理。
+			slog.Debug("tls_fingerprint_transport_http_connect", "scheme", scheme, "proxy", proxyURL.Host)
 			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
+			transport.Proxy = http.ProxyURL(proxyURL)
 			transport.DialTLSContext = httpDialer.DialTLSContext
 		default:
 			// 未知代理类型，回退到普通代理配置（无 TLS 指纹）
@@ -1521,6 +1522,20 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 	}
 
 	return transport, nil
+}
+
+// tlsProfileCacheKey computes a short deterministic hash of a tlsfingerprint.Profile
+// so distinct or updated TLS profiles never collide in the upstream transport pool.
+func tlsProfileCacheKey(profile *tlsfingerprint.Profile) string {
+	if profile == nil {
+		return "default"
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		return profile.Name
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
 }
 
 // trackedBody 带跟踪功能的响应体包装器

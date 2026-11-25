@@ -81,7 +81,7 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			}
 		} else if result.LockHeld {
 			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
-				if token, cacheErr := p.tokenCache.GetAccessToken(ctx, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
+				if token, waitErr := waitForRefreshedTokenWithJitter(ctx, p.tokenCache, cacheKey, 4*time.Second); waitErr == nil && strings.TrimSpace(token) != "" {
 					return token, nil
 				}
 			}
@@ -116,11 +116,10 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			return accessToken, nil
 		}
 
-		var proxyURL string
-		if account.ProxyID != nil && p.geminiOAuthService.proxyRepo != nil {
-			if proxy, err := p.geminiOAuthService.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
-				proxyURL = proxy.URL()
-			}
+		proxyURL, proxyErr := resolveRequiredProxyURL(ctx, p.geminiOAuthService.proxyRepo, account.ProxyID, account.Proxy)
+		if proxyErr != nil {
+			log.Printf("[GeminiTokenProvider] Auto-detect project_id skipped: bound proxy unavailable: %v", proxyErr)
+			return accessToken, nil
 		}
 
 		detected, tierID, err := p.geminiOAuthService.fetchProjectID(ctx, accessToken, proxyURL)

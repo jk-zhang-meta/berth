@@ -50,12 +50,10 @@ func getSharedReqClient(opts reqClientOptions) (*req.Client, error) {
 		client = client.EnableForceHTTP2()
 	}
 	if opts.Impersonate {
-		// chatgpt.com 的 Cloudflare 会对 req 内置的 Chrome 伪装（UA 固定为 Chrome/120，
-		// 与 sec-ch-ua 等 Client Hints 一起已明显过时）直接返回 403 cf-mitigated=challenge，
-		// 导致 accounts/check、subscriptions、隐私设置等 backend-api 调用全部失败，
-		// 订阅到期时间因此长期不更新（见 issue #4825）。Firefox 伪装的 UA/头部组合
-		// 在同一出口 IP 下稳定通过，故改用 Firefox 指纹。
-		client = client.ImpersonateFirefox()
+		// Berth v2: Do NOT call client.ImpersonateFirefox() (eliminates the
+		// Firefox TLS/UA Frankensignature on Codex/OpenAI backend-api calls).
+		// Use a neutral HTTP/2-capable client with explicit Codex headers.
+		client = client.SetCommonHeader("Accept-Language", "en-US,en;q=0.9")
 	}
 	trimmed, _, err := proxyurl.Parse(opts.ProxyURL)
 	if err != nil {

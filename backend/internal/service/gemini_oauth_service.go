@@ -113,12 +113,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		return nil, fmt.Errorf("failed to generate session ID: %w", err)
 	}
 
-	var proxyURL string
-	if proxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := resolveRequiredProxyURL(ctx, s.proxyRepo, proxyID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve gemini oauth proxy: %w", err)
 	}
 
 	// OAuth client selection:
@@ -409,10 +406,10 @@ func (s *GeminiOAuthService) RefreshAccountGoogleOneTier(
 		return "", nil, nil, fmt.Errorf("missing access_token")
 	}
 
-	// 获取 proxy URL
-	var proxyURL string
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	// 获取 proxy URL（fail-closed）
+	proxyURL, proxyErr := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if proxyErr != nil {
+		return "", nil, nil, fmt.Errorf("failed to resolve gemini account proxy: %w", proxyErr)
 	}
 
 	// 调用 Drive API
@@ -457,11 +454,12 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	}
 
 	proxyURL := session.ProxyURL
-	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+	if input.ProxyID != nil && *input.ProxyID > 0 {
+		resolved, proxyErr := resolveRequiredProxyURL(ctx, s.proxyRepo, input.ProxyID, nil)
+		if proxyErr != nil {
+			return nil, fmt.Errorf("failed to resolve gemini oauth proxy: %w", proxyErr)
 		}
+		proxyURL = resolved
 	}
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ProxyURL: %s", proxyURL)
 
@@ -746,12 +744,9 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		oauthType = "code_assist"
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, proxyErr := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if proxyErr != nil {
+		return nil, fmt.Errorf("failed to resolve gemini account oauth proxy: %w", proxyErr)
 	}
 
 	tokenInfo, err := s.RefreshToken(ctx, oauthType, refreshToken, proxyURL)
@@ -972,7 +967,7 @@ func (s *GeminiOAuthService) fetchProjectID(ctx context.Context, accessToken, pr
 	req := &geminicli.OnboardUserRequest{
 		TierID: tierID,
 		Metadata: geminicli.LoadCodeAssistMetadata{
-			IDEType:    "ANTIGRAVITY",
+			IDEType:    "GEMINI_CLI",
 			Platform:   "PLATFORM_UNSPECIFIED",
 			PluginType: "GEMINI",
 		},

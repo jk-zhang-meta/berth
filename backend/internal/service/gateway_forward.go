@@ -166,11 +166,6 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 		if isNativeClaudeCode {
 			markNativeClaudeCodePrivacyRequest(c)
-			var privacyErr error
-			passthroughBody, _, privacyErr = sanitizeAgentRequestBody(passthroughBody, agentPrivacyAnthropicMessages, account.Proxy)
-			if privacyErr != nil {
-				return nil, privacyErr
-			}
 		}
 		passthroughModel := parsed.Model
 		if passthroughModel != "" {
@@ -254,15 +249,6 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 	if isClaudeCode {
 		markNativeClaudeCodePrivacyRequest(c)
-		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
-		if privacyErr != nil {
-			return nil, privacyErr
-		}
-		if changed {
-			if err := replaceBody(privacyBody); err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
@@ -332,9 +318,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
-	// 强制执行 cache_control 块数量限制（最多 4 个）
-	if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
-		return nil, err
+	// 强制执行 cache_control 块数量限制（最多 4 个）——仅对非原生/改写请求执行，
+	// 真实 Claude Code 原生请求体保持字节级不变以保护 Prompt Cache。
+	if !isClaudeCode {
+		if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
+			return nil, err
+		}
 	}
 
 	// 应用模型映射：

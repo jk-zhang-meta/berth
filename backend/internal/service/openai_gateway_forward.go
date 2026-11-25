@@ -224,21 +224,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	setOpenAICompatMessagesBridgeContext(c, compatMessagesBridge)
 
 	isNativeCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
-	isNativeCodexPrivacy := openai.IsCodexOfficialClientByHeadersStrict(c.GetHeader("User-Agent"), c.GetHeader("originator"))
 	isCodexCLI := isNativeCodexCLI || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
-	if isNativeCodexPrivacy {
-		sanitizedBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyOpenAIResponses, account.Proxy)
-		if privacyErr != nil {
-			return nil, privacyErr
-		}
-		if changed {
-			body = sanitizedBody
-			originalBody = sanitizedBody
-			requestView = newOpenAIRequestView(sanitizedBody)
-			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
-			originalModel = reqModel
-		}
-	}
+	// Native Codex passthrough bodies stay byte-for-byte verbatim for prompt cache stability.
 	codexImageGenerationExplicitToolPolicy := codexImageGenerationExplicitToolPolicyAllow
 	if isCodexCLI {
 		codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
@@ -667,7 +654,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if gjson.GetBytes(body, "max_completion_tokens").Exists() && (account.Type == AccountTypeAPIKey || account.Platform != PlatformOpenAI) {
 			markPatchDelete("max_completion_tokens")
 		}
+		preservePromptCacheRetention := isOfficialOpenAIAPIKeyAccount(account)
 		for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier", "prompt_cache_options"} {
+			if unsupportedField == "prompt_cache_retention" && preservePromptCacheRetention {
+				continue
+			}
 			if gjson.GetBytes(body, unsupportedField).Exists() {
 				markPatchDelete(unsupportedField)
 			}

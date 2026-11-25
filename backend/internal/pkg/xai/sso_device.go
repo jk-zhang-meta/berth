@@ -300,7 +300,7 @@ func (f *ssoDeviceFlow) do(ctx context.Context, method, endpoint string, form ur
 			return 0, currentURL, nil, err
 		}
 		request.Header.Set("Accept", "application/json, text/html;q=0.9, */*;q=0.8")
-		request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+		request.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		request.Header.Set("User-Agent", f.userAgent)
 		if redirects == 0 {
 			for _, header := range headers {

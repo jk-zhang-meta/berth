@@ -137,6 +137,15 @@ type OAuthRefreshAPI struct {
 	tokenCache  GeminiTokenCache // 可选，nil = 无分布式锁
 	lockTTL     time.Duration
 	localLocks  sync.Map // key: cacheKey string -> value: *contextMutex
+	refreshWAL  *BerthOAuthRefreshWAL
+}
+
+// SetRefreshWAL installs an optional DB-backed WAL journal coordinator for
+// rotating OAuth refresh tokens.
+func (api *OAuthRefreshAPI) SetRefreshWAL(wal *BerthOAuthRefreshWAL) {
+	if api != nil {
+		api.refreshWAL = wal
+	}
 }
 
 // NewOAuthRefreshAPI 创建统一刷新 API
@@ -198,16 +207,16 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	}
 	defer localMu.Unlock()
 
-	// 1. 获取分布式锁
+	// 1. 获取分布式锁（fail-closed：Redis 锁错误不得降级为无锁并发刷新）
 	if api.tokenCache != nil {
 		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
 		if lockErr != nil {
-			// Redis 错误，降级为无锁刷新（进程内互斥锁仍生效）
-			slog.Warn("oauth_refresh_lock_failed_degraded",
+			slog.Warn("oauth_refresh_lock_failed_closed",
 				"account_id", account.ID,
 				"cache_key", cacheKey,
 				"error", lockErr,
 			)
+			return nil, fmt.Errorf("oauth refresh distributed lock unavailable: %w", lockErr)
 		} else if !acquired {
 			// 锁被其他 worker 持有
 			return &OAuthRefreshResult{LockHeld: true}, nil
@@ -272,8 +281,44 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}, nil
 	}
 
-	// 4. 执行平台特定刷新逻辑
+	// 4. 执行平台特定刷新逻辑（若已挂载 WAL 协调器则优先经 WAL 执行并原子提交）
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
+	if api.refreshWAL != nil && strings.TrimSpace(freshAccount.GetCredential("refresh_token")) != "" {
+		walRes, walErr := api.refreshWAL.ExecuteRefresh(ctx, WALRefreshRequest{
+			AccountID:    freshAccount.ID,
+			Platform:     freshAccount.Platform,
+			ClientID:     freshAccount.GetCredential("client_id"),
+			RefreshToken: freshAccount.GetCredential("refresh_token"),
+		}, func(tracedCtx context.Context, _ *RefreshTraceTracker) (map[string]any, error) {
+			return executor.Refresh(tracedCtx, freshAccount)
+		})
+		if walErr == nil && walRes != nil {
+			persistBase := context.Background()
+			if ctx != nil {
+				persistBase = context.WithoutCancel(ctx)
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(persistBase, defaultRefreshPostPersistCleanupTimeout)
+			defer cleanupCancel()
+			if api.tokenCache != nil {
+				_ = api.tokenCache.DeleteAccessToken(cleanupCtx, cacheKey)
+			}
+			durableAccount := freshAccount
+			if reloaded, rErr := api.accountRepo.GetByID(cleanupCtx, freshAccount.ID); rErr == nil && reloaded != nil {
+				durableAccount = reloaded
+			} else if walRes.NewCredentials != nil {
+				durableAccount.Credentials = walRes.NewCredentials
+			}
+			return &OAuthRefreshResult{
+				Refreshed:      walRes.Committed,
+				NewCredentials: walRes.NewCredentials,
+				Account:        durableAccount,
+			}, nil
+		}
+		if !errors.Is(walErr, ErrCageNotFound) {
+			return &OAuthRefreshResult{Account: attemptedAccount}, walErr
+		}
+	}
+
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
 	if refreshErr == nil && hasOpenAIRefreshCredentials(attemptedAccount, newCredentials) {
 		// The upstream rotation is irreversible. Cancellation of optional
@@ -295,12 +340,10 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}
 		return result, nil
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		// A provider implementation may ignore cancellation and return late
-		// credentials. Never persist them after the attempt/cycle boundary.
-		return nil, ctxErr
-	}
 	if refreshErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		// 竞争恢复：invalid_grant 可能是另一个 worker 已消费了旧 refresh_token
 		// 重新读取 DB，如果 refresh_token 已更新则说明是竞争，返回成功
 		if isInvalidGrantError(refreshErr) {
@@ -329,8 +372,21 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		return result, refreshErr
 	}
 
-	// 5. 设置版本号 + 更新 DB
+	// 5. 设置版本号 + 更新 DB（使用独立 10s WithoutCancel 上下文持久化已轮换的凭据，
+	//    避免上游已消费旧 refresh_token 后因调用方超时而丢弃新令牌）
+	if newCredentials == nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+	}
 	if newCredentials != nil {
+		persistBase := context.Background()
+		if ctx != nil {
+			persistBase = context.WithoutCancel(ctx)
+		}
+		persistCtx, persistCancel := context.WithTimeout(persistBase, defaultOpenAIRefreshPersistTimeout)
+		defer persistCancel()
+
 		newCredentials["_token_version"] = time.Now().UnixMilli()
 		if freshAccount.IsGrokOAuth() {
 			conditionalRepo, ok := api.accountRepo.(GrokOAuthRefreshSuccessRepository)
@@ -340,7 +396,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 				}
 			}
 			applied, updateErr := conditionalRepo.UpdateGrokOAuthCredentialsIfUnchanged(
-				ctx,
+				persistCtx,
 				freshAccount.ID,
 				attemptedAccount.Credentials,
 				attemptedAccount.ProxyID,
@@ -360,7 +416,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 				}
 			}
 			if !applied {
-				currentAccount, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID)
+				currentAccount, readErr := api.accountRepo.GetByID(persistCtx, freshAccount.ID)
 				if readErr != nil || currentAccount == nil {
 					if readErr == nil {
 						readErr = fmt.Errorf("account not found after Grok OAuth success CAS miss")
@@ -375,7 +431,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 				)
 				return &OAuthRefreshResult{Account: currentAccount}, nil
 			}
-			durableAccount, readErr := api.loadGrokDurableAccountAfterPersist(ctx, cacheKey, freshAccount.ID)
+			durableAccount, readErr := api.loadGrokDurableAccountAfterPersist(persistCtx, cacheKey, freshAccount.ID)
 			if readErr != nil || durableAccount == nil {
 				if readErr == nil {
 					readErr = fmt.Errorf("account not found after Grok OAuth success CAS")
@@ -389,7 +445,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
-		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
+		} else if updateErr := persistAccountCredentials(persistCtx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
 			slog.Error("oauth_refresh_update_failed",
 				"account_id", freshAccount.ID,
 				"error", updateErr,

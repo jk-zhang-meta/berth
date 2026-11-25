@@ -2193,11 +2193,11 @@ func TestForwardGrokResponsesUsesSelectedProxyPrivacyContext(t *testing.T) {
 	require.NotNil(t, result)
 	forwarded := string(upstream.lastBody)
 	require.Contains(t, forwarded, "/private/repo")
-	require.NotContains(t, forwarded, "Asia/Tokyo")
-	require.Contains(t, forwarded, "America/Chicago")
+	require.Contains(t, forwarded, "Asia/Tokyo")
+	require.NotContains(t, forwarded, agentNetworkEgressMarker)
+	require.NotContains(t, forwarded, "<checked_at>")
 	localContext := gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String()
-	require.Contains(t, localContext, "<current_date>")
-	require.NotContains(t, localContext, "2026-09-17")
+	require.Contains(t, localContext, "<current_date>2026-09-17</current_date>")
 }
 
 func TestForwardGrokResponsesUsesMetadataSessionForCacheIdentityWithoutForwardingMetadata(t *testing.T) {

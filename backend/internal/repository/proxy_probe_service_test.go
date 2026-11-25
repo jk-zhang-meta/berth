@@ -49,15 +49,17 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_UnsupportedProxyScheme() {
 	require.ErrorContains(s.T(), err, "failed to create proxy client")
 }
 
-func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPAPI() {
+func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPWho() {
+	s.prober.configuredProbeURLs = []configuredProbeTarget{
+		{url: "http://ipwho.is/", parser: "ipwho"},
+	}
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 检查是否是 ip-api 请求
-		if strings.Contains(r.RequestURI, "ip-api.com") {
+		require.Equal(s.T(), "en-US,en;q=0.9", r.Header.Get("Accept-Language"))
+		if strings.Contains(r.RequestURI, "ipwho.is") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"status":"success","query":"1.2.3.4","city":"c","regionName":"r","country":"cc","countryCode":"CC"}`)
+			_, _ = io.WriteString(w, `{"success":true,"ip":"1.2.3.4","city":"Los Angeles","region":"California","country":"United States","country_code":"US","connection":{"asn":7922,"org":"Comcast","isp":"Comcast Cable"},"timezone":{"id":"America/Los_Angeles","offset":-28800}}`)
 			return
 		}
-		// 其他请求返回错误
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 
@@ -65,35 +67,61 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPAPI() {
 	require.NoError(s.T(), err, "ProbeProxy")
 	require.GreaterOrEqual(s.T(), latencyMs, int64(0), "unexpected latency")
 	require.Equal(s.T(), "1.2.3.4", info.IP)
-	require.Equal(s.T(), "c", info.City)
-	require.Equal(s.T(), "r", info.Region)
-	require.Equal(s.T(), "cc", info.Country)
-	require.Equal(s.T(), "CC", info.CountryCode)
+	require.Equal(s.T(), "Los Angeles", info.City)
+	require.Equal(s.T(), "California", info.Region)
+	require.Equal(s.T(), "United States", info.Country)
+	require.Equal(s.T(), "US", info.CountryCode)
+	require.Equal(s.T(), "America/Los_Angeles", info.Timezone)
+	require.Equal(s.T(), "AS7922 Comcast", info.ASN)
 }
 
-func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPifyFallback() {
+func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPSBFallback() {
+	s.prober.configuredProbeURLs = []configuredProbeTarget{
+		{url: "http://ipwho.is/", parser: "ipwho"},
+		{url: "http://api.ip.sb/geoip", parser: "ipsb"},
+	}
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ip-api 失败
-		if strings.Contains(r.RequestURI, "ip-api.com") {
+		if strings.Contains(r.RequestURI, "ipwho.is") {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		// ipify 成功
-		if strings.Contains(r.RequestURI, "api64.ipify.org") {
+		if strings.Contains(r.RequestURI, "api.ip.sb") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"ip": "5.6.7.8"}`)
+			_, _ = io.WriteString(w, `{"ip":"5.6.7.8","city":"Tokyo","region":"Tokyo","country":"Japan","country_code":"JP","timezone":"Asia/Tokyo","offset":32400,"asn":2516,"asn_organization":"KDDI","isp":"KDDI"}`)
 			return
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 
 	info, latencyMs, err := s.prober.ProbeProxy(s.ctx, s.proxySrv.URL)
-	require.NoError(s.T(), err, "ProbeProxy should fallback to ipify")
+	require.NoError(s.T(), err, "ProbeProxy should fallback to api.ip.sb")
 	require.GreaterOrEqual(s.T(), latencyMs, int64(0), "unexpected latency")
 	require.Equal(s.T(), "5.6.7.8", info.IP)
+	require.Equal(s.T(), "JP", info.CountryCode)
+	require.Equal(s.T(), "Asia/Tokyo", info.Timezone)
+}
+
+func (s *ProxyProbeServiceSuite) TestProbeProxy_RejectsIPv6FromIPWhoAndIPSB() {
+	_, _, err := s.prober.parseIPWho([]byte(`{"success":true,"ip":"2606:4700:4700::1111"}`), 10)
+	require.Error(s.T(), err)
+	require.ErrorContains(s.T(), err, "non-IPv4")
+
+	_, _, err = s.prober.parseIPSB([]byte(`{"ip":"2606:4700:4700::1111"}`), 10)
+	require.Error(s.T(), err)
+	require.ErrorContains(s.T(), err, "non-IPv4")
+}
+
+func (s *ProxyProbeServiceSuite) TestDefaultProbeURLsUseHTTPSIPv4Providers() {
+	require.Len(s.T(), probeURLs, 2)
+	require.Equal(s.T(), "https://ipwho.is/", probeURLs[0].url)
+	require.Equal(s.T(), "https://api.ip.sb/geoip", probeURLs[1].url)
 }
 
 func (s *ProxyProbeServiceSuite) TestProbeProxy_AllFailed() {
+	s.prober.configuredProbeURLs = []configuredProbeTarget{
+		{url: "http://ipwho.is/", parser: "ipwho"},
+		{url: "http://api.ip.sb/geoip", parser: "ipsb"},
+	}
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -104,19 +132,13 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_AllFailed() {
 }
 
 func (s *ProxyProbeServiceSuite) TestProbeProxy_InvalidJSON() {
+	s.prober.configuredProbeURLs = []configuredProbeTarget{
+		{url: "http://ipwho.is/", parser: "ipwho"},
+		{url: "http://api.ip.sb/geoip", parser: "ipsb"},
+	}
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.RequestURI, "ip-api.com") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, "not-json")
-			return
-		}
-		// ipify 也返回无效响应
-		if strings.Contains(r.RequestURI, "api64.ipify.org") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, "not-json")
-			return
-		}
-		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "not-json")
 	}))
 
 	_, _, err := s.prober.ProbeProxy(s.ctx, s.proxySrv.URL)

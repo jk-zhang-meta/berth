@@ -66,11 +66,11 @@ func TestGetCodexFingerprintMode(t *testing.T) {
 		{"非 OAuth 账号", &Account{Platform: PlatformOpenAI, Type: "api_key"}, codexFingerprintOff},
 		{"OpenAI setup token", &Account{Platform: PlatformOpenAI, Type: AccountTypeSetupToken, Extra: map[string]any{codexFingerprintModeExtraKey: "session"}}, codexFingerprintSession},
 		{"Anthropic setup token", &Account{Platform: PlatformAnthropic, Type: AccountTypeSetupToken, Extra: map[string]any{codexFingerprintModeExtraKey: "session"}}, codexFingerprintOff},
-		// 收敛是显式 opt-in：缺省/空/非法一律 off（#5610）。存量账号普遍没有这个
-		// extra 键，升级不得把它们静默切进收敛。
-		{"无 extra 默认 off", newTestOAuthAccount(1, nil), codexFingerprintOff},
-		{"空值默认 off", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: ""}), codexFingerprintOff},
-		{"非法值默认 off", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "invalid"}), codexFingerprintOff},
+		// Berth v2: Codex fingerprint convergence defaults to safe per-account device mode
+		// unless explicitly configured as "off".
+		{"无 extra 默认 device", newTestOAuthAccount(1, nil), codexFingerprintDevice},
+		{"空值默认 device", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: ""}), codexFingerprintDevice},
+		{"非法值默认 device", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "invalid"}), codexFingerprintDevice},
 		{"显式 off", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "off"}), codexFingerprintOff},
 		{"device", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "device"}), codexFingerprintDevice},
 		{"session", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "session"}), codexFingerprintSession},
@@ -131,11 +131,13 @@ func TestResolveCodexFingerprintIDsFromRequest_ExplicitOff(t *testing.T) {
 	assert.Nil(t, ids, "显式 off 模式应返回 nil")
 }
 
-// 未显式配置的存量账号不得被收敛（#5610）：默认返回 nil，出站身份保持
-// v0.1.175 之前的客户端原值。
-func TestResolveCodexFingerprintIDsFromRequest_DefaultIsOff(t *testing.T) {
+// Berth v2: 默认启用安全的账号级 device 收敛；带 seed 的账号自动返回 device IDs。
+func TestResolveCodexFingerprintIDsFromRequest_DefaultIsDevice(t *testing.T) {
 	account := newTestOAuthAccount(1, nil)
-	assert.Nil(t, resolveCodexFingerprintIDsFromRequest(account, nil), "无 extra 应视为 off")
+	ids := resolveCodexFingerprintIDsFromRequest(account, nil)
+	require.NotNil(t, ids, "默认应启用 device 级收敛")
+	assert.Equal(t, codexFingerprintDevice, ids.mode)
+	assert.NotEmpty(t, ids.installationID)
 }
 
 // 管理员显式 opt-in 的账号行为不变。

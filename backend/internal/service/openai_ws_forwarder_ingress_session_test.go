@@ -374,8 +374,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_NativeCodexPriva
 	environmentText := gjson.Get(upstreamBody, "input.0.content.0.text").String()
 	require.Contains(t, environmentText, `C:\Users\alice\secret`)
 	require.Contains(t, environmentText, "powershell")
-	require.NotContains(t, environmentText, "Asia/Shanghai")
-	require.Contains(t, environmentText, "<timezone>America/New_York</timezone>")
+	require.Contains(t, environmentText, "<timezone>Asia/Shanghai</timezone>")
+	require.NotContains(t, environmentText, "America/New_York")
 	require.NotContains(t, upstreamBody, agentNetworkEgressMarker)
 	require.NotContains(t, upstreamBody, "198.51.100.78")
 }

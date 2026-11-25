@@ -39,10 +39,11 @@ const (
 	// 固定的 redirect_uri（用户需手动复制 code）
 	RedirectURI = "http://localhost:8085/callback"
 
-	// OAuth scopes
+	// OAuth scopes (includes aicode scope for full CPA parity)
 	Scopes = "https://www.googleapis.com/auth/cloud-platform " +
 		"https://www.googleapis.com/auth/userinfo.email " +
 		"https://www.googleapis.com/auth/userinfo.profile " +
+		"https://www.googleapis.com/auth/aicode " +
 		"https://www.googleapis.com/auth/cclog " +
 		"https://www.googleapis.com/auth/experimentsandconfigs"
 
@@ -120,17 +121,75 @@ func GetUserAgentVersionForContext(ctx context.Context) string {
 	return defaultUserAgentVersion
 }
 
-// BuildUserAgent 使用指定版本号构造 User-Agent；版本为空或非法时回退默认值。
-func BuildUserAgent(version string) string {
-	if normalized := NormalizeUserAgentVersion(version); normalized != "" {
-		return fmt.Sprintf("antigravity/hub/%s windows/amd64", normalized)
-	}
-	return fmt.Sprintf("antigravity/hub/%s windows/amd64", defaultUserAgentVersion)
+type userAgentPlatformContextKey struct{}
+
+type userAgentPlatform struct {
+	osName string
+	arch   string
 }
 
-// GetUserAgentForContext 返回当前请求应使用的 User-Agent。
+// WithUserAgentPlatform binds per-account OS/arch (e.g. "darwin"/"arm64", "linux"/"amd64")
+// onto ctx so Antigravity requests do not hardcode "windows/amd64".
+func WithUserAgentPlatform(ctx context.Context, osName, arch string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, userAgentPlatformContextKey{}, userAgentPlatform{
+		osName: strings.TrimSpace(osName),
+		arch:   strings.TrimSpace(arch),
+	})
+}
+
+// BuildUserAgentForPlatform constructs the Antigravity User-Agent for a specific
+// version and per-account OS/arch pair. Empty OS/arch fall back to windows/amd64.
+func BuildUserAgentForPlatform(version, osName, arch string) string {
+	ver := NormalizeUserAgentVersion(version)
+	if ver == "" {
+		ver = defaultUserAgentVersion
+	}
+	osToken := normalizeAntigravityOS(osName)
+	archToken := normalizeAntigravityArch(arch)
+	return fmt.Sprintf("antigravity/hub/%s %s/%s", ver, osToken, archToken)
+}
+
+func normalizeAntigravityOS(osName string) string {
+	switch strings.ToLower(strings.TrimSpace(osName)) {
+	case "macos", "darwin", "osx":
+		return "darwin"
+	case "linux":
+		return "linux"
+	case "windows", "win", "win32":
+		return "windows"
+	default:
+		return "windows"
+	}
+}
+
+func normalizeAntigravityArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "arm64", "aarch64":
+		return "arm64"
+	case "amd64", "x64", "x86_64":
+		return "amd64"
+	default:
+		return "amd64"
+	}
+}
+
+// BuildUserAgent 使用指定版本号构造 User-Agent；版本为空或非法时回退默认值。
+func BuildUserAgent(version string) string {
+	return BuildUserAgentForPlatform(version, "", "")
+}
+
+// GetUserAgentForContext 返回当前请求应使用的 User-Agent（支持按账号 OS/arch 覆写）。
 func GetUserAgentForContext(ctx context.Context) string {
-	return BuildUserAgent(GetUserAgentVersionForContext(ctx))
+	version := GetUserAgentVersionForContext(ctx)
+	if ctx != nil {
+		if p, ok := ctx.Value(userAgentPlatformContextKey{}).(userAgentPlatform); ok {
+			return BuildUserAgentForPlatform(version, p.osName, p.arch)
+		}
+	}
+	return BuildUserAgent(version)
 }
 
 // GetUserAgent 返回当前配置的 User-Agent。

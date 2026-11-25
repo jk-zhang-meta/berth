@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,14 +59,13 @@ const (
 	defaultProxyProbeResponseMaxBytes = int64(1024 * 1024)
 )
 
-// probeURLs 按优先级排列的内置探测 URL 列表。
-// 某些 AI API 专用代理只允许访问特定域名，因此需要多个备选。
+// probeURLs 按优先级排列的内置 HTTPS IPv4-only 出口探测 URL 列表（替代明文 ip-api?lang=zh-CN 与双栈 api64.ipify.org）。
 var probeURLs = []struct {
 	url    string
 	parser string
 }{
-	{"http://ip-api.com/json/?lang=zh-CN", "ip-api"},
-	{"http://api64.ipify.org?format=json", "ipify"},
+	{"https://ipwho.is/", "ipwho"},
+	{"https://api.ip.sb/geoip", "ipsb"},
 }
 
 type configuredProbeTarget struct {
@@ -121,6 +122,8 @@ func (s *proxyProbeService) probeWithURL(ctx context.Context, client *http.Clien
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -147,6 +150,10 @@ func (s *proxyProbeService) probeWithURL(ctx context.Context, client *http.Clien
 	}
 
 	switch parser {
+	case "ipwho":
+		return s.parseIPWho(body, latencyMs)
+	case "ipsb":
+		return s.parseIPSB(body, latencyMs)
 	case "ip-api":
 		return s.parseIPAPI(body, latencyMs)
 	case "ipify":
@@ -156,6 +163,114 @@ func (s *proxyProbeService) probeWithURL(ctx context.Context, client *http.Clien
 	default:
 		return nil, latencyMs, fmt.Errorf("unknown parser: %s", parser)
 	}
+}
+
+func (s *proxyProbeService) parseIPWho(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {
+	var resp struct {
+		Success     bool   `json:"success"`
+		Message     string `json:"message"`
+		IP          string `json:"ip"`
+		Country     string `json:"country"`
+		CountryCode string `json:"country_code"`
+		Region      string `json:"region"`
+		City        string `json:"city"`
+		Connection  struct {
+			ASN int    `json:"asn"`
+			Org string `json:"org"`
+			ISP string `json:"isp"`
+		} `json:"connection"`
+		Timezone struct {
+			ID     string `json:"id"`
+			Offset *int   `json:"offset"`
+		} `json:"timezone"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, latencyMs, fmt.Errorf("failed to parse ipwho.is response: %w", err)
+	}
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Message)
+		if msg == "" {
+			msg = "ipwho.is probe failed"
+		}
+		return nil, latencyMs, fmt.Errorf("ipwho.is request failed: %s", msg)
+	}
+	ipStr := strings.TrimSpace(resp.IP)
+	addr, err := netip.ParseAddr(ipStr)
+	if err != nil || !addr.Unmap().Is4() {
+		return nil, latencyMs, fmt.Errorf("ipwho.is returned non-IPv4 exit address %q", ipStr)
+	}
+	asn := ""
+	if resp.Connection.ASN > 0 {
+		asn = "AS" + strconv.Itoa(resp.Connection.ASN)
+		if org := strings.TrimSpace(resp.Connection.Org); org != "" {
+			asn += " " + org
+		}
+	}
+	isp := strings.TrimSpace(resp.Connection.ISP)
+	if isp == "" {
+		isp = strings.TrimSpace(resp.Connection.Org)
+	}
+	return &service.ProxyExitInfo{
+		IP:               addr.Unmap().String(),
+		City:             strings.TrimSpace(resp.City),
+		Region:           strings.TrimSpace(resp.Region),
+		Country:          strings.TrimSpace(resp.Country),
+		CountryCode:      strings.ToUpper(strings.TrimSpace(resp.CountryCode)),
+		Timezone:         strings.TrimSpace(resp.Timezone.ID),
+		UTCOffsetSeconds: resp.Timezone.Offset,
+		ASN:              asn,
+		ISP:              isp,
+	}, latencyMs, nil
+}
+
+func (s *proxyProbeService) parseIPSB(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {
+	var resp struct {
+		IP           string `json:"ip"`
+		Country      string `json:"country"`
+		CountryCode  string `json:"country_code"`
+		Region       string `json:"region"`
+		City         string `json:"city"`
+		Timezone     string `json:"timezone"`
+		Offset       *int   `json:"offset"`
+		ASN          int    `json:"asn"`
+		ASNOrg       string `json:"asn_organization"`
+		Organization string `json:"organization"`
+		ISP          string `json:"isp"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, latencyMs, fmt.Errorf("failed to parse api.ip.sb response: %w", err)
+	}
+	ipStr := strings.TrimSpace(resp.IP)
+	addr, err := netip.ParseAddr(ipStr)
+	if err != nil || !addr.Unmap().Is4() {
+		return nil, latencyMs, fmt.Errorf("api.ip.sb returned non-IPv4 exit address %q", ipStr)
+	}
+	asn := ""
+	if resp.ASN > 0 {
+		asn = "AS" + strconv.Itoa(resp.ASN)
+		org := strings.TrimSpace(resp.ASNOrg)
+		if org == "" {
+			org = strings.TrimSpace(resp.Organization)
+		}
+		if org != "" {
+			asn += " " + org
+		}
+	}
+	isp := strings.TrimSpace(resp.ISP)
+	if isp == "" {
+		isp = strings.TrimSpace(resp.Organization)
+	}
+	return &service.ProxyExitInfo{
+		IP:               addr.Unmap().String(),
+		City:             strings.TrimSpace(resp.City),
+		Region:           strings.TrimSpace(resp.Region),
+		Country:          strings.TrimSpace(resp.Country),
+		CountryCode:      strings.ToUpper(strings.TrimSpace(resp.CountryCode)),
+		Timezone:         strings.TrimSpace(resp.Timezone),
+		UTCOffsetSeconds: resp.Offset,
+		ASN:              asn,
+		ISP:              isp,
+	}, latencyMs, nil
 }
 
 func (s *proxyProbeService) parseIPAPI(body []byte, latencyMs int64) (*service.ProxyExitInfo, int64, error) {

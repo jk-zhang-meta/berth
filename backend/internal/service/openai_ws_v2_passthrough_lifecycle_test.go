@@ -267,8 +267,8 @@ func TestPassthroughLifecycle_NativeCodexPrivacyUsesVerifiedProxySnapshot(t *tes
 	upstreamBody := requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
 	require.Contains(t, string(upstreamBody), `C:\\Users\\alice\\secret`)
 	require.Contains(t, string(upstreamBody), "powershell")
-	require.NotContains(t, string(upstreamBody), "Asia/Shanghai")
-	require.Contains(t, string(upstreamBody), "<timezone>America/New_York</timezone>")
+	require.Contains(t, string(upstreamBody), "<timezone>Asia/Shanghai</timezone>")
+	require.NotContains(t, string(upstreamBody), "America/New_York")
 	require.NotContains(t, string(upstreamBody), agentNetworkEgressMarker)
 	require.NotContains(t, string(upstreamBody), "198.51.100.77")
 

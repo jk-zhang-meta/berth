@@ -55,11 +55,6 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		}
 		if isNativeClaudeCode {
 			markNativeClaudeCodePrivacyRequest(c)
-			var privacyErr error
-			passthroughBody, _, privacyErr = sanitizeAgentRequestBody(passthroughBody, agentPrivacyAnthropicMessages, account.Proxy)
-			if privacyErr != nil {
-				return privacyErr
-			}
 		}
 		passthroughModel := parsed.Model
 		if reqModel := parsed.Model; reqModel != "" {
@@ -99,15 +94,6 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 	if isClaudeCodeCT {
 		markNativeClaudeCodePrivacyRequest(c)
-		privacyBody, changed, privacyErr := sanitizeAgentRequestBody(body, agentPrivacyAnthropicMessages, account.Proxy)
-		if privacyErr != nil {
-			return privacyErr
-		}
-		if changed {
-			if err := replaceBody(privacyBody); err != nil {
-				return err
-			}
-		}
 	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 

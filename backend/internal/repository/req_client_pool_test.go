@@ -141,11 +141,11 @@ func TestInstrumentReqClientRecordsDependency(t *testing.T) {
 	require.True(t, strings.Contains(header, "dep_http;dur="), header)
 }
 
-func TestGetSharedReqClient_ImpersonateUsesFirefoxFingerprint(t *testing.T) {
+func TestGetSharedReqClient_DoesNotImpersonateFirefox(t *testing.T) {
 	sharedReqClients = sync.Map{}
 	client, err := getSharedReqClient(reqClientOptions{Timeout: time.Second, Impersonate: true})
 	require.NoError(t, err)
-	// chatgpt.com 的 Cloudflare 会质询 req 内置的 Chrome/120 伪装，必须保持 Firefox 指纹。
-	require.Contains(t, client.Headers.Get("User-Agent"), "Firefox/")
-	require.NotContains(t, client.Headers.Get("User-Agent"), "Chrome/")
+	// Berth v2: Firefox Frankensignature must not be sent on OpenAI/Codex backend-api calls.
+	require.NotContains(t, client.Headers.Get("User-Agent"), "Firefox/")
+	require.Equal(t, "en-US,en;q=0.9", client.Headers.Get("Accept-Language"))
 }

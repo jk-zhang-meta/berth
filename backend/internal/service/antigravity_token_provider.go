@@ -110,7 +110,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 			}
 		} else if result.LockHeld {
 			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
-				if token, cacheErr := p.tokenCache.GetAccessToken(ctx, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
+				if token, waitErr := waitForRefreshedTokenWithJitter(ctx, p.tokenCache, cacheKey, 4*time.Second); waitErr == nil && strings.TrimSpace(token) != "" {
 					return token, nil
 				}
 			}

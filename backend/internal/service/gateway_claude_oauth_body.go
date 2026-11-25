@@ -1135,10 +1135,14 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		return body
 	}
 
-	// 超限：优先从 tools 中移除，再从 messages 中移除，最后才从 system 中移除。
+	// 超限（Bug B8 修复）：优先从 messages 中移除旧断点，再从 tools 中移除，最后才从 system 中移除。
+	// Anthropic 按 tools -> system -> messages 顺序哈希前缀缓存；删除 tools 断点会破坏整段
+	// tools+system+messages 前缀缓存，而优先裁剪 messages 断点可保留静态前缀命中率。
 	remaining := count - maxCacheControlBlocks
-	for i := len(toolPaths) - 1; i >= 0 && remaining > 0; i-- {
-		path := toolPaths[i]
+	for _, path := range messagePaths {
+		if remaining <= 0 {
+			break
+		}
 		if !gjson.GetBytes(out, path).Exists() {
 			continue
 		}
@@ -1151,10 +1155,8 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		remaining--
 	}
 
-	for _, path := range messagePaths {
-		if remaining <= 0 {
-			break
-		}
+	for i := len(toolPaths) - 1; i >= 0 && remaining > 0; i-- {
+		path := toolPaths[i]
 		if !gjson.GetBytes(out, path).Exists() {
 			continue
 		}

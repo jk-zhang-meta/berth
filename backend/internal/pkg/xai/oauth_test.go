@@ -88,7 +88,7 @@ func TestBuildAuthorizationURLIncludesHermesCompatibleParameters(t *testing.T) {
 	require.Equal(t, "challenge", values.Get("code_challenge"))
 	require.Equal(t, "S256", values.Get("code_challenge_method"))
 	require.Equal(t, "generic", values.Get("plan"))
-	require.Equal(t, "berth", values.Get("referrer"))
+	require.Empty(t, values.Get("referrer"), "referrer=berth leak must not be present")
 }
 
 func TestValidateXAIURLsAllowOfficialOAuthAndGatewayHosts(t *testing.T) {

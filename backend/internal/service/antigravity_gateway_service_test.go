@@ -352,9 +352,10 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &wrapped))
 	require.Equal(t, "configured-project", wrapped["project"])
 	forwarded := string(upstream.requestBodies[0])
-	require.NotContains(t, forwarded, "/private/gemini")
-	require.NotContains(t, forwarded, "Asia/Tokyo")
-	require.Contains(t, forwarded, "America/Chicago")
+	require.Contains(t, forwarded, "/private/gemini")
+	require.Contains(t, forwarded, "Asia/Tokyo")
+	require.NotContains(t, forwarded, agentNetworkEgressMarker)
+	require.NotContains(t, forwarded, "<checked_at>")
 }
 
 func TestAntigravityGatewayService_ForwardGemini_ImageUsesDefaultMappingAndOAuth(t *testing.T) {
@@ -973,10 +974,11 @@ func TestAntigravityGatewayService_Forward_UsesSelectedProxyPrivacyContext(t *te
 	require.NotNil(t, result)
 	require.Len(t, upstream.requestBodies, 1)
 	forwarded := string(upstream.requestBodies[0])
-	require.NotContains(t, forwarded, "/Users/private/work")
-	require.NotContains(t, forwarded, "Asia/Tokyo")
-	require.Contains(t, forwarded, "America/Chicago")
-	require.Contains(t, forwarded, "198.51.100.44")
+	require.Contains(t, forwarded, "/Users/private/work")
+	require.Contains(t, forwarded, "Asia/Tokyo")
+	require.NotContains(t, forwarded, agentNetworkEgressMarker)
+	require.NotContains(t, forwarded, "198.51.100.44")
+	require.NotContains(t, forwarded, "<checked_at>")
 }
 
 // TestAntigravityGatewayService_ForwardGemini_BillsWithMappedModel

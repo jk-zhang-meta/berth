@@ -112,14 +112,16 @@ func stripCodexFingerprintSeed(extra map[string]any) map[string]any {
 
 func codexFingerprintModeFromExtra(extra map[string]any) codexFingerprintMode {
 	if extra == nil {
-		return codexFingerprintOff
+		return codexFingerprintDevice
 	}
 	raw, _ := extra[codexFingerprintModeExtraKey].(string)
 	switch codexFingerprintMode(strings.TrimSpace(raw)) {
 	case codexFingerprintOff, codexFingerprintDevice, codexFingerprintSession, codexFingerprintFull:
 		return codexFingerprintMode(strings.TrimSpace(raw))
 	default:
-		return codexFingerprintOff
+		// Berth v2: default Codex fingerprint convergence to safe per-account
+		// device convergence unless explicitly set to "off".
+		return codexFingerprintDevice
 	}
 }
 
@@ -186,6 +188,9 @@ func sanitizedCodexFingerprintExtraUpdates(updates map[string]any) map[string]an
 // preserve or create the system-managed per-account seed in the repository update.
 func ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates map[string]any) bool {
 	if updates == nil {
+		return false
+	}
+	if _, exists := updates[codexFingerprintModeExtraKey]; !exists {
 		return false
 	}
 	return codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(updates))
