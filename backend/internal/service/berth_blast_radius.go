@@ -52,13 +52,39 @@ func Classify403Action(body []byte) Forbidden403Class {
 	if isCloudflareBotBlockResponse(trimmed) || isHTMLResponse(trimmed) {
 		return Forbidden403WAFOrAmbiguous
 	}
-	// Only structured JSON with explicit account-ban / disabled / invalid-key markers
-	// should immediately permanently disable an account.
+	// Inspect ONLY structured error fields (error.code, error.type, error.message,
+	// or flat top-level code/type/message) so unrelated JSON payloads never trigger
+	// false permanent bans. Recoverable billing/low-credit responses stay in
+	// temporary cooldown instead of permanent account disable.
 	var payload map[string]any
 	if err := json.Unmarshal(trimmed, &payload); err != nil {
 		return Forbidden403WAFOrAmbiguous
 	}
-	lower := strings.ToLower(string(trimmed))
+	var fields []string
+	appendStr := func(v any) {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			fields = append(fields, strings.ToLower(strings.TrimSpace(s)))
+		}
+	}
+	if errObj, ok := payload["error"].(map[string]any); ok {
+		appendStr(errObj["code"])
+		appendStr(errObj["type"])
+		appendStr(errObj["message"])
+	} else {
+		appendStr(payload["error"])
+	}
+	appendStr(payload["code"])
+	appendStr(payload["type"])
+	appendStr(payload["message"])
+	if len(fields) == 0 {
+		return Forbidden403WAFOrAmbiguous
+	}
+	combined := strings.Join(fields, " | ")
+	if strings.Contains(combined, "credit balance is too low") ||
+		strings.Contains(combined, "insufficient_quota") ||
+		strings.Contains(combined, "billing_hard_limit") {
+		return Forbidden403WAFOrAmbiguous
+	}
 	permanentMarkers := []string{
 		"account_suspended",
 		"account suspended",
@@ -73,10 +99,9 @@ func Classify403Action(body []byte) Forbidden403Class {
 		"account_banned",
 		"your account has been banned",
 		"has been denied access",
-		"credit balance is too low",
 	}
 	for _, marker := range permanentMarkers {
-		if strings.Contains(lower, marker) {
+		if strings.Contains(combined, marker) {
 			return Forbidden403AccountBan
 		}
 	}

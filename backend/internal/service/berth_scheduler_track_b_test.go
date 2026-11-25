@@ -423,3 +423,10 @@ func TestAdminProxy_RentedProxyFreshnessFixBeyond15Minutes(t *testing.T) {
 	err = svcOwned.validateVerifiedProxyBindingCapacity(context.Background(), &pid, 1)
 	require.NoError(t, err, "active rented proxy with verified exit profile must remain bindable >15m after checkout")
 }
+
+func TestClassify403Action_StructuredFieldsAndRecoverableLowCredit(t *testing.T) {
+	require.Equal(t, Forbidden403AccountBan, Classify403Action([]byte(`{"error":{"code":"account_suspended","message":"disabled"}}`)))
+	require.Equal(t, Forbidden403WAFOrAmbiguous, Classify403Action([]byte(`{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API"}}`)), "recoverable low credit must not permanently ban account")
+	require.Equal(t, Forbidden403WAFOrAmbiguous, Classify403Action([]byte(`{"user_note":"account_suspended in user metadata"}`)), "unrelated JSON field must not trigger permanent account ban")
+	require.Equal(t, Forbidden403WAFOrAmbiguous, Classify403Action([]byte(`<html><body>Cloudflare Access Denied</body></html>`)))
+}

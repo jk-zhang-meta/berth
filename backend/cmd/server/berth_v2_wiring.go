@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -33,11 +35,53 @@ type berthV2Deps struct {
 	handlers             *handler.Handlers
 }
 
+func validateBerthV2Deps(deps berthV2Deps) error {
+	var missing []string
+	if deps.db == nil {
+		missing = append(missing, "db")
+	}
+	if deps.adminService == nil {
+		missing = append(missing, "adminService")
+	}
+	if deps.oAuthRefreshAPI == nil {
+		missing = append(missing, "oAuthRefreshAPI")
+	}
+	if deps.marketplace == nil {
+		missing = append(missing, "marketplace")
+	}
+	if deps.paymentService == nil {
+		missing = append(missing, "paymentService")
+	}
+	if deps.paymentConfigService == nil {
+		missing = append(missing, "paymentConfigService")
+	}
+	if deps.stewardStore == nil {
+		missing = append(missing, "stewardStore")
+	}
+	if deps.cnProviderHandler == nil {
+		missing = append(missing, "cnProviderHandler")
+	}
+	if deps.handlers == nil {
+		missing = append(missing, "handlers")
+	} else if deps.handlers.Marketplace == nil {
+		missing = append(missing, "handlers.Marketplace")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("berth-v2 wiring failed: missing required dependencies: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // wireBerthV2 initializes all Berth v2 subsystems (Account Cage + WAL Refresh,
 // Adaptive Concurrency Advisor, Marketplace Online Payment Closure, and
 // MeshHarbor-style Zones / Admin Landing Grants / Edge Session Leases) via a
 // single clean bootstrap outside wire_gen.go so future Sub2API merges stay thin.
+// Fails closed at startup if any required production dependency is missing.
 func wireBerthV2(deps berthV2Deps) (func(), error) {
+	if err := validateBerthV2Deps(deps); err != nil {
+		return nil, err
+	}
+
 	var cleanups []func()
 	runCleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -48,60 +92,69 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	// Track A: Account Cage + OAuth Refresh WAL journal.
 	cagePool := cage.NewCageTransportPool()
 	cageService := service.NewBerthAccountCageService(deps.db, cagePool)
-	if deps.oAuthRefreshAPI != nil && deps.db != nil {
-		walStore := service.NewPostgresOAuthRefreshWALStore(deps.db)
-		refreshWAL := service.NewBerthOAuthRefreshWAL(walStore, cageService)
-		deps.oAuthRefreshAPI.SetRefreshWAL(refreshWAL)
-	}
+	walStore := service.NewPostgresOAuthRefreshWALStore(deps.db)
+	refreshWAL := service.NewBerthOAuthRefreshWAL(walStore, cageService)
+	deps.oAuthRefreshAPI.SetRefreshWAL(refreshWAL)
 
 	// Track B: Adaptive Concurrency Advisor + CNProvider Steward RBAC.
 	concurrencyAdvisor := service.NewBerthConcurrencyAdvisor(deps.db)
-	if managedAdmin, ok := deps.adminService.(interface {
+	managedAdmin, ok := deps.adminService.(interface {
 		SetConcurrencyAdvisor(*service.BerthConcurrencyAdvisor)
-	}); ok {
-		managedAdmin.SetConcurrencyAdvisor(concurrencyAdvisor)
+	})
+	if !ok {
+		runCleanup()
+		return nil, errors.New("berth-v2 wiring failed: adminService does not implement SetConcurrencyAdvisor")
 	}
-	if deps.cnProviderHandler != nil && deps.stewardStore != nil {
-		deps.cnProviderHandler.SetStewards(deps.stewardStore)
-	}
-	if deps.handlers != nil {
-		deps.handlers.BerthConcurrency = handler.NewBerthConcurrencyHandler(concurrencyAdvisor, deps.stewardStore)
-	}
-	if deps.db != nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		concurrencyAdvisor.Start(ctx)
-		cleanups = append(cleanups, func() {
-			cancel()
-			concurrencyAdvisor.Stop()
-		})
-	}
+	managedAdmin.SetConcurrencyAdvisor(concurrencyAdvisor)
+	deps.cnProviderHandler.SetStewards(deps.stewardStore)
+	deps.handlers.BerthConcurrency = handler.NewBerthConcurrencyHandler(concurrencyAdvisor, deps.stewardStore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	concurrencyAdvisor.Start(ctx)
+	cleanups = append(cleanups, func() {
+		cancel()
+		concurrencyAdvisor.Stop()
+	})
 
 	// Track C: Marketplace crash-safe online payment closure & 15s reconciler.
-	if deps.db != nil && deps.marketplace != nil && deps.paymentService != nil && deps.paymentConfigService != nil && deps.handlers != nil && deps.handlers.Marketplace != nil {
-		marketplacePayment := service.NewMarketplacePaymentService(
-			deps.db,
-			deps.marketplace,
-			deps.paymentService,
-			deps.paymentConfigService,
-		)
-		deps.handlers.Marketplace.SetMarketplacePayment(marketplacePayment)
-	}
+	marketplacePayment := service.NewMarketplacePaymentService(
+		deps.db,
+		deps.marketplace,
+		deps.paymentService,
+		deps.paymentConfigService,
+	)
+	deps.handlers.Marketplace.SetMarketplacePayment(marketplacePayment)
 
 	// Track D: MeshHarbor Logical Zones, Admin Landing Node Grants & Edge Lease Hub.
-	if deps.db != nil && deps.handlers != nil {
-		pub, priv, err := loadOrGenerateBerthEdgeSigningKey(deps.cfg)
-		if err != nil {
-			runCleanup()
-			return nil, fmt.Errorf("berth-v2 edge signing key: %w", err)
-		}
-		keyID := edgeproto.KeyIDFromPublicKey(pub)
-		zoneService := service.NewBerthZoneService(deps.db)
-		grantService := service.NewBerthLandingGrantService(deps.db)
-		edgeLeaseService := service.NewBerthEdgeLeaseService(deps.db, zoneService, grantService, pub, priv, keyID)
-		deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)
+	pub, priv, err := loadOrGenerateBerthEdgeSigningKey(deps.cfg)
+	if err != nil {
+		runCleanup()
+		return nil, fmt.Errorf("berth-v2 edge signing key: %w", err)
 	}
+	keyID := edgeproto.KeyIDFromPublicKey(pub)
+	zoneService := service.NewBerthZoneService(deps.db)
+	grantService := service.NewBerthLandingGrantService(deps.db)
+	edgeLeaseService := service.NewBerthEdgeLeaseService(deps.db, zoneService, grantService, pub, priv, keyID)
+	deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)
 
 	return runCleanup, nil
+}
+
+func parseEd25519KeyBytes(raw []byte) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	switch len(raw) {
+	case ed25519.SeedSize:
+		priv := ed25519.NewKeyFromSeed(raw)
+		return priv.Public().(ed25519.PublicKey), priv, nil
+	case ed25519.PrivateKeySize:
+		// Reconstruct from seed and reject mismatched public halves (Codex Review Medium).
+		reconstructed := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+		if !bytes.Equal(reconstructed[ed25519.SeedSize:], raw[ed25519.SeedSize:]) {
+			return nil, nil, errors.New("inconsistent 64-byte Ed25519 private key: embedded public key does not match seed")
+		}
+		return reconstructed.Public().(ed25519.PublicKey), reconstructed, nil
+	default:
+		return nil, nil, fmt.Errorf("unexpected Ed25519 key length %d", len(raw))
+	}
 }
 
 func loadOrGenerateBerthEdgeSigningKey(cfg *config.Config) (ed25519.PublicKey, ed25519.PrivateKey, error) {
@@ -113,16 +166,7 @@ func loadOrGenerateBerthEdgeSigningKey(cfg *config.Config) (ed25519.PublicKey, e
 		if err != nil {
 			return nil, nil, fmt.Errorf("decode BERTH_EDGE_SIGNING_PRIVATE_KEY: %w", err)
 		}
-		switch len(raw) {
-		case ed25519.SeedSize:
-			priv := ed25519.NewKeyFromSeed(raw)
-			return priv.Public().(ed25519.PublicKey), priv, nil
-		case ed25519.PrivateKeySize:
-			priv := ed25519.PrivateKey(raw)
-			return priv.Public().(ed25519.PublicKey), priv, nil
-		default:
-			return nil, nil, fmt.Errorf("unexpected Ed25519 key length %d", len(raw))
-		}
+		return parseEd25519KeyBytes(raw)
 	}
 
 	keyPath := strings.TrimSpace(os.Getenv("BERTH_EDGE_SIGNING_KEY_FILE"))
@@ -132,10 +176,14 @@ func loadOrGenerateBerthEdgeSigningKey(cfg *config.Config) (ed25519.PublicKey, e
 	if keyPath != "" {
 		if data, err := os.ReadFile(keyPath); err == nil {
 			trimmed := strings.TrimSpace(string(data))
-			if raw, decErr := base64.RawURLEncoding.DecodeString(trimmed); decErr == nil && len(raw) == ed25519.SeedSize {
-				priv := ed25519.NewKeyFromSeed(raw)
-				return priv.Public().(ed25519.PublicKey), priv, nil
+			raw, decErr := base64.RawURLEncoding.DecodeString(trimmed)
+			if decErr != nil {
+				raw, decErr = base64.StdEncoding.DecodeString(trimmed)
 			}
+			if decErr != nil {
+				return nil, nil, fmt.Errorf("decode key file %s: %w", keyPath, decErr)
+			}
+			return parseEd25519KeyBytes(raw)
 		}
 	}
 
