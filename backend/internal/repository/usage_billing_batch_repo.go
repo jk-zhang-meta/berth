@@ -112,6 +112,9 @@ func validateUsageBillingBatch(cmds []*service.UsageBillingCommand) (int64, erro
 		if cmd.RequestID == "" {
 			return 0, service.ErrUsageBillingRequestIDRequired
 		}
+		if cmd.SettlementKind != service.UsageSettlementStandard || cmd.MarketplaceUsage != nil {
+			return 0, errors.New("marketplace usage billing commands must not enter ApplyBatch")
+		}
 		for _, amount := range []float64{cmd.BalanceCost, cmd.SubscriptionCost, cmd.APIKeyQuotaCost, cmd.APIKeyRateLimitCost, cmd.AccountQuotaCost} {
 			if math.IsNaN(amount) || math.IsInf(amount, 0) {
 				return 0, errUsageBillingBatchNonFiniteAmount

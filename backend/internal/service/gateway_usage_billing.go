@@ -68,6 +68,20 @@ type apiKeyAuthCacheInvalidator interface {
 	InvalidateAuthCacheByKey(ctx context.Context, key string)
 }
 
+type apiKeyUserAuthCacheInvalidator interface {
+	InvalidateAuthCacheByUserID(ctx context.Context, userID int64)
+}
+
+func isMarketplaceQuotaBill(p *postUsageBillingParams) bool {
+	if p == nil || p.APIKey == nil || p.APIKey.MarketplaceUsage == nil || p.User == nil {
+		return false
+	}
+	m := p.APIKey.MarketplaceUsage
+	return (m.RentalMode == MarketplaceRentalModeQuota || m.RentalMode == MarketplaceRentalModeHybrid) &&
+		m.OrderID > 0 &&
+		p.User.ID != m.SellerID
+}
+
 type usageLogBestEffortWriter interface {
 	CreateBestEffort(ctx context.Context, log *UsageLog) error
 }
@@ -328,15 +342,30 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		return cmd
 	}
 
-	// Record subscription / balance cost using ActualCost so the group (and any
-	// user-specific) rate multiplier consumes subscription quota at the expected
-	// speed. TotalCost remains the raw (pre-multiplier) value; downstream guards
-	// on "> 0" still correctly skip free subscriptions (RateMultiplier == 0).
-	if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost > 0 {
-		cmd.SubscriptionID = &p.Subscription.ID
-		cmd.SubscriptionCost = p.Cost.ActualCost
-	} else if p.Cost.ActualCost > 0 {
-		cmd.BalanceCost = p.Cost.ActualCost
+	// Record subscription / balance / marketplace-quota cost using ActualCost so
+	// the group (and any user-specific) rate multiplier consumes quota/balance
+	// at the expected speed.
+	if isMarketplaceQuotaBill(p) {
+		cmd.SettlementKind = UsageSettlementMarketplaceQuota
+		cmd.BalanceCost = 0
+		if p.Cost.ActualCost > 0 {
+			cmd.MarketplaceQuotaCost = QuantizeUsageBillingAmount(p.Cost.ActualCost)
+		}
+		if p.APIKey.MarketplaceUsage != nil {
+			cmd.MarketplaceOperationID = p.APIKey.MarketplaceUsage.OperationID
+		}
+	} else {
+		if p.APIKey.MarketplaceUsage != nil {
+			cmd.SettlementKind = UsageSettlementMarketplaceDuration
+		} else {
+			cmd.SettlementKind = UsageSettlementStandard
+		}
+		if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost > 0 {
+			cmd.SubscriptionID = &p.Subscription.ID
+			cmd.SubscriptionCost = p.Cost.ActualCost
+		} else if p.Cost.ActualCost > 0 {
+			cmd.BalanceCost = p.Cost.ActualCost
+		}
 	}
 
 	if p.shouldDeductAPIKeyQuota() {
@@ -393,9 +422,14 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
-	if result.APIKeyQuotaExhausted {
+	if result.APIKeyQuotaExhausted || result.MarketplaceQuotaExhausted {
 		if invalidator, ok := p.APIKeyService.(apiKeyAuthCacheInvalidator); ok && p.APIKey != nil && p.APIKey.Key != "" {
 			invalidator.InvalidateAuthCacheByKey(billingCtx, p.APIKey.Key)
+		}
+		if result.MarketplaceQuotaExhausted {
+			if userInvalidator, ok := p.APIKeyService.(apiKeyUserAuthCacheInvalidator); ok && p.User != nil {
+				userInvalidator.InvalidateAuthCacheByUserID(billingCtx, p.User.ID)
+			}
 		}
 	}
 
@@ -429,7 +463,7 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 		if p.Cost.ActualCost > 0 && p.User != nil && p.APIKey != nil && p.APIKey.GroupID != nil {
 			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, *p.APIKey.GroupID, p.Cost.ActualCost)
 		}
-	} else if p.Cost.ActualCost > 0 && p.User != nil {
+	} else if !isMarketplaceQuotaBill(p) && p.Cost.ActualCost > 0 && p.User != nil {
 		syncBalanceCacheAfterDeduction(ctx, p, deps, result)
 	}
 

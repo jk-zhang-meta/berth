@@ -761,7 +761,7 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	keyCopy, userCopy := *apiKey, *apiKey.User
 	userCopy.AllowedGroups = append(append([]int64(nil), userCopy.AllowedGroups...), *apiKey.GroupID)
 	keyCopy.User = &userCopy
-	snapshot, err := s.marketplace.usageSnapshot(ctx, *apiKey.GroupID)
+	snapshot, err := s.marketplace.usageSnapshotForUser(ctx, apiKey.User.ID, *apiKey.GroupID)
 	if err != nil {
 		return nil, err
 	}

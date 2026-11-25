@@ -18,7 +18,7 @@ func TestRentalAccountWebSocketCyberFailureUsesSecondTurnSnapshot(t *testing.T) 
 			defer func() { _ = db.Close() }()
 			expectSnapshot := func(rate float64, commission int) {
 				mock.ExpectQuery("SELECT EXISTS").WithArgs(int64(1701), int64(4201)).WillReturnRows(sqlmock.NewRows([]string{"managed", "allowed"}).AddRow(true, true))
-				mock.ExpectQuery("SELECT m.group_id").WithArgs(int64(4201)).WillReturnRows(sqlmock.NewRows([]string{"group", "account", "seller", "commission", "rate", "time"}).AddRow(4201, 9901, 5, commission, rate, time.Now()))
+				mock.ExpectQuery("SELECT m.group_id").WithArgs(int64(4201), int64(1701)).WillReturnRows(sqlmock.NewRows([]string{"group", "account", "seller", "commission", "rate", "time", "order_id", "rental_mode"}).AddRow(4201, 9901, 5, commission, rate, time.Now(), int64(0), ""))
 			}
 			expectSnapshot(1, 100)
 			if mode == service.OpenAIWSIngressModeCtxPool {

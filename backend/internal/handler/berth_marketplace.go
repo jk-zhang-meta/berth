@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
 	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
@@ -14,6 +15,7 @@ import (
 
 type MarketplaceHandler struct {
 	market  *service.MarketplaceService
+	payment *service.MarketplacePaymentService
 	db      *sql.DB
 	billing *service.BillingCacheService
 	keys    *service.APIKeyService
@@ -22,6 +24,13 @@ type MarketplaceHandler struct {
 
 func NewMarketplaceHandler(market *service.MarketplaceService, db *sql.DB, billing *service.BillingCacheService, keys *service.APIKeyService, enabled bool) *MarketplaceHandler {
 	return &MarketplaceHandler{market: market, db: db, billing: billing, keys: keys, enabled: enabled}
+}
+
+func (h *MarketplaceHandler) SetMarketplacePayment(payment *service.MarketplacePaymentService) {
+	if h == nil {
+		return
+	}
+	h.payment = payment
 }
 
 func (h *MarketplaceHandler) caller(c *gin.Context) (int64, bool, bool) {
@@ -46,11 +55,21 @@ func marketError(c *gin.Context, err error) {
 		response.Error(c, 404, "资源不存在")
 	case errors.Is(err, service.ErrMarketplaceConflict):
 		response.Error(c, 409, "资源状态已变化或可租份数不足，请刷新后重试")
+	case errors.Is(err, service.ErrMarketplaceTargetBuyerInvalid):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "定向买家无效或不可用", "MARKETPLACE_TARGET_BUYER_INVALID", nil)
 	case errors.Is(err, service.ErrMarketplaceInvalid):
-		response.BadRequest(c, "请检查租期、价格、份数和资源选择")
+		response.BadRequest(c, "请检查租期、额度、价格、份数和资源选择")
+	case errors.Is(err, service.ErrMarketplaceQuotaInsufficient):
+		response.ErrorWithDetails(c, http.StatusPaymentRequired, "租赁剩余额度不足", "MARKETPLACE_QUOTA_INSUFFICIENT", nil)
 	case errors.Is(err, service.ErrMarketplaceInsufficientBalance):
-		response.Error(c, http.StatusPaymentRequired, "余额不足")
+		response.ErrorWithDetails(c, http.StatusPaymentRequired, "余额不足", "MARKETPLACE_BALANCE", nil)
+	case errors.Is(err, service.ErrMarketplacePaymentUnavailable):
+		response.ErrorWithDetails(c, http.StatusServiceUnavailable, "在线支付暂未启用", "MARKETPLACE_PAYMENT_UNAVAILABLE", nil)
 	default:
+		if appErr := new(infraerrors.ApplicationError); errors.As(err, &appErr) {
+			response.ErrorFrom(c, appErr)
+			return
+		}
 		response.Error(c, 500, "租赁服务暂不可用，请稍后重试")
 	}
 }
@@ -173,11 +192,29 @@ func (h *MarketplaceHandler) Checkout(c *gin.Context) {
 	}
 	item, err := h.market.Checkout(c.Request.Context(), u, id, input.Key)
 	if err != nil {
+		if errors.Is(err, service.ErrMarketplaceInsufficientBalance) {
+			h.respondInsufficientBalance(c, u, id)
+			return
+		}
 		marketError(c, err)
 		return
 	}
 	h.invalidate(c, u)
 	response.Success(c, item)
+}
+
+func (h *MarketplaceHandler) respondInsufficientBalance(c *gin.Context, userID, listingID int64) {
+	meta := map[string]string{
+		"payment_enabled": strconv.FormatBool(h.payment != nil && h.payment.IsCheckoutPaymentEnabled(c.Request.Context())),
+	}
+	if h.market != nil {
+		if sf, err := h.market.BalanceShortfall(c.Request.Context(), userID, listingID); err == nil && sf != nil {
+			meta["price_cents"] = strconv.FormatInt(sf.PriceCents, 10)
+			meta["available_balance_cents"] = strconv.FormatInt(sf.AvailableBalanceCents, 10)
+			meta["shortfall_cents"] = strconv.FormatInt(sf.ShortfallCents, 10)
+		}
+	}
+	response.ErrorWithDetails(c, http.StatusPaymentRequired, "余额不足", "MARKETPLACE_BALANCE", meta)
 }
 func (h *MarketplaceHandler) UpdateListing(c *gin.Context) {
 	u, a, ok := h.caller(c)
