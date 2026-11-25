@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -266,4 +266,45 @@ func TestBerthGrokReconcileRequiresAdmin(t *testing.T) {
 		require.Equal(t, http.StatusOK, berthPolicyRequest(h.ReconcileOAuthAccounts, service.RoleAdmin, body).Code)
 		require.Equal(t, 1, reconciler.calls)
 	}
+}
+
+func TestBerthPreviewUpstreamGroupRejectsForeignAccountAndProxy(t *testing.T) {
+	probeSvc := service.NewUpstreamBillingProbeService(nil, nil, nil)
+
+	t.Run("foreign saved account rejected before lookup", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+		h := &AccountHandler{
+			stewards:             service.NewStewardStore(db),
+			upstreamBillingProbe: probeSvc,
+		}
+		mock.ExpectQuery("SELECT 1 FROM account_stewards").
+			WithArgs(int64(42), int64(77)).
+			WillReturnRows(sqlmock.NewRows([]string{"one"}))
+
+		rec := berthPolicyRequest(h.PreviewUpstreamGroup, service.RoleUser, `{"account_id":42}`)
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("foreign proxy rejected before lookup", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { db.Close() })
+		h := &AccountHandler{
+			stewards:             service.NewStewardStore(db),
+			upstreamBillingProbe: probeSvc,
+		}
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(int64(88)).
+			WillReturnRows(sqlmock.NewRows([]string{"verified"}).AddRow(true))
+		mock.ExpectQuery("SELECT 1 FROM proxy_stewards").
+			WithArgs(int64(88), int64(77)).
+			WillReturnRows(sqlmock.NewRows([]string{"one"}))
+
+		rec := berthPolicyRequest(h.PreviewUpstreamGroup, service.RoleUser, `{"platform":"openai","base_url":"https://upstream.example","api_key":"sk-test","proxy_id":88}`)
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 }

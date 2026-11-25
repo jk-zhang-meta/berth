@@ -13,6 +13,8 @@ import (
 	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
 	"github.com/jk-zhang-meta/berth/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type antigravityCompatProtocol uint8
@@ -80,11 +82,11 @@ func (s *AntigravityGatewayService) ForwardAsChatCompletions(
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 	}
 
-	responsesRequest, err := apicompat.ChatCompletionsToResponses(&request)
+	responsesRequest, err := chatCompletionsToResponses(settingServiceConfig(s.settingService), &request)
 	if err != nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
-	claudeRequest, err := apicompat.ResponsesToAnthropicRequest(responsesRequest)
+	claudeRequest, err := convertAntigravityCompatResponsesToAnthropic(responsesRequest)
 	if err != nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -136,7 +138,7 @@ func (s *AntigravityGatewayService) ForwardAsResponses(
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 	}
 
-	claudeRequest, err := apicompat.ResponsesToAnthropicRequest(&request)
+	claudeRequest, err := convertAntigravityCompatResponsesToAnthropic(&request)
 	if err != nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -167,6 +169,48 @@ func (s *AntigravityGatewayService) validateAntigravityCompatAccount(c *gin.Cont
 		"invalid_request_error",
 		"native OAuth account required for antigravity compatibility mode",
 	)
+}
+
+func convertAntigravityCompatResponsesToAnthropic(request *apicompat.ResponsesRequest) (*apicompat.AnthropicRequest, error) {
+	request.Instructions = antigravity.NeutralizeSystemIdentity(request.Instructions)
+	neutralizeText := func(path string, text gjson.Result) error {
+		if text.Type != gjson.String {
+			return nil
+		}
+		neutral := antigravity.NeutralizeSystemIdentity(text.String())
+		if neutral == text.String() {
+			return nil
+		}
+		var err error
+		request.Input, err = sjson.SetBytes(request.Input, path, neutral)
+		return err
+	}
+	for itemIndex, item := range gjson.ParseBytes(request.Input).Array() {
+		role := item.Get("role").String()
+		if role != "system" && role != "developer" {
+			continue
+		}
+		content := item.Get("content")
+		path := fmt.Sprintf("%d.content", itemIndex)
+		if content.Type == gjson.String {
+			if err := neutralizeText(path, content); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !content.IsArray() {
+			continue
+		}
+		for partIndex, part := range content.Array() {
+			switch part.Get("type").String() {
+			case "text", "input_text", "output_text":
+				if err := neutralizeText(fmt.Sprintf("%s.%d.text", path, partIndex), part.Get("text")); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return apicompat.ResponsesToAnthropicRequest(request)
 }
 
 func preserveChatCompletionTokenLimit(request *apicompat.ChatCompletionsRequest, claudeRequest *apicompat.AnthropicRequest) {
@@ -233,7 +277,7 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 	mappedModel := s.getMappedModelForThinkingLevel(
 		account,
 		request.originalModel,
-		geminiThinkingLevelFromClaudeThinking(claudeRequest.Thinking),
+		geminiThinkingLevelFromClaudeBody(request.claudeBody, claudeRequest.Thinking),
 	)
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -243,6 +287,9 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 	thinkingEnabled := claudeRequest.Thinking != nil &&
 		(claudeRequest.Thinking.Type == "enabled" || claudeRequest.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	if geminiImageGenerationDenied(c, nil, request.originalModel, mappedModel) {
+		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
+	}
 
 	if s.tokenProvider == nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
@@ -284,7 +331,7 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 	mappedModel string,
 ) ([]byte, error) {
 	if strings.HasPrefix(strings.ToLower(mappedModel), "gemini-") {
-		body, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
+		body, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody, mappedModel)
 		if err != nil {
 			return nil, err
 		}
@@ -293,6 +340,7 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 			return nil, err
 		}
 		body = ensureGeminiFunctionCallThoughtSignatures(body)
+		body = applyGeminiCompatThinkingConfig(body, claudeBody, mappedModel, claudeRequest != nil && claudeRequest.Stream)
 		body, err = injectIdentityPatchToGeminiRequest(body)
 		if err != nil {
 			return nil, err
@@ -469,8 +517,9 @@ func (s *AntigravityGatewayService) handleAntigravityCompatHTTPError(
 	resp *http.Response,
 ) error {
 	body := s.readUpstreamErrorBody(resp)
-	s.handleUpstreamError(
+	s.handleUpstreamErrorAfterRetryLoop(
 		ctx,
+		c,
 		call.prefix,
 		account,
 		resp.StatusCode,
@@ -620,6 +669,9 @@ func (s *AntigravityGatewayService) mapAntigravityCompatCollectionError(c *gin.C
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
+	}
+	if errors.Is(err, antigravity.ErrMalformedFunctionCall) {
+		return s.writeAntigravityCompatError(c, http.StatusBadGateway, "malformed_function_call", err.Error())
 	}
 	if strings.Contains(err.Error(), "stream data interval timeout") {
 		return s.writeAntigravityCompatError(c, http.StatusBadGateway, "upstream_timeout", "Upstream stream data interval timeout")

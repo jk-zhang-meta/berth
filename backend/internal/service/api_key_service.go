@@ -13,13 +13,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
+	"github.com/dgraph-io/ristretto"
 	"github.com/jk-zhang-meta/berth/internal/config"
 	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/jk-zhang-meta/berth/internal/pkg/ip"
 	"github.com/jk-zhang-meta/berth/internal/pkg/pagination"
 	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
-	"github.com/dgraph-io/ristretto"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -130,6 +131,8 @@ type apiKeyAllByUserIDLister interface {
 
 // APIKeyRateLimitData holds rate limit usage and window state for an API key.
 type APIKeyRateLimitData struct {
+	// QuotaUsed 是总额度已用量（quota_used）。
+	QuotaUsed     float64
 	Usage5h       float64
 	Usage1d       float64
 	Usage7d       float64
@@ -658,11 +661,7 @@ func paginateAPIKeys(keys []APIKey, params pagination.PaginationParams) []APIKey
 		return []APIKey{}
 	}
 	limit := params.Limit()
-	page := params.Page
-	if page < 1 {
-		page = 1
-	}
-	offset := (page - 1) * limit
+	offset := params.Offset()
 	if offset >= len(keys) {
 		return []APIKey{}
 	}
@@ -776,7 +775,9 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 }
 
 func (s *APIKeyService) getByKeyCached(ctx context.Context, key string) (*APIKey, error) {
-	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes {
+	// 非 UTF-8 的 key 不可能存在（生成和自定义的 key 都是 ASCII），且 Postgres 会以
+	// invalid byte sequence 拒绝该参数；直接按不存在处理，避免返回 500。
+	if len(key) == 0 || len(key) > MaxAPIKeyCredentialBytes || !utf8.ValidString(key) {
 		return nil, ErrAPIKeyNotFound
 	}
 	cacheKey := s.authCacheKey(key)
@@ -1079,6 +1080,22 @@ func (s *APIKeyService) IncrementUsage(ctx context.Context, keyID int64) error {
 		_ = s.cache.SetDailyUsageExpiry(ctx, cacheKey, 24*time.Hour)
 	}
 	return nil
+}
+
+// BillingGroupInfo contains the display text for the group bound to an API key.
+type BillingGroupInfo struct {
+	Name        string `json:"group_name"`
+	Description string `json:"group_description"`
+}
+
+// GetBillingGroupInfo loads display text only when requested by the billing endpoint.
+func (s *APIKeyService) GetBillingGroupInfo(ctx context.Context, groupID int64, language string) (*BillingGroupInfo, error) {
+	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	name, description := group.I18n.Localize(language, group.Name, group.Description)
+	return &BillingGroupInfo{Name: name, Description: description}, nil
 }
 
 // GetAvailableGroups 获取用户有权限绑定的分组列表
