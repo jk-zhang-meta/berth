@@ -165,6 +165,9 @@ func RegisterUserRoutes(
 		})
 		registerAccountRoutes(authenticated, h, forbidExport)
 		registerProxyRoutes(authenticated, h, forbidExport)
+		if h.BerthConcurrency != nil {
+			authenticated.GET("/user/pool/recommended-concurrency", h.BerthConcurrency.GetRecommendedConcurrency)
+		}
 		registerOpenAIOAuthRoutes(authenticated, h)
 		registerGeminiOAuthRoutes(authenticated, h)
 		registerAntigravityOAuthRoutes(authenticated, h)

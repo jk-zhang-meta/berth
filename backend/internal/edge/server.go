@@ -348,6 +348,12 @@ func NewEdgeServer(opts EdgeServerOptions) (*EdgeServer, error) {
 		walForGate = opts.GrantWAL
 	}
 	gate := NewAdmissionGate(opts.CentralPubKey, walForGate, refiller, opts.Config.GrantSliceBytes, opts.Config.GrantLowWatermark)
+	if opts.CentralClient != nil {
+		cc := opts.CentralClient
+		gate.SetSnapshotRefresher(func(ctx context.Context) (*edgeproto.RevocationSnapshot, error) {
+			return cc.Heartbeat(ctx, "")
+		})
+	}
 
 	// Single-mux HTTP/2 transport supporting both h2c (local/test) and TLS hops.
 	h2Tr := &http2.Transport{
@@ -1076,23 +1082,32 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 	var ingressBytes, egressBytes int64
 	var bytesMu sync.Mutex
 	var writeRespMu sync.Mutex
+	respClosed := false
+
+	writeRespFrame := func(op byte, payload []byte) error {
+		writeRespMu.Lock()
+		defer writeRespMu.Unlock()
+		if respClosed {
+			return io.ErrClosedPipe
+		}
+		return edgeproto.WriteWSFrame(w, op, payload)
+	}
 
 	sendClose4009 := func(reason string) {
 		payload := make([]byte, 2+len(reason))
 		binary.BigEndian.PutUint16(payload[:2], WSCloseCageRebind)
 		copy(payload[2:], reason)
-		writeRespMu.Lock()
-		_ = edgeproto.WriteWSFrame(w, edgeproto.WSOpClose, payload)
-		writeRespMu.Unlock()
+		_ = writeRespFrame(edgeproto.WSOpClose, payload)
 	}
 
-	done := make(chan struct{}, 2)
+	inboundDone := make(chan struct{})
+	outboundDone := make(chan struct{})
 
 	// Inbound H2 bridge -> Upstream WS (pre-debiting ingress frames!)
 	go func() {
 		defer func() {
 			_ = conn.Close()
-			done <- struct{}{}
+			close(inboundDone)
 		}()
 		for {
 			op, payload, rerr := edgeproto.ReadWSFrame(r.Body, edgeproto.DefaultMaxWSFrameBytes)
@@ -1119,7 +1134,7 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 
 	// Upstream WS -> Outbound H2 bridge (pre-debiting egress frames!)
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer close(outboundDone)
 		for {
 			op, payload, rerr := ReadRFC6455Frame(br, edgeproto.DefaultMaxWSFrameBytes)
 			if rerr != nil {
@@ -1137,9 +1152,7 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 				egressBytes += int64(len(payload))
 				bytesMu.Unlock()
 			}
-			writeRespMu.Lock()
-			werr := edgeproto.WriteWSFrame(w, op, payload)
-			writeRespMu.Unlock()
+			werr := writeRespFrame(op, payload)
 			if werr != nil || op == edgeproto.WSOpClose {
 				return
 			}
@@ -1150,8 +1163,17 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 	case <-admitted.Context().Done():
 		sendClose4009("stream_revoked")
 		_ = conn.Close()
-	case <-done:
+	case <-inboundDone:
+	case <-outboundDone:
+		_ = conn.Close()
 	}
+
+	// Ensure no goroutine can write to ResponseWriter after handler returns.
+	writeRespMu.Lock()
+	respClosed = true
+	writeRespMu.Unlock()
+	_ = conn.Close()
+	<-outboundDone
 
 	bytesMu.Lock()
 	inB, outB := ingressBytes, egressBytes

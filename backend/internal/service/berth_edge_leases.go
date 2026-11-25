@@ -28,7 +28,7 @@ var (
 	ErrEdgeLeaseNotFound          = infraerrors.New(http.StatusNotFound, "EDGE_LEASE_NOT_FOUND", "Edge session lease not found")
 	ErrEdgeLeaseForbidden         = infraerrors.New(http.StatusForbidden, "EDGE_LEASE_FORBIDDEN", "Edge session lease forbidden")
 	ErrEdgeLeaseRevoked           = infraerrors.New(http.StatusForbidden, "EDGE_LEASE_REVOKED", "Edge session lease has been revoked")
-	ErrCageRebindRequired         = infraerrors.New(http.StatusConflict, "cage_rebind_required", "Current cage cohort has no healthy accounts; rebind required")
+	ErrEdgeCageRebindRequired     = infraerrors.New(http.StatusConflict, "cage_rebind_required", "Current cage cohort has no healthy accounts; rebind required")
 	ErrCentralDirectEgressBlocked = infraerrors.New(http.StatusForbidden, "EDGE_DATA_PLANE_STRICT", "Direct AI provider egress from Berth Central is blocked when EDGE_DATA_PLANE_STRICT=true")
 )
 
@@ -155,17 +155,39 @@ type MintLeaseInput struct {
 
 // MintedLeaseCage describes the authoritative Cage metadata returned to AGS v2.
 type MintedLeaseCage struct {
-	CageID      int64  `json:"cage_id"`
-	CageEpoch   int64  `json:"cage_epoch"`
-	Timezone    string `json:"timezone"`
-	CountryCode string `json:"country_code"`
-	Locale      string `json:"locale"`
+	CageID         int64  `json:"cage_id"`
+	CageEpoch      int64  `json:"cage_epoch"`
+	GateEpoch      int64  `json:"gate_epoch"`
+	Timezone       string `json:"timezone"`
+	CountryCode    string `json:"country_code"`
+	Locale         string `json:"locale"`
+	AcceptLanguage string `json:"accept_language,omitempty"`
+	StrictMode     bool   `json:"strict_mode"`
+}
+
+// MintedIngressCandidate mirrors AGS v2's IngressCandidate contract.
+type MintedIngressCandidate struct {
+	NodeID   string `json:"node_id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	ProbeURL string `json:"probe_url"`
+	Weight   int    `json:"weight"`
+}
+
+// MintedLeaseZonePlan mirrors AGS v2's LeaseZonePlan contract.
+type MintedLeaseZonePlan struct {
+	ZoneSlug          string                   `json:"zone_slug"`
+	ZoneSource        string                   `json:"zone_source,omitempty"`
+	IngressCandidates []MintedIngressCandidate `json:"ingress_candidates"`
+	LandingNodeID     int64                    `json:"landing_node_id,omitempty"`
+	LandingNodeName   string                   `json:"landing_node_name,omitempty"`
 }
 
 // MintedLeaseResponse matches the AGS v2 /api/v1/ags/leases JSON contract.
 type MintedLeaseResponse struct {
 	LeaseID       string               `json:"lease_id"`
 	Token         string               `json:"token"`
+	LeaseToken    string               `json:"lease_token"`
 	LeaseEpoch    int64                `json:"lease_epoch"`
 	RevSeq        int64                `json:"rev_seq"`
 	ExpiresAt     time.Time            `json:"expires_at"`
@@ -179,6 +201,7 @@ type MintedLeaseResponse struct {
 	LandingNode   *EdgeNode            `json:"landing_node,omitempty"`
 	RouteChain    []edgeproto.RouteHop `json:"route_chain"`
 	Cage          MintedLeaseCage      `json:"cage"`
+	Zone          *MintedLeaseZonePlan `json:"zone,omitempty"`
 }
 
 // FailoverCandidate describes an eligible fallback account/landing node for failover evaluation.
@@ -503,9 +526,53 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 		return nil, err
 	}
 
+	return buildMintedLeaseResponse(rec, tok, clientZoneSlug, zoneRes.Source, ingressNode, landingNode), nil
+}
+
+func buildMintedLeaseResponse(
+	rec WorkSessionLeaseRecord,
+	tok string,
+	clientZoneSlug string,
+	zoneSource string,
+	ingressNode *EdgeNode,
+	landingNode *EdgeNode,
+) *MintedLeaseResponse {
+	zonePlan := &MintedLeaseZonePlan{
+		ZoneSlug:   clientZoneSlug,
+		ZoneSource: zoneSource,
+	}
+	if ingressNode != nil && strings.TrimSpace(ingressNode.PublicAddr) != "" {
+		rawURL := strings.TrimSpace(ingressNode.PublicAddr)
+		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+			rawURL = "https://" + rawURL
+		}
+		rawURL = strings.TrimRight(rawURL, "/")
+		zonePlan.IngressCandidates = []MintedIngressCandidate{
+			{
+				NodeID:   fmt.Sprintf("%d", ingressNode.ID),
+				Name:     ingressNode.Name,
+				URL:      rawURL,
+				ProbeURL: rawURL + "/healthz",
+				Weight:   100,
+			},
+		}
+	}
+	if landingNode != nil {
+		zonePlan.LandingNodeID = landingNode.ID
+		zonePlan.LandingNodeName = landingNode.Name
+	}
+	acceptLang := "en-US,en;q=0.9"
+	if strings.HasPrefix(strings.ToLower(rec.CohortLocale), "ja") {
+		acceptLang = "ja-JP,ja;q=0.9,en;q=0.8"
+	} else if strings.HasPrefix(strings.ToLower(rec.CohortLocale), "de") {
+		acceptLang = "de-DE,de;q=0.9,en;q=0.8"
+	} else if strings.HasPrefix(strings.ToLower(rec.CohortLocale), "en_gb") {
+		acceptLang = "en-GB,en;q=0.9"
+	}
 	return &MintedLeaseResponse{
 		LeaseID:       rec.LeaseID,
 		Token:         tok,
+		LeaseToken:    tok,
 		LeaseEpoch:    rec.LeaseEpoch,
 		RevSeq:        rec.RevSeq,
 		ExpiresAt:     rec.ExpiresAt,
@@ -514,18 +581,22 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 		AccountID:     rec.AccountID,
 		GrantID:       rec.GrantID,
 		ClientZone:    clientZoneSlug,
-		ZoneSource:    zoneRes.Source,
+		ZoneSource:    zoneSource,
 		IngressNode:   ingressNode,
 		LandingNode:   landingNode,
 		RouteChain:    rec.RouteChain,
 		Cage: MintedLeaseCage{
-			CageID:      rec.CageID,
-			CageEpoch:   rec.CageEpoch,
-			Timezone:    rec.CohortTimezone,
-			CountryCode: rec.CohortCountryCode,
-			Locale:      rec.CohortLocale,
+			CageID:         rec.CageID,
+			CageEpoch:      rec.CageEpoch,
+			GateEpoch:      rec.CageEpoch,
+			Timezone:       rec.CohortTimezone,
+			CountryCode:    rec.CohortCountryCode,
+			Locale:         rec.CohortLocale,
+			AcceptLanguage: acceptLang,
+			StrictMode:     true,
 		},
-	}, nil
+		Zone: zonePlan,
+	}
 }
 
 func (s *BerthEdgeLeaseService) signRecord(rec WorkSessionLeaseRecord, now time.Time) (string, error) {
@@ -595,27 +666,18 @@ func (s *BerthEdgeLeaseService) RenewLease(ctx context.Context, userID int64, le
 	}
 	landingNode, _ := s.zones.GetNode(ctx, updated.LandingNodeID)
 	ingressNode, _ := s.zones.GetNode(ctx, updated.IngressNodeID)
-	return &MintedLeaseResponse{
-		LeaseID:       updated.LeaseID,
-		Token:         tok,
-		LeaseEpoch:    updated.LeaseEpoch,
-		RevSeq:        updated.RevSeq,
-		ExpiresAt:     updated.ExpiresAt,
-		WorkSessionID: updated.WorkSessionID,
-		Platform:      updated.Platform,
-		AccountID:     updated.AccountID,
-		GrantID:       updated.GrantID,
-		IngressNode:   ingressNode,
-		LandingNode:   landingNode,
-		RouteChain:    updated.RouteChain,
-		Cage: MintedLeaseCage{
-			CageID:      updated.CageID,
-			CageEpoch:   updated.CageEpoch,
-			Timezone:    updated.CohortTimezone,
-			CountryCode: updated.CohortCountryCode,
-			Locale:      updated.CohortLocale,
-		},
-	}, nil
+	zoneSlug := ""
+	if ingressNode != nil && ingressNode.ZoneID > 0 {
+		if zones, zErr := s.zones.ListZones(ctx); zErr == nil {
+			for _, z := range zones {
+				if z.ID == ingressNode.ZoneID {
+					zoneSlug = z.Slug
+					break
+				}
+			}
+		}
+	}
+	return buildMintedLeaseResponse(*updated, tok, zoneSlug, "renew", ingressNode, landingNode), nil
 }
 
 // RevokeLease revokes leaseID and immediately bumps monotonic rev_seq.

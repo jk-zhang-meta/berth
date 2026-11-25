@@ -48,6 +48,8 @@ type AdminHandlers struct {
 // Handlers contains all HTTP handlers
 type Handlers struct {
 	Marketplace      *MarketplaceHandler
+	BerthConcurrency *BerthConcurrencyHandler
+	BerthEdge        *BerthEdgeHandler
 	Auth             *AuthHandler
 	User             *UserHandler
 	MCPOAuth         *MCPOAuthHandler

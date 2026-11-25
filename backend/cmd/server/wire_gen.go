@@ -372,6 +372,22 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	handlers := handler.ProvideHandlers(authHandler, userHandler, mcpoAuthHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, channelMonitorV2Handler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, passkeyHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, modelPlazaHandler, asyncImageHandler, batchImageHandler, idempotencyCoordinator, idempotencyCleanupService, openAIQuotaAutoResetService)
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService, settingService, auditLogService)
 	handlers.Marketplace = handler.NewMarketplaceHandler(marketplace, db, billingCacheService, apiKeyService, configConfig.RunMode != config.RunModeSimple)
+	stopBerthV2, err := wireBerthV2(berthV2Deps{
+		db:                   db,
+		cfg:                  configConfig,
+		adminService:         adminService,
+		oAuthRefreshAPI:      oAuthRefreshAPI,
+		marketplace:          marketplace,
+		paymentService:       paymentService,
+		paymentConfigService: paymentConfigService,
+		stewardStore:         stewardStore,
+		cnProviderHandler:    cnProviderHandler,
+		handlers:             handlers,
+	})
+	if err != nil {
+		stopMarketplace()
+		return nil, err
+	}
 	optionalJWTAuthMiddleware := middleware.NewOptionalJWTAuthMiddleware(authService, userService, settingService, auditLogService)
 	adminAuthMiddleware := middleware.NewAdminAuthMiddleware(authService, userService, settingService, auditLogService)
 	apiKeyAuthMiddleware := middleware.NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, configConfig)
@@ -403,7 +419,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		Server:        httpServer,
 		PromptAudit:   promptService,
 		PluginManager: pluginManager,
-		Cleanup:       func() { stopMarketplace(); v() },
+		Cleanup:       func() { stopBerthV2(); stopMarketplace(); v() },
 	}
 	return application, nil
 }

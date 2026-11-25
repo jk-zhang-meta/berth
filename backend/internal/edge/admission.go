@@ -91,6 +91,8 @@ type AdmissionGate struct {
 
 	mu              sync.RWMutex
 	snapshot        *edgeproto.RevocationSnapshot
+	snapRefresher   func(ctx context.Context) (*edgeproto.RevocationSnapshot, error)
+	snapRefreshMu   sync.Mutex
 	grantLimits     map[int64]GrantLimits
 	grantInflight   map[int64]int
 	grantRPM        map[int64]*rpmWindow
@@ -134,6 +136,16 @@ func (g *AdmissionGate) SetNowFunc(fn func() time.Time) {
 	if fn != nil {
 		g.nowFn = fn
 	}
+}
+
+// SetSnapshotRefresher configures an on-demand Central snapshot fetcher invoked
+// strictly when a validly-signed lease carries a newer rev_seq than Edge's local
+// snapshot (ErrRevocationSnapshotBehind), preventing false 503s right after a
+// sibling lease release while remaining strictly fail-closed on stale/missing snapshots.
+func (g *AdmissionGate) SetSnapshotRefresher(fn func(ctx context.Context) (*edgeproto.RevocationSnapshot, error)) {
+	g.mu.Lock()
+	g.snapRefresher = fn
+	g.mu.Unlock()
 }
 
 // SetGrantLimits configures concurrency/RPM caps for a landing grant.
@@ -380,9 +392,28 @@ func (g *AdmissionGate) Admit(
 
 	g.mu.Lock()
 	snap := g.snapshot
-	if err := snap.IsAuthorized(claims, now); err != nil {
+	authErr := snap.IsAuthorized(claims, now)
+	refresher := g.snapRefresher
+	if errors.Is(authErr, edgeproto.ErrRevocationSnapshotBehind) && refresher != nil {
 		g.mu.Unlock()
-		return nil, err
+		g.snapRefreshMu.Lock()
+		g.mu.RLock()
+		stillBehind := g.snapshot == nil || g.snapshot.Seq < claims.RevSeq
+		g.mu.RUnlock()
+		if stillBehind {
+			if freshSnap, rErr := refresher(parentCtx); rErr == nil && freshSnap != nil {
+				_ = g.UpdateSnapshot(freshSnap)
+			}
+		}
+		g.snapRefreshMu.Unlock()
+		g.mu.Lock()
+		now = g.nowFn()
+		snap = g.snapshot
+		authErr = snap.IsAuthorized(claims, now)
+	}
+	if authErr != nil {
+		g.mu.Unlock()
+		return nil, authErr
 	}
 
 	// Enforce per-grant concurrency & RPM limits at the fenced owner.
