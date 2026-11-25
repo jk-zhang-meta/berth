@@ -276,7 +276,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				}
 			} else {
 				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
-				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+				if apiKeyBalanceRejectedForAuth(apiKey, cfg) {
 					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 					return
 				}
@@ -412,6 +412,29 @@ func setGroupContext(c *gin.Context, group *service.Group) {
 // 否则已配置该值的存量部署升级后，0 < balance < reserve 的用户会在所有端点被静默 403。
 func apiKeyBalanceBelowAuthThreshold(balance float64, _ *config.Config) bool {
 	return balance <= 0
+}
+
+// isPrepaidMarketplaceQuotaKey reports whether the API key is backed by an
+// active prepaid quota or hybrid marketplace rental order for a buyer.
+// Prepaid buyers may hold $0.00 balance (only negative debt from other usage blocks).
+func isPrepaidMarketplaceQuotaKey(apiKey *service.APIKey) bool {
+	if apiKey == nil || apiKey.MarketplaceUsage == nil || apiKey.User == nil {
+		return false
+	}
+	m := apiKey.MarketplaceUsage
+	return (m.RentalMode == service.MarketplaceRentalModeQuota || m.RentalMode == service.MarketplaceRentalModeHybrid) &&
+		m.OrderID > 0 &&
+		apiKey.User.ID != m.SellerID
+}
+
+func apiKeyBalanceRejectedForAuth(apiKey *service.APIKey, cfg *config.Config) bool {
+	if apiKey == nil || apiKey.User == nil {
+		return true
+	}
+	if isPrepaidMarketplaceQuotaKey(apiKey) {
+		return apiKey.User.Balance < 0
+	}
+	return apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg)
 }
 
 func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {

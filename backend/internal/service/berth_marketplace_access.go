@@ -89,7 +89,7 @@ func (s *MarketplaceService) GroupAccess(ctx context.Context, userID, groupID in
  JOIN users u ON u.id=$1 WHERE m.group_id=$2 AND g.deleted_at IS NULL AND g.status='active' AND a.deleted_at IS NULL
  AND u.deleted_at IS NULL AND u.status='active' AND (
  u.role='admin' OR (m.owner_user_id=u.id AND EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id=a.id AND st.user_id=u.id)) OR
- EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp())))`, userID, groupID).Scan(&managed, &allowed)
+ EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd))))`, userID, groupID).Scan(&managed, &allowed)
 	return
 }
 
@@ -98,7 +98,7 @@ func (s *MarketplaceService) AccessibleGroupIDs(ctx context.Context, userID int6
  JOIN accounts a ON a.id=m.account_id JOIN users u ON u.id=$1
  WHERE g.deleted_at IS NULL AND g.status='active' AND a.deleted_at IS NULL AND u.deleted_at IS NULL AND u.status='active'
  AND (u.role='admin' OR (m.owner_user_id=u.id AND EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id=a.id AND st.user_id=u.id)) OR
- EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()))
+ EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd)))
  ORDER BY m.group_id`, userID)
 	if err != nil {
 		return nil, err

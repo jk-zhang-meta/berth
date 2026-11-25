@@ -91,7 +91,7 @@ func (c *UsageBillingLaneCombiner) Apply(ctx context.Context, cmd *UsageBillingC
 		return c.repo.Apply(ctx, cmd)
 	}
 	cmd.Normalize()
-	if cmd.RequestID == "" || cmd.MarketplaceUsage != nil {
+	if cmd.RequestID == "" || cmd.SettlementKind != UsageSettlementStandard || cmd.MarketplaceUsage != nil {
 		return c.repo.Apply(ctx, cmd)
 	}
 	if ctx == nil {

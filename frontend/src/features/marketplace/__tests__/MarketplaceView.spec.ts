@@ -3,13 +3,31 @@ import { flushPromises, mount } from '@vue/test-utils'
 import MarketplaceView from '../MarketplaceView.vue'
 import type { Listing, RentalOrder } from '../types'
 
-const { api, auth, showSuccess } = vi.hoisted(() => ({
-  api: { listings: vi.fn(), orders: vi.fn(), resources: vi.fn(), publish: vi.fn(), checkout: vi.fn(), setStatus: vi.fn(), terminate: vi.fn(), service: vi.fn(), settings: vi.fn(), updateSettings: vi.fn(), revenue: vi.fn() },
-  auth: { isAdmin: false, user: { id: 1 } },
+const { api, auth, showSuccess, showError } = vi.hoisted(() => ({
+  api: {
+    listings: vi.fn(),
+    orders: vi.fn(),
+    resources: vi.fn(),
+    publish: vi.fn(),
+    decline: vi.fn(),
+    checkout: vi.fn(),
+    checkoutPayment: vi.fn(),
+    getPaymentIntent: vi.fn(),
+    verifyPaymentIntent: vi.fn(),
+    setStatus: vi.fn(),
+    terminate: vi.fn(),
+    service: vi.fn(),
+    orderUsage: vi.fn(),
+    settings: vi.fn(),
+    updateSettings: vi.fn(),
+    revenue: vi.fn(),
+  },
+  auth: { isAdmin: false, user: { id: 1 }, refreshUser: vi.fn().mockResolvedValue(undefined) },
   showSuccess: vi.fn(),
+  showError: vi.fn(),
 }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
-vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showSuccess, showError: vi.fn() }) }))
+vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showSuccess, showError }) }))
 vi.mock('../api', async importOriginal => ({ ...await importOriginal<typeof import('../api')>(), marketplaceAPI: api }))
 
 const listing: Listing = { id: 10, seller_id: 2, resource_type: 'account', title: '共享账号', description: '用于开发', duration_hours: 24, price_cents: 1250, capacity: 2, active_rentals: 0, status: 'active' }
@@ -21,6 +39,11 @@ function render() {
       AppLayout: { template: '<main><slot /></main>' },
       BaseDialog: { props: ['show', 'title'], template: '<section v-if="show" role="dialog"><h2>{{ title }}</h2><slot /><slot name="footer" /></section>' },
       RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+      MarketplaceCheckoutDialog: {
+        props: ['show', 'listing', 'idempotencyKey', 'shortfall', 'initialIntentId'],
+        emits: ['close', 'completed', 'balanceCredited'],
+        template: '<div v-if="show" data-testid="checkout-payment-dialog" :data-shortfall="shortfall?.shortfall_cents ?? \'\'" :data-key="idempotencyKey" :data-intent="initialIntentId ?? \'\'"></div>',
+      },
     } },
   })
 }
@@ -95,8 +118,11 @@ describe('Marketplace', () => {
     api.resources.mockResolvedValue({ accounts: [{ id: 5, name: '自己的账号', platform: 'openai' }], proxies: [{ id: 6, name: '自己的代理' }] })
     api.checkout.mockResolvedValue(order)
     api.publish.mockResolvedValue(listing)
+    api.decline.mockResolvedValue({ ...listing, status: 'removed' })
+    api.orderUsage.mockResolvedValue({ order_id: 30, rental_mode: 'quota', quota_limit_usd: 20, quota_used_usd: 5, page: 1, page_size: 20, total: 1, items: [{ request_id: 'req-1', amount_usd: 5, quota_used_after_usd: 5, created_at: '2026-09-13T01:00:00Z' }] })
     api.setStatus.mockResolvedValue({ ...listing, status: 'inactive' })
     api.terminate.mockResolvedValue({ ...order, status: 'terminated', refund_cents: 625 })
+    auth.refreshUser.mockResolvedValue(undefined)
   })
   afterEach(() => { vi.unstubAllGlobals(); window.history.replaceState({}, '', '/') })
 
@@ -238,5 +264,110 @@ describe('Marketplace', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('market unavailable')
     expect(wrapper.text()).not.toContain('暂无符合条件的租赁')
     wrapper.unmount()
+  })
+
+  it('publishes quota and targeted hybrid listings with exact fields', async () => {
+    const wrapper = render()
+    await flushPromises()
+    await click(wrapper, '发布租赁')
+    const form = wrapper.get('#market-publish')
+    await form.findAll('select')[1].setValue('5')
+    await form.get('[data-testid="mode-hybrid"]').trigger('click')
+    await form.get('[data-testid="visibility-targeted"]').trigger('click')
+    await form.findAll('input')[0].setValue('定向混合额度包')
+    await form.findAll('input')[1].setValue('48')
+    await form.findAll('input')[2].setValue('15.00')
+    await form.get('[data-testid="quota-limit"]').setValue('25.5')
+    await form.get('[data-testid="target-buyer"]').setValue('buyer@example.com')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(api.publish).toHaveBeenCalledWith({
+      resource_type: 'account',
+      resource_id: 5,
+      title: '定向混合额度包',
+      description: '',
+      duration_hours: 48,
+      rental_mode: 'hybrid',
+      quota_limit_usd: 25.5,
+      visibility: 'targeted',
+      target_buyer: 'buyer@example.com',
+      price_cents: 1500,
+      capacity: 1,
+      usage_rate_multiplier: 1,
+    })
+    wrapper.unmount()
+  })
+
+  it('shows targeted offers badge and lets the target buyer decline an offer', async () => {
+    const targeted: Listing = { ...listing, id: 77, title: '专属定向额度包', rental_mode: 'quota', duration_hours: null, quota_limit_usd: 50, visibility: 'targeted', target_buyer_id: 1 }
+    api.listings.mockResolvedValue([listing, targeted])
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="offers-badge"]').text()).toBe('1')
+    api.listings.mockResolvedValue([targeted])
+    const offersTab = wrapper.findAll('nav button').find(btn => btn.text().includes('定向邀约'))
+    expect(offersTab).toBeTruthy()
+    await offersTab!.trigger('click')
+    await flushPromises()
+    expect(api.listings).toHaveBeenLastCalledWith('offers')
+    await wrapper.get('[data-testid="decline-listing"]').trigger('click')
+    await flushPromises()
+    expect(api.decline).toHaveBeenCalledWith(77)
+    expect(showSuccess).toHaveBeenCalledWith('已拒绝该定向邀约')
+    wrapper.unmount()
+  })
+
+  it('renders quota progress, completion reason badge, mode-specific termination copy, and usage audit dialog', async () => {
+    const quotaOrder: RentalOrder = {
+      ...order,
+      id: 41,
+      rental_mode: 'quota',
+      ends_at: null,
+      quota_limit_usd: 20,
+      quota_used_usd: 15,
+      quota_reserved_usd: 2,
+      completion_reason: 'quota_exhausted',
+      status: 'active',
+    }
+    api.orders.mockResolvedValue([quotaOrder])
+    const wrapper = render()
+    await flushPromises()
+    await click(wrapper, '我的租赁')
+    expect(wrapper.get('[data-testid="quota-progress"]').text()).toContain('$15.00 / $20.00')
+    expect(wrapper.get('[data-testid="quota-progress"]').text()).toContain('75%')
+    expect(wrapper.get('[data-testid="completion-reason-badge"]').text()).toBe('已用尽额度')
+    expect(wrapper.text()).toContain('额度用尽即止')
+
+    await click(wrapper, '额度明细')
+    expect(api.orderUsage).toHaveBeenCalledWith(41)
+    expect(wrapper.get('[role="dialog"]').text()).toContain('req-1')
+
+    await click(wrapper, '提前终止')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('已消耗额度的比例租金结算给出租方')
+    wrapper.unmount()
+  })
+
+  it('opens MarketplaceCheckoutDialog on 402 shortfall error with payment_enabled=true and resumes from query intent_id', async () => {
+    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValue('shortfall-key') })
+    api.checkout.mockRejectedValueOnce({
+      status: 402,
+      reason: 'MARKETPLACE_BALANCE',
+      metadata: { price_cents: 1250, available_balance_cents: 400, shortfall_cents: 850, payment_enabled: true },
+    })
+    const wrapper = render()
+    await flushPromises()
+    await click(wrapper, '租用此资源')
+    await wrapper.get('[data-testid="confirm-checkout"]').trigger('click')
+    await flushPromises()
+    const paymentDialog = wrapper.get('[data-testid="checkout-payment-dialog"]')
+    expect(paymentDialog.attributes('data-shortfall')).toBe('850')
+    expect(paymentDialog.attributes('data-key')).toBe('shortfall-key')
+    wrapper.unmount()
+
+    window.history.replaceState({}, '', '/marketplace?payment_intent_id=88')
+    const resumed = render()
+    await flushPromises()
+    expect(resumed.get('[data-testid="checkout-payment-dialog"]').attributes('data-intent')).toBe('88')
+    resumed.unmount()
   })
 })

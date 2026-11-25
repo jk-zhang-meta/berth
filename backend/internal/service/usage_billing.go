@@ -15,13 +15,28 @@ import (
 var ErrUsageBillingRequestIDRequired = errors.New("usage billing request_id is required")
 var ErrUsageBillingRequestConflict = errors.New("usage billing request fingerprint conflict")
 
+// UsageSettlementKind explicitly distinguishes standard balance/subscription
+// billing from marketplace duration (pay-as-you-go revenue split) and
+// marketplace quota/hybrid prepaid package billing so the lane combiner never
+// relies on a nullable pointer to decide batching safety.
+type UsageSettlementKind string
+
+const (
+	UsageSettlementStandard            UsageSettlementKind = "standard"
+	UsageSettlementMarketplaceDuration UsageSettlementKind = "marketplace_duration"
+	UsageSettlementMarketplaceQuota    UsageSettlementKind = "marketplace_quota"
+)
+
 // UsageBillingCommand describes one billable request that must be applied at most once.
 type UsageBillingCommand struct {
-	MarketplaceUsage   *MarketplaceUsageSnapshot
-	RequestID          string
-	APIKeyID           int64
-	RequestFingerprint string
-	RequestPayloadHash string
+	SettlementKind         UsageSettlementKind
+	MarketplaceUsage       *MarketplaceUsageSnapshot
+	MarketplaceQuotaCost   float64
+	MarketplaceOperationID string
+	RequestID              string
+	APIKeyID               int64
+	RequestFingerprint     string
+	RequestPayloadHash     string
 
 	UserID              int64
 	AccountID           int64
@@ -55,12 +70,35 @@ func (c *UsageBillingCommand) Normalize() {
 		return
 	}
 	c.RequestID = strings.TrimSpace(c.RequestID)
+	c.MarketplaceOperationID = strings.TrimSpace(c.MarketplaceOperationID)
+	c.SettlementKind = resolveUsageSettlementKind(c)
 	if strings.TrimSpace(c.RequestFingerprint) == "" {
 		c.RequestFingerprint = buildUsageBillingFingerprint(c)
 	}
 	// 量化必须在指纹计算之后：指纹是请求幂等键，保持由原始金额派生可以避免
 	// 升级前后同一 request_id 的重试算出不同指纹而被判为 fingerprint conflict。
 	c.quantizeMonetaryFields()
+}
+
+func resolveUsageSettlementKind(c *UsageBillingCommand) UsageSettlementKind {
+	if c == nil {
+		return UsageSettlementStandard
+	}
+	switch c.SettlementKind {
+	case UsageSettlementStandard, UsageSettlementMarketplaceDuration, UsageSettlementMarketplaceQuota:
+		return c.SettlementKind
+	}
+	if c.MarketplaceUsage != nil {
+		m := c.MarketplaceUsage
+		if (m.RentalMode == MarketplaceRentalModeQuota || m.RentalMode == MarketplaceRentalModeHybrid) && m.OrderID > 0 && c.UserID != m.SellerID {
+			return UsageSettlementMarketplaceQuota
+		}
+		return UsageSettlementMarketplaceDuration
+	}
+	if c.MarketplaceQuotaCost > 0 || c.MarketplaceOperationID != "" {
+		return UsageSettlementMarketplaceQuota
+	}
+	return UsageSettlementStandard
 }
 
 // UsageBillingMonetaryScale 是所有计费金额的规范小数位数，
@@ -92,6 +130,7 @@ func (c *UsageBillingCommand) quantizeMonetaryFields() {
 	c.APIKeyQuotaCost = QuantizeUsageBillingAmount(c.APIKeyQuotaCost)
 	c.APIKeyRateLimitCost = QuantizeUsageBillingAmount(c.APIKeyRateLimitCost)
 	c.AccountQuotaCost = QuantizeUsageBillingAmount(c.AccountQuotaCost)
+	c.MarketplaceQuotaCost = QuantizeUsageBillingAmount(c.MarketplaceQuotaCost)
 }
 
 // QuantizeUsageBillingAmount 把金额舍入到 UsageBillingMonetaryScale 位小数，
@@ -140,6 +179,13 @@ func buildUsageBillingFingerprint(c *UsageBillingCommand) string {
 	}
 	if m := c.MarketplaceUsage; m != nil {
 		raw += fmt.Sprintf("|market:%d:%d:%d:%d", m.GroupID, m.AccountID, m.SellerID, m.CommissionBPS)
+		if m.OrderID > 0 || m.RentalMode != "" {
+			raw += fmt.Sprintf(":%d:%s", m.OrderID, strings.TrimSpace(m.RentalMode))
+		}
+	}
+	kind := resolveUsageSettlementKind(c)
+	if kind != UsageSettlementStandard && (kind == UsageSettlementMarketplaceQuota || c.MarketplaceQuotaCost > 0 || strings.TrimSpace(c.MarketplaceOperationID) != "") {
+		raw += fmt.Sprintf("|settle:%s:%0.10f:%s", kind, c.MarketplaceQuotaCost, strings.TrimSpace(c.MarketplaceOperationID))
 	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
@@ -172,12 +218,14 @@ type AccountQuotaState struct {
 }
 
 type UsageBillingApplyResult struct {
-	MarketplaceSellerID  int64
-	Applied              bool
-	APIKeyQuotaExhausted bool
-	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
-	BalanceOverdrafted   bool               // true when the sufficient-balance guard missed and debt was still recorded
-	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
+	MarketplaceSellerID       int64
+	MarketplaceQuotaExhausted bool
+	MarketplaceSettledOrderID int64
+	Applied                   bool
+	APIKeyQuotaExhausted      bool
+	NewBalance                *float64           // post-deduction balance (nil = no balance deduction)
+	BalanceOverdrafted        bool               // true when the sufficient-balance guard missed and debt was still recorded
+	QuotaState                *AccountQuotaState // post-increment quota state (nil = no quota increment)
 }
 
 // BatchImageBalanceHoldCommand describes an idempotent balance hold operation.

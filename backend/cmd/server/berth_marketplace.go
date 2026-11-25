@@ -54,18 +54,23 @@ func startBerthMarketplace(db *sql.DB, market *service.MarketplaceService, stand
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(time.Minute)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			settleCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-			_, err := market.SettleDue(settleCtx)
-			if err == nil {
-				_, err = market.SettleUsageReceivables(settleCtx)
-			}
-			stop()
-			if err != nil && ctx.Err() == nil {
+			if _, err := market.SettleDue(settleCtx); err != nil && ctx.Err() == nil {
 				log.Printf("[Marketplace] settlement retry required: %v", err)
 			}
+			if _, err := market.SettleUsageReceivables(settleCtx); err != nil && ctx.Err() == nil {
+				log.Printf("[Marketplace] usage receivables retry required: %v", err)
+			}
+			if _, err := market.ReclaimExpiredQuotaReservations(settleCtx, time.Now()); err != nil && ctx.Err() == nil {
+				log.Printf("[Marketplace] quota reservation reclaim retry required: %v", err)
+			}
+			if _, err := market.ReconcilePaidIntents(settleCtx); err != nil && ctx.Err() == nil {
+				log.Printf("[Marketplace] paid payment intent reconciliation retry required: %v", err)
+			}
+			stop()
 			select {
 			case <-ctx.Done():
 				return
