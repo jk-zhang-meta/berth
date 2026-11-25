@@ -1152,6 +1152,25 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
   return data
 }
 
+export async function getRecommendedConcurrency(params: {
+  platform: string
+  type: string
+  plan_tier?: string
+  proxy_id?: number | null
+}): Promise<import('@/types').RecommendedConcurrencyResponse> {
+  const query: Record<string, string | number> = {
+    platform: params.platform,
+    type: params.type
+  }
+  if (params.plan_tier) query.plan_tier = params.plan_tier
+  if (params.proxy_id && params.proxy_id > 0) query.proxy_id = params.proxy_id
+  const { data } = await apiClient.get<import('@/types').RecommendedConcurrencyResponse>(
+    '/admin/accounts/recommended-concurrency',
+    { params: query }
+  )
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -1221,7 +1240,8 @@ export const accountsAPI = {
   updateOpenCodeGoUsageSettings,
   getOpenCodeGoUsage,
   setOpenCodeGoUsageAutoRefresh,
-  refreshOpenCodeGoUsage
+  refreshOpenCodeGoUsage,
+  getRecommendedConcurrency
 }
 
 export default accountsAPI

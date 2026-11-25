@@ -312,18 +312,36 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	} else if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
 	}
+	// Berth Track B (Bug B4): For Anthropic requests without metadata.user_id / cache_control,
+	// resolve a turn-invariant sticky session key via DigestSessionStore + static prefix anchor
+	// so multi-turn conversations stay on the same warm KV cache account.
+	var anthropicDigestChain, anthropicPrefixHash, anthropicMatchedChain string
+	var anthropicDigestBoundAccountID int64
 	sessionKey := sessionHash
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
+	} else if platform != service.PlatformGemini {
+		resolvedKey, dChain, pHash, mChain, dAccID := h.gatewayService.ResolveAnthropicStickySessionKey(c.Request.Context(), apiKey.GroupID, parsedReq)
+		if resolvedKey != "" {
+			sessionKey = resolvedKey
+		}
+		anthropicDigestChain = dChain
+		anthropicPrefixHash = pHash
+		anthropicMatchedChain = mChain
+		anthropicDigestBoundAccountID = dAccID
 	}
 	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
 		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), platform,
 	))
+	attachBerthSchedulerContext(c, len(body))
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64
 	if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
+		if sessionBoundAccountID == 0 && anthropicDigestBoundAccountID > 0 {
+			sessionBoundAccountID = anthropicDigestBoundAccountID
+		}
 		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
 			zap.String("session_key", sessionKey),
@@ -345,6 +363,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+		configureBerthFailoverState(c, fs, sessionKey)
 
 		// 单账号分组首次 503 就不设模型限流标记，避免设 29s 限流导致后续请求连续快速失败；
 		// 是否单账号分组在 antigravity 账号遇到 503 或模型限流预检查时才判定。
@@ -355,6 +374,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
+					return
+				}
+				var rebindErr *service.ErrCageRebindRequired
+				if errors.As(err, &rebindErr) {
+					writeCageRebindRequiredResponse(c, rebindErr, streamStarted, h.handleStreamingAwareError)
 					return
 				}
 				if len(fs.FailedAccountIDs) == 0 {
@@ -463,15 +487,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
-				accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
-				if err != nil {
-					reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-					releaseWait()
-					h.handleConcurrencyError(c, err, "proxy", streamStarted)
-					return
-				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
+			}
+			// Berth Track B (Bug B10): Unconditionally enforce landing proxy concurrency & RPM
+			// admission on BOTH fast-path (selection.Acquired == true) and slow-path!
+			accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+			if err != nil {
+				reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				h.handleConcurrencyError(c, err, "proxy", streamStarted)
+				return
 			}
 			// 终检与准入后绑定使用选号结果携带的门（见 responses 同名注释）。
 			admissionCtx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)
@@ -493,12 +518,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection.Account = latest
 			// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已
 			// 抢槽的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
-			if selection.ProfitGateActive() || !selection.Acquired {
+			if !selection.StickySpillover && (selection.ProfitGateActive() || !selection.Acquired) {
 				if err := h.gatewayService.BindStickySessionAfterProfitAdmission(admissionCtx, apiKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
 			h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
+			applyBerthSelectionHeaders(c, h.gatewayService, selection)
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
@@ -541,6 +567,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					case FailoverContinue:
 						continue
 					case FailoverExhausted:
+						markSessionToxicHeader(c, fs.SessionToxic, streamStarted)
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
 						return
 					case FailoverCanceled:
@@ -667,6 +694,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		configureBerthFailoverState(c, fs, sessionKey)
 		retryWithFallback := false
 
 		for {
@@ -687,6 +715,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
+					return
+				}
+				var rebindErr *service.ErrCageRebindRequired
+				if errors.As(err, &rebindErr) {
+					writeCageRebindRequiredResponse(c, rebindErr, streamStarted, h.handleStreamingAwareError)
 					return
 				}
 				if len(fs.FailedAccountIDs) == 0 {
@@ -806,15 +839,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
-				accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
-				if err != nil {
-					reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-					releaseWait()
-					h.handleConcurrencyError(c, err, "proxy", streamStarted)
-					return
-				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
+			}
+			// Berth Track B (Bug B10): Unconditionally enforce landing proxy concurrency & RPM
+			// admission on BOTH fast-path (selection.Acquired == true) and slow-path!
+			accountReleaseFunc, err = h.concurrencyHelper.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+			if err != nil {
+				reqLog.Warn("gateway.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				h.handleConcurrencyError(c, err, "proxy", streamStarted)
+				return
 			}
 			// 终检与准入后绑定使用选号结果携带的门（见 responses 同名注释）。
 			admissionCtx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)
@@ -841,12 +875,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			sessionSlotAccounts[account.ID] = account
 			// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已
 			// 抢槽的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
-			if selection.ProfitGateActive() || !selection.Acquired {
+			if !selection.StickySpillover && (selection.ProfitGateActive() || !selection.Acquired) {
 				if err := h.gatewayService.BindStickySessionAfterProfitAdmission(admissionCtx, currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
 			h.gatewayService.BindWorkSessionAccount(admissionCtx, account.ID)
+			applyBerthSelectionHeaders(c, h.gatewayService, selection)
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
@@ -1086,6 +1121,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						delete(sessionSlotAccounts, account.ID)
 						continue
 					case FailoverExhausted:
+						markSessionToxicHeader(c, fs.SessionToxic, streamStarted)
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
 						return
 					case FailoverCanceled:
@@ -1131,12 +1167,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 绑定粘性会话（成功转发后绑定/刷新）
 			// - 无现有绑定（首次请求）：创建绑定
 			// - 选中账号与粘性账号一致：刷新 TTL
-			// - 粘性账号因负载/RPM 被跳过、选中了其他账号：不覆盖原绑定，
+			// - 粘性账号因负载/RPM 被跳过、选中了其他账号（StickySpillover）：不覆盖原绑定，
 			//   下次请求粘性账号恢复后仍可命中
-			if sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
+			if !selection.StickySpillover && sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
 				// Forward has completed; finish the bounded write even if the client disconnects.
 				bindCtx, cancelBind := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)
 				bindErr := h.gatewayService.BindStickySession(bindCtx, currentAPIKey.GroupID, sessionKey, account.ID)
+				if anthropicDigestChain != "" && anthropicPrefixHash != "" {
+					_ = h.gatewayService.SaveAnthropicSession(bindCtx, derefGroupID(currentAPIKey.GroupID), anthropicPrefixHash, anthropicDigestChain, sessionKey, account.ID, anthropicMatchedChain)
+				}
 				cancelBind()
 				if bindErr != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(bindErr))

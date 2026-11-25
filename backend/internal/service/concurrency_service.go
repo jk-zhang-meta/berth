@@ -378,12 +378,12 @@ type UserLoadInfo struct {
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
-	// If maxConcurrency is 0 or negative, no limit
+	// Fail-closed safety floor: accounts must never run with unlimited concurrency.
 	if maxConcurrency <= 0 {
-		return &AcquireResult{
-			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
-		}, nil
+		maxConcurrency = 1
+	}
+	if s == nil || s.cache == nil {
+		return nil, errors.New("concurrency cache is unavailable")
 	}
 
 	// Generate unique request ID for this slot
@@ -703,6 +703,93 @@ func zeroProxyConcurrencyMap(proxyIDs []int64) map[int64]int {
 		result[proxyID] = 0
 	}
 	return result
+}
+
+// ProxyWithCapacity describes a proxy's configured concurrency and RPM limits for batch load checks.
+type ProxyWithCapacity struct {
+	ID             int64
+	MaxConcurrency int
+	MaxRPM         int
+}
+
+// ProxyLoadInfo reports real-time occupancy and saturation status for a landing proxy.
+type ProxyLoadInfo struct {
+	ProxyID            int64
+	CurrentConcurrency int
+	CurrentRPM         int
+	MaxConcurrency     int
+	MaxRPM             int
+	Saturated          bool
+	HeadroomRatio      float64 // 0.0 (saturated) .. 1.0 (idle/uncapped)
+}
+
+// GetProxiesLoadBatch batch-fetches live concurrency and RPM for a set of proxies
+// and computes saturation + headroom ratio for Tier 0 pre-filtering and Tier 3 scoring.
+func (s *ConcurrencyService) GetProxiesLoadBatch(ctx context.Context, proxies []ProxyWithCapacity) (map[int64]*ProxyLoadInfo, error) {
+	out := make(map[int64]*ProxyLoadInfo, len(proxies))
+	if len(proxies) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, 0, len(proxies))
+	seen := make(map[int64]struct{}, len(proxies))
+	for _, p := range proxies {
+		if p.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[p.ID]; ok {
+			continue
+		}
+		seen[p.ID] = struct{}{}
+		ids = append(ids, p.ID)
+	}
+	ccMap, _ := s.GetProxyConcurrencyBatch(ctx, ids)
+	rpmMap, _ := s.GetProxyRPMBatch(ctx, ids)
+
+	for _, p := range proxies {
+		if p.ID <= 0 {
+			continue
+		}
+		curCC := ccMap[p.ID]
+		curRPM := rpmMap[p.ID]
+		saturated := false
+		headroom := 1.0
+
+		if p.MaxConcurrency > 0 {
+			if curCC >= p.MaxConcurrency {
+				saturated = true
+				headroom = 0
+			} else {
+				r := 1.0 - float64(curCC)/float64(p.MaxConcurrency)
+				if r < headroom {
+					headroom = r
+				}
+			}
+		}
+		if p.MaxRPM > 0 {
+			if curRPM >= p.MaxRPM {
+				saturated = true
+				headroom = 0
+			} else {
+				r := 1.0 - float64(curRPM)/float64(p.MaxRPM)
+				if r < headroom {
+					headroom = r
+				}
+			}
+		}
+		if headroom < 0 {
+			headroom = 0
+		}
+		out[p.ID] = &ProxyLoadInfo{
+			ProxyID:            p.ID,
+			CurrentConcurrency: curCC,
+			CurrentRPM:         curRPM,
+			MaxConcurrency:     p.MaxConcurrency,
+			MaxRPM:             p.MaxRPM,
+			Saturated:          saturated,
+			HeadroomRatio:      headroom,
+		}
+	}
+	return out, nil
 }
 
 // ============================================

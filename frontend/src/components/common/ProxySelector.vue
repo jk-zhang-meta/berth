@@ -38,7 +38,7 @@
             />
           </div>
           <button
-            v-if="proxies.length > 0"
+            v-if="hasTestableProxies"
             type="button"
             @click.stop="handleBatchTest"
             :disabled="batchTesting"
@@ -66,8 +66,9 @@
 
         <!-- Options list -->
         <div class="select-options">
-          <!-- No Proxy option -->
+          <!-- No Proxy option (admin only when allowDirect is true) -->
           <div
+            v-if="allowDirect"
             @click="selectOption(null)"
             :class="['select-option', modelValue === null && 'select-option-selected']"
           >
@@ -85,6 +86,12 @@
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="truncate font-medium">{{ proxy.name }}</span>
+                <span
+                  v-if="isRentalProxy(proxy)"
+                  class="inline-flex flex-shrink-0 items-center rounded bg-indigo-100 px-1.5 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                >
+                  Rented
+                </span>
                 <!-- Account count badge -->
                 <span
                   v-if="proxy.account_count !== undefined"
@@ -131,12 +138,18 @@
                 </template>
               </div>
               <div class="truncate text-xs text-gray-500 dark:text-gray-400">
-                {{ proxy.protocol }}://{{ proxy.host }}:{{ proxy.port }}
+                <template v-if="isRentalProxy(proxy)">
+                  {{ formatRentalProxySubtitle(proxy) }}
+                </template>
+                <template v-else>
+                  {{ proxy.protocol }}://{{ proxy.host }}:{{ proxy.port }}
+                </template>
               </div>
             </div>
 
-            <!-- Individual test button -->
+            <!-- Individual test button (hidden for redacted rented proxies) -->
             <button
+              v-if="!isRentalProxy(proxy)"
               type="button"
               @click.stop="handleTestProxy(proxy)"
               :disabled="testingProxyIds.has(proxy.id)"
@@ -207,11 +220,23 @@ interface Props {
   modelValue: number | null
   proxies: Proxy[]
   disabled?: boolean
+  allowDirect?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  disabled: false
+  disabled: false,
+  allowDirect: true
 })
+
+const isRentalProxy = (proxy: Proxy): boolean => Boolean(proxy.is_rental) || !proxy.host
+
+const formatRentalProxySubtitle = (proxy: Proxy): string => {
+  const parts = [proxy.country_code || proxy.country, proxy.timezone].filter(Boolean)
+  if (parts.length > 0) return `Rented · ${parts.join(' · ')}`
+  return `Rented (${proxy.protocol || 'proxy'})`
+}
+
+const hasTestableProxies = computed(() => props.proxies.some((p) => !isRentalProxy(p)))
 
 const emit = defineEmits<{
   'update:modelValue': [value: number | null]
@@ -234,11 +259,15 @@ const selectedProxy = computed(() => {
 
 const selectedLabel = computed(() => {
   if (!selectedProxy.value) {
-    return t('admin.accounts.noProxy')
+    return props.allowDirect ? t('admin.accounts.noProxy') : `${t('admin.accounts.proxy')} *`
   }
   const proxy = selectedProxy.value
   const accountText = proxy.account_count !== undefined ? ` [${proxy.account_count} 账号]` : ''
   const concurrencySuffix = ` [${t('admin.proxies.columns.concurrency')}: ${proxy.concurrency ?? 0}]`
+  if (isRentalProxy(proxy)) {
+    const exitHint = proxy.timezone || proxy.country_code || proxy.country || 'Rented'
+    return `${proxy.name} (${exitHint})${accountText}${concurrencySuffix}`
+  }
   return `${proxy.name} (${proxy.protocol}://${proxy.host}:${proxy.port})${accountText}${concurrencySuffix}`
 })
 
@@ -248,9 +277,10 @@ const filteredProxies = computed(() => {
   }
   const query = searchQuery.value.toLowerCase()
   return props.proxies.filter((proxy) => {
-    const name = proxy.name.toLowerCase()
-    const host = proxy.host.toLowerCase()
-    return name.includes(query) || host.includes(query)
+    const name = (proxy.name || '').toLowerCase()
+    const host = (proxy.host || '').toLowerCase()
+    const tz = (proxy.timezone || '').toLowerCase()
+    return name.includes(query) || host.includes(query) || tz.includes(query)
   })
 })
 
@@ -295,12 +325,13 @@ const handleTestProxy = async (proxy: Proxy) => {
 }
 
 const handleBatchTest = async () => {
-  if (batchTesting.value || props.proxies.length === 0) return
+  const testable = props.proxies.filter((p) => !isRentalProxy(p))
+  if (batchTesting.value || testable.length === 0) return
 
   batchTesting.value = true
 
-  // Test all proxies in parallel
-  const testPromises = props.proxies.map(handleTestProxy)
+  // Test all non-rented proxies in parallel
+  const testPromises = testable.map(handleTestProxy)
 
   await Promise.all(testPromises)
   batchTesting.value = false

@@ -83,7 +83,7 @@ func TestAccountHandlerSimpleModeUsesMinimalGroupReferences(t *testing.T) {
 	svc.accounts = []service.Account{account}
 	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.cfg = &config.Config{RunMode: config.RunModeSimple}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.GET("/accounts", h.List)
 	r.GET("/accounts/:id", h.GetByID)
 	r.POST("/accounts", h.Create)
@@ -147,7 +147,7 @@ func TestAccountHandlerSimpleModeLitePreservesCompactShapeAndETag(t *testing.T) 
 	svc.accounts = []service.Account{account}
 	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.cfg = &config.Config{RunMode: config.RunModeSimple}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.GET("/accounts", h.List)
 
 	res := httptest.NewRecorder()
@@ -184,7 +184,7 @@ func TestAccountHandlerSimpleModeRejectsCompositeGroupBindingsBeforeWrites(t *te
 			svc.groups = []service.Group{{ID: 7, Platform: service.PlatformAnthropic}, {ID: 9, Platform: service.PlatformComposite}}
 			h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			h.cfg = &config.Config{RunMode: config.RunModeSimple}
-			r := gin.New()
+			r := newAdminTestRouter()
 			r.POST("/accounts", h.Create)
 			r.PUT("/accounts/:id", h.Update)
 			r.POST("/accounts/bulk-update", h.BulkUpdate)
@@ -205,7 +205,7 @@ func TestAccountHandlerSimpleModePreservesBasicGroupBinding(t *testing.T) {
 	svc.groups = []service.Group{{ID: 7, Platform: service.PlatformAnthropic}}
 	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.cfg = &config.Config{RunMode: config.RunModeSimple}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.POST("/accounts", h.Create)
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/accounts", bytes.NewBufferString(`{"name":"account","platform":"anthropic","type":"apikey","credentials":{"key":"x"},"group_ids":[7]}`))
@@ -220,7 +220,7 @@ func TestAccountHandlerSimpleModeBatchPrevalidatesAllGroupsAtomically(t *testing
 	svc.groups = []service.Group{{ID: 7, Platform: service.PlatformAnthropic}, {ID: 9, Platform: service.PlatformComposite}}
 	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.cfg = &config.Config{RunMode: config.RunModeSimple}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.POST("/accounts/batch", h.BatchCreate)
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/accounts/batch", bytes.NewBufferString(`{"accounts":[{"name":"first","platform":"anthropic","type":"apikey","credentials":{"key":"x"},"group_ids":[7]},{"name":"second","platform":"anthropic","type":"apikey","credentials":{"key":"y"},"group_ids":[9]}]}`))

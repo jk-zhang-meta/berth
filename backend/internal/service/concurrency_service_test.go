@@ -250,14 +250,24 @@ func TestAcquireAccountSlot_Failure(t *testing.T) {
 }
 
 func TestAcquireAccountSlot_UnlimitedConcurrency(t *testing.T) {
-	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
-
+	// Berth Track B: maxConcurrency <= 0 must fail closed to floor 1 (never unlimited!).
+	cacheDeny := &stubConcurrencyCacheForTest{acquireResult: false}
+	svcDeny := NewConcurrencyService(cacheDeny)
 	for _, maxConcurrency := range []int{0, -1} {
-		result, err := svc.AcquireAccountSlot(context.Background(), 1, maxConcurrency)
+		result, err := svcDeny.AcquireAccountSlot(context.Background(), 1, maxConcurrency)
 		require.NoError(t, err)
-		require.True(t, result.Acquired, "maxConcurrency=%d 应无限制通过", maxConcurrency)
-		require.NotNil(t, result.ReleaseFunc, "ReleaseFunc 应为 no-op 函数")
+		require.False(t, result.Acquired, "maxConcurrency=%d must clamp to 1 and obey cache admission", maxConcurrency)
+		require.Nil(t, result.ReleaseFunc)
 	}
+
+	cacheAllow := &stubConcurrencyCacheForTest{acquireResult: true}
+	svcAllow := NewConcurrencyService(cacheAllow)
+	result, err := svcAllow.AcquireAccountSlot(context.Background(), 1, 0)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.NotNil(t, result.ReleaseFunc)
+	result.ReleaseFunc()
+	require.Equal(t, []int64{1}, cacheAllow.releasedAccountIDs)
 }
 
 func TestAcquireAccountSlot_CacheError(t *testing.T) {

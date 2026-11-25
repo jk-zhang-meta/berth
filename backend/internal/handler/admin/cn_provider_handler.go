@@ -18,6 +18,7 @@ import (
 type CNProviderHandler struct {
 	quotaService   *service.CNProviderQuotaService
 	balanceService *service.CNProviderBalanceService
+	stewards       *service.StewardStore
 }
 
 func NewCNProviderHandler(
@@ -37,6 +38,9 @@ func (h *CNProviderHandler) QueryQuota(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !requireStewardAccount(c, h.stewards, accountID) {
+		return
+	}
 	if h == nil || h.quotaService == nil {
 		response.BadRequest(c, "cn provider quota service is not enabled")
 		return
@@ -54,6 +58,9 @@ func (h *CNProviderHandler) QueryBalance(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !requireStewardAccount(c, h.stewards, accountID) {
 		return
 	}
 	if h == nil || h.balanceService == nil {

@@ -26,6 +26,7 @@ type systemOnePolicyAccountRepo struct {
 	account          *Account
 	rateLimitedCalls int
 	overloadedCalls  int
+	tempUnschedCalls int
 	errorCalls       int
 }
 
@@ -40,6 +41,11 @@ func (r *systemOnePolicyAccountRepo) SetRateLimited(context.Context, int64, time
 
 func (r *systemOnePolicyAccountRepo) SetOverloaded(context.Context, int64, time.Time) error {
 	r.overloadedCalls++
+	return nil
+}
+
+func (r *systemOnePolicyAccountRepo) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
+	r.tempUnschedCalls++
 	return nil
 }
 
@@ -310,12 +316,14 @@ func TestForwardSystemOneRequestErrorsNeverTouchAccountState(t *testing.T) {
 
 func TestForwardSystemOneAccountLevelFailuresFailOver(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		status    int
-		wantError int
+		name            string
+		status          int
+		wantError       int
+		wantTempUnsched int
 	}{
 		{name: "payment required", status: http.StatusPaymentRequired, wantError: 1},
-		{name: "forbidden", status: http.StatusForbidden, wantError: 1},
+		// Berth Track B (Bug B12): ambiguous 403 enters 3-strike temp cooldown instead of 1-hit permanent SetError.
+		{name: "forbidden", status: http.StatusForbidden, wantError: 0, wantTempUnsched: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			account := &Account{ID: 22, Platform: PlatformTypeSafe, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "http://typesafe.test", "api_key": "ts-secret"}}
@@ -330,6 +338,7 @@ func TestForwardSystemOneAccountLevelFailuresFailOver(t *testing.T) {
 			require.True(t, failoverErr.ShouldRetryNextAccount())
 			require.Equal(t, tc.status, failoverErr.StatusCode)
 			require.Equal(t, tc.wantError, repo.errorCalls)
+			require.Equal(t, tc.wantTempUnsched, repo.tempUnschedCalls)
 			require.Equal(t, "failover", systemOneOpsEvents(t, c)[0].Kind)
 		})
 	}

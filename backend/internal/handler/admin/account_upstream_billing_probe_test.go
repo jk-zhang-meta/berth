@@ -17,7 +17,7 @@ func setupUpstreamBillingProbeRouter() *gin.Engine {
 	handler := NewAccountHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	handler.SetUpstreamBillingProbeService(service.NewUpstreamBillingProbeService(nil, nil, nil))
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/admin/accounts/upstream-billing-probe/settings", handler.GetUpstreamBillingProbeSettings)
 	router.POST("/admin/accounts/upstream-billing-probe/batch", handler.ProbeUpstreamBillingBatch)
 	router.POST("/admin/accounts/upstream-billing-probe/group-preview", handler.PreviewUpstreamGroup)

@@ -22,7 +22,7 @@ func TestCreateShadow_ReturnsCreatedShadow(t *testing.T) {
 	stub := &stubAdminService{}
 	h := NewOpenAIOAuthHandler(nil, stub, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts/:id/shadow", h.CreateShadow)
 
 	body := `{"name":"p-spark","priority":50,"concurrency":2,"group_ids":[10,20]}`
@@ -56,7 +56,7 @@ func TestCreateShadow_InvalidID(t *testing.T) {
 
 	h := NewOpenAIOAuthHandler(nil, &stubAdminService{}, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts/:id/shadow", h.CreateShadow)
 
 	rec := httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestCreateShadow_ServiceError(t *testing.T) {
 	stub := &stubAdminService{createSparkShadowErr: errors.New("database unavailable")}
 	h := NewOpenAIOAuthHandler(nil, stub, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts/:id/shadow", h.CreateShadow)
 
 	body := `{"name":"p-spark","priority":50}`
@@ -93,7 +93,7 @@ func TestCreateShadow_BadBody(t *testing.T) {
 
 	h := NewOpenAIOAuthHandler(nil, &stubAdminService{}, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts/:id/shadow", h.CreateShadow)
 
 	rec := httptest.NewRecorder()

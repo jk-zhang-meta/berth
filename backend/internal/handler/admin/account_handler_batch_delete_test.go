@@ -68,7 +68,7 @@ func (s *batchDeleteAdminService) DeleteAccount(ctx context.Context, id int64) e
 
 func setupAccountBatchDeleteRouter(adminSvc *batchDeleteAdminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	router := gin.New()
+	router := newAdminTestRouter()
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/batch-delete", handler.BatchDelete)
 	return router

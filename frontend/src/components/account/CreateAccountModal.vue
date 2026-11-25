@@ -3241,10 +3241,16 @@
 
       <div>
         <div class="mb-1 flex items-center gap-2">
-          <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
+          <label class="input-label mb-0">
+            {{ t('admin.accounts.proxy') }}
+            <span v-if="!isAdmin" class="text-red-500">*</span>
+          </label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <ProxySelector v-model="form.proxy_id" :proxies="proxies" :allow-direct="isAdmin" />
+        <p v-if="!isAdmin && !form.proxy_id" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          Landing proxy is required for every account.
+        </p>
       </div>
 
       <UpstreamRequestIdHeaderField
@@ -3254,35 +3260,61 @@
         :type="form.type"
       />
 
-      <div v-if="isAdmin" class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div :class="isAdmin ? 'grid grid-cols-2 gap-4 lg:grid-cols-4' : 'grid grid-cols-1 gap-4'">
         <div>
-          <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" min="1" class="input"
-            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
-          <input v-model.number="form.load_factor" type="number" min="1"
-            class="input" :placeholder="String(form.concurrency || 1)"
-            @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
-          <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.priority') }}</label>
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <label class="input-label mb-0">
+              {{ t('admin.accounts.concurrency') }}
+              <span class="text-red-500">*</span>
+            </label>
+            <button
+              v-if="concurrencyRecommendation"
+              type="button"
+              class="inline-flex items-center rounded bg-primary-50 px-1.5 py-0.5 text-[11px] font-medium text-primary-700 hover:bg-primary-100 dark:bg-primary-900/30 dark:text-primary-300"
+              @click="applyRecommendedConcurrency"
+            >
+              Rec: {{ concurrencyRecommendation.recommended_concurrency }}
+            </button>
+          </div>
           <input
-            v-model.number="form.priority"
+            v-model.number="form.concurrency"
             type="number"
             min="1"
+            step="1"
+            required
+            data-testid="create-account-concurrency"
             class="input"
-            data-tour="account-form-priority"
+            @input="onConcurrencyManualInput"
           />
-          <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
+          <p v-if="concurrencyRecommendation" class="input-hint">
+            Recommended {{ concurrencyRecommendation.recommended_concurrency }} ({{ concurrencyRecommendation.confidence }}<template v-if="concurrencyRecommendation.proxy_oversubscribed"> · proxy oversubscribed</template>)
+          </p>
         </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
-          <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
-          <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
-        </div>
+        <template v-if="isAdmin">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
+            <input v-model.number="form.load_factor" type="number" min="1"
+              class="input" :placeholder="String(form.concurrency || 1)"
+              @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
+            <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.priority') }}</label>
+            <input
+              v-model.number="form.priority"
+              type="number"
+              min="1"
+              class="input"
+              data-tour="account-form-priority"
+            />
+            <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
+            <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
+            <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
+          </div>
+        </template>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
@@ -5101,13 +5133,58 @@ const form = reactive({
   type: 'oauth' as AccountType, // Will be 'oauth', 'setup-token', or 'apikey'
   credentials: {} as Record<string, unknown>,
   proxy_id: null as number | null,
-  concurrency: 10,
+  concurrency: 2,
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+const concurrencyRecommendation = ref<Awaited<ReturnType<typeof adminAPI.accounts.getRecommendedConcurrency>> | null>(null)
+const concurrencyTouched = ref(false)
+let concurrencyRecSeq = 0
+
+const onConcurrencyManualInput = () => {
+  concurrencyTouched.value = true
+  form.concurrency = Math.max(1, Math.trunc(Number(form.concurrency) || 1))
+}
+
+const applyRecommendedConcurrency = () => {
+  if (!concurrencyRecommendation.value) return
+  form.concurrency = Math.max(1, concurrencyRecommendation.value.recommended_concurrency)
+  concurrencyTouched.value = false
+}
+
+const refreshRecommendedConcurrency = async () => {
+  if (!props.show || typeof adminAPI.accounts.getRecommendedConcurrency !== 'function') return
+  const seq = ++concurrencyRecSeq
+  try {
+    const rec = await adminAPI.accounts.getRecommendedConcurrency({
+      platform: form.platform,
+      type: form.type,
+      proxy_id: form.proxy_id
+    })
+    if (seq !== concurrencyRecSeq || !rec) return
+    concurrencyRecommendation.value = rec
+    if (!concurrencyTouched.value && rec.recommended_concurrency >= 1) {
+      form.concurrency = rec.recommended_concurrency
+    }
+  } catch {
+    // Non-blocking hint: fall back to current valid concurrency when endpoint is unavailable.
+  }
+}
+
+watch(
+  [() => props.show, () => form.platform, () => form.type, () => form.proxy_id],
+  ([visible]) => {
+    if (!visible) {
+      concurrencyTouched.value = false
+      return
+    }
+    void refreshRecommendedConcurrency()
+  }
+)
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
@@ -6025,6 +6102,15 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (!isAdmin.value && (!form.proxy_id || form.proxy_id <= 0)) {
+    appStore.showError('Landing proxy is required for every account')
+    return
+  }
+  if (!Number.isInteger(form.concurrency) || form.concurrency < 1) {
+    appStore.showError('Concurrency must be an integer >= 1')
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {

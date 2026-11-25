@@ -46,6 +46,7 @@ type Proxy struct {
 	ExitUTCOffsetSeconds *int
 	ExitASN              string
 	ExitISP              string
+	ASNClass             string
 	ExitCheckedAt        *time.Time
 }
 

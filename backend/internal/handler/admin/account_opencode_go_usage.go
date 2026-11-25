@@ -13,6 +13,9 @@ type openCodeGoUsageAutoRefreshRequest struct {
 }
 
 func (h *AccountHandler) GetOpenCodeGoUsageSettings(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	if h.opencodeGoUsage == nil {
 		response.ErrorFrom(c, service.ErrOpenCodeGoUsageUnavailable)
 		return
@@ -26,6 +29,9 @@ func (h *AccountHandler) GetOpenCodeGoUsageSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateOpenCodeGoUsageSettings(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	if h.opencodeGoUsage == nil {
 		response.ErrorFrom(c, service.ErrOpenCodeGoUsageUnavailable)
 		return
@@ -48,11 +54,11 @@ func (h *AccountHandler) UpdateOpenCodeGoUsageSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) GetOpenCodeGoUsage(c *gin.Context) {
-	if !h.requireOpenCodeGoUsage(c) {
+	accountID, ok := h.openCodeGoUsageAccountID(c)
+	if !ok {
 		return
 	}
-	accountID, ok := openCodeGoUsageAccountID(c)
-	if !ok {
+	if !h.requireOpenCodeGoUsage(c) {
 		return
 	}
 	state, err := h.opencodeGoUsage.GetState(c.Request.Context(), accountID)
@@ -64,11 +70,11 @@ func (h *AccountHandler) GetOpenCodeGoUsage(c *gin.Context) {
 }
 
 func (h *AccountHandler) SetOpenCodeGoUsageAutoRefresh(c *gin.Context) {
-	if !h.requireOpenCodeGoUsage(c) {
+	accountID, ok := h.openCodeGoUsageAccountID(c)
+	if !ok {
 		return
 	}
-	accountID, ok := openCodeGoUsageAccountID(c)
-	if !ok {
+	if !h.requireOpenCodeGoUsage(c) {
 		return
 	}
 	var req openCodeGoUsageAutoRefreshRequest
@@ -85,11 +91,11 @@ func (h *AccountHandler) SetOpenCodeGoUsageAutoRefresh(c *gin.Context) {
 }
 
 func (h *AccountHandler) RefreshOpenCodeGoUsage(c *gin.Context) {
-	if !h.requireOpenCodeGoUsage(c) {
+	accountID, ok := h.openCodeGoUsageAccountID(c)
+	if !ok {
 		return
 	}
-	accountID, ok := openCodeGoUsageAccountID(c)
-	if !ok {
+	if !h.requireOpenCodeGoUsage(c) {
 		return
 	}
 	state, err := h.opencodeGoUsage.Refresh(c.Request.Context(), accountID)
@@ -108,13 +114,16 @@ func (h *AccountHandler) requireOpenCodeGoUsage(c *gin.Context) bool {
 	return false
 }
 
-func openCodeGoUsageAccountID(c *gin.Context) (int64, bool) {
+func (h *AccountHandler) openCodeGoUsageAccountID(c *gin.Context) (int64, bool) {
 	if c == nil {
 		return 0, false
 	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
+		return 0, false
+	}
+	if !h.allowAccount(c, accountID) {
 		return 0, false
 	}
 	return accountID, true

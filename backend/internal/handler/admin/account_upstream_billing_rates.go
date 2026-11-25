@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -61,13 +62,83 @@ func (h *AccountHandler) GetUpstreamBillingRates(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(
-		c.Request.Context(), page, pageSize, platform, accountType, status,
-		search, groupID, privacyMode, sortBy, sortOrder,
-	)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+	var accounts []service.Account
+	var total int64
+	var err error
+	if !isAdminCaller(c) {
+		ownerID, ok := requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+		ids := h.stewards.ListAccountIDs(c.Request.Context(), ownerID)
+		fetched, fetchErr := h.adminService.GetAccountsByIDs(c.Request.Context(), ids)
+		if fetchErr != nil {
+			response.ErrorFrom(c, fetchErr)
+			return
+		}
+		searchLower := strings.ToLower(search)
+		owned := make([]service.Account, 0, len(fetched))
+		for _, acc := range fetched {
+			if acc == nil {
+				continue
+			}
+			if platform != "" && acc.Platform != platform {
+				continue
+			}
+			if accountType != "" && acc.Type != accountType {
+				continue
+			}
+			if status != "" && acc.Status != status {
+				continue
+			}
+			if searchLower != "" && !strings.Contains(strings.ToLower(acc.Name), searchLower) {
+				continue
+			}
+			owned = append(owned, *acc)
+		}
+		desc := strings.ToLower(sortOrder) == "desc"
+		sort.SliceStable(owned, func(i, j int) bool {
+			var less bool
+			switch sortBy {
+			case "name":
+				less = strings.ToLower(owned[i].Name) < strings.ToLower(owned[j].Name)
+			case "priority":
+				less = owned[i].Priority < owned[j].Priority
+			case "status":
+				less = owned[i].Status < owned[j].Status
+			case "created_at":
+				less = owned[i].CreatedAt.Before(owned[j].CreatedAt)
+			default:
+				less = owned[i].ID < owned[j].ID
+			}
+			if desc {
+				return !less
+			}
+			return less
+		})
+		total = int64(len(owned))
+		start := (page - 1) * pageSize
+		if start < 0 {
+			start = 0
+		}
+		if start >= len(owned) {
+			accounts = []service.Account{}
+		} else {
+			end := start + pageSize
+			if end > len(owned) {
+				end = len(owned)
+			}
+			accounts = owned[start:end]
+		}
+	} else {
+		accounts, total, err = h.adminService.ListAccounts(
+			c.Request.Context(), page, pageSize, platform, accountType, status,
+			search, groupID, privacyMode, sortBy, sortOrder,
+		)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 
 	payload := upstreamBillingRatesResponse{

@@ -32,7 +32,7 @@ func TestAccountHandler_Create_AnthropicAPIKeyPassthroughExtraForwarded(t *testi
 		nil,
 	)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts", handler.Create)
 
 	body := map[string]any{

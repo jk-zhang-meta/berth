@@ -10,8 +10,18 @@ import "time"
 //
 // byID 是「全部代理」的快照（id -> Proxy），now 为判定基准时间。
 func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time) (*int64, bool) {
+	return ResolveProxyFallbackTargetWithPolicy(start, byID, now, true)
+}
+
+// ResolveProxyFallbackTargetWithPolicy computes the fallback target for an expired proxy.
+// When allowDirect is false (mandatory for non-admin stewarded accounts under Berth's
+// single-landing-node policy), direct egress fallback is blocked and returns (nil, false).
+func ResolveProxyFallbackTargetWithPolicy(start Proxy, byID map[int64]Proxy, now time.Time, allowDirect bool) (*int64, bool) {
 	switch start.FallbackMode {
 	case FallbackModeDirect:
+		if !allowDirect {
+			return nil, false
+		}
 		return nil, true
 	case FallbackModeProxy:
 		visited := map[int64]struct{}{start.ID: {}}
@@ -35,6 +45,9 @@ func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time
 			visited[*curID] = struct{}{}
 			switch p.FallbackMode {
 			case FallbackModeDirect:
+				if !allowDirect {
+					return nil, false
+				}
 				return nil, true
 			case FallbackModeProxy:
 				curID = p.BackupProxyID

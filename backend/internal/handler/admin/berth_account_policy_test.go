@@ -188,9 +188,8 @@ func TestBerthCodexImportOwnedIdentityPreservesAdminFields(t *testing.T) {
 	h := &AccountHandler{adminService: svc, stewards: service.NewStewardStore(db)}
 	mock.ExpectQuery("SELECT EXISTS").WithArgs(int64(88)).WillReturnRows(sqlmock.NewRows([]string{"verified"}).AddRow(true))
 	mock.ExpectQuery("SELECT 1 FROM proxy_stewards").WithArgs(int64(88), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
-	for i := 0; i < 2; i++ {
-		mock.ExpectQuery("SELECT 1 FROM account_stewards").WithArgs(int64(42), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
-	}
+	mock.ExpectQuery("SELECT account_id FROM account_stewards").WithArgs(int64(77)).WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(int64(42)))
+	mock.ExpectQuery("SELECT 1 FROM account_stewards").WithArgs(int64(42), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
 	body := map[string]any{"contents": []string{stringMustJSON(t, buildCodexRefreshImportValue(t, "owned", "identity", "new"))}, "proxy_id": 88, "priority": 999, "rate_multiplier": 4, "group_ids": []int64{91}}
 	rec := berthPolicyRequest(h.ImportCodexSession, service.RoleUser, stringMustJSON(t, body))
 	require.Equal(t, 200, rec.Code, rec.Body.String())
@@ -210,8 +209,25 @@ func TestBerthCodexImportCannotOverwriteForeignIdentity(t *testing.T) {
 	service.SetDefaultIdempotencyCoordinator(nil)
 	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(previous) })
 	svc := newCodexImportMemoryAdminService([]service.Account{{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "shared", "chatgpt_user_id": "identity", "refresh_token": "foreign-secret"}}})
-	h := &AccountHandler{adminService: svc}
-	body, err := json.Marshal(map[string]any{"contents": []string{stringMustJSON(t, buildCodexRefreshImportValue(t, "shared", "identity", "replacement"))}, "priority": 999, "group_ids": []int64{91}, "rate_multiplier": 4})
+
+	// Fail closed when stewards is nil
+	hNil := &AccountHandler{adminService: svc}
+	bodyNoProxy, err := json.Marshal(map[string]any{"contents": []string{stringMustJSON(t, buildCodexRefreshImportValue(t, "shared", "identity", "replacement"))}, "priority": 999, "group_ids": []int64{91}, "rate_multiplier": 4})
+	require.NoError(t, err)
+	recNil := berthPolicyRequest(hNil.ImportCodexSession, service.RoleUser, string(bodyNoProxy))
+	require.Equal(t, http.StatusForbidden, recNil.Code, recNil.Body.String())
+
+	// With StewardStore + owned verified proxy, foreign identity is invisible and cannot be overwritten;
+	// a new owned account is created with admin-only fields stripped.
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	h := &AccountHandler{adminService: svc, stewards: service.NewStewardStore(db)}
+	mock.ExpectQuery("SELECT EXISTS").WithArgs(int64(88)).WillReturnRows(sqlmock.NewRows([]string{"verified"}).AddRow(true))
+	mock.ExpectQuery("SELECT 1 FROM proxy_stewards").WithArgs(int64(88), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
+	mock.ExpectQuery("SELECT account_id FROM account_stewards").WithArgs(int64(77)).WillReturnRows(sqlmock.NewRows([]string{"account_id"}))
+	mock.ExpectExec("INSERT INTO account_stewards").WithArgs(int64(100), int64(77)).WillReturnResult(sqlmock.NewResult(0, 1))
+	body, err := json.Marshal(map[string]any{"contents": []string{stringMustJSON(t, buildCodexRefreshImportValue(t, "shared", "identity", "replacement"))}, "proxy_id": 88, "priority": 999, "group_ids": []int64{91}, "rate_multiplier": 4})
 	require.NoError(t, err)
 	rec := berthPolicyRequest(h.ImportCodexSession, service.RoleUser, string(body))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -221,6 +237,7 @@ func TestBerthCodexImportCannotOverwriteForeignIdentity(t *testing.T) {
 	require.Zero(t, svc.createdAccounts[0].Priority)
 	require.Empty(t, svc.createdAccounts[0].GroupIDs)
 	require.Nil(t, svc.createdAccounts[0].RateMultiplier)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func stringMustJSON(t *testing.T, v any) string {
@@ -231,7 +248,8 @@ func stringMustJSON(t *testing.T, v any) string {
 }
 
 func TestBerthDuplicateClaimsBeforeIdempotentReplay(t *testing.T) {
-	svc := &duplicateAccountAdminServiceStub{account: &service.Account{ID: 43, Name: "copy", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}}
+	proxyID := int64(88)
+	svc := &duplicateAccountAdminServiceStub{account: &service.Account{ID: 43, Name: "copy", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, ProxyID: &proxyID}}
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
@@ -239,9 +257,15 @@ func TestBerthDuplicateClaimsBeforeIdempotentReplay(t *testing.T) {
 	previous := service.DefaultIdempotencyCoordinator()
 	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(newMemoryIdempotencyRepoStub(), service.DefaultIdempotencyConfig()))
 	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(previous) })
+	// First call: allowAccount -> GetAccount -> HasVerifiedProxyExit -> CanUseProxy -> ClaimAccount
 	mock.ExpectQuery("SELECT 1 FROM account_stewards").WithArgs(int64(42), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
+	mock.ExpectQuery("SELECT EXISTS").WithArgs(int64(88)).WillReturnRows(sqlmock.NewRows([]string{"verified"}).AddRow(true))
+	mock.ExpectQuery("SELECT 1 FROM proxy_stewards").WithArgs(int64(88), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO account_stewards").WithArgs(int64(43), int64(77)).WillReturnResult(sqlmock.NewResult(0, 1))
+	// Replay call: allowAccount -> GetAccount -> HasVerifiedProxyExit -> CanUseProxy -> idempotent replay (no second ClaimAccount)
 	mock.ExpectQuery("SELECT 1 FROM account_stewards").WithArgs(int64(42), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
+	mock.ExpectQuery("SELECT EXISTS").WithArgs(int64(88)).WillReturnRows(sqlmock.NewRows([]string{"verified"}).AddRow(true))
+	mock.ExpectQuery("SELECT 1 FROM proxy_stewards").WithArgs(int64(88), int64(77)).WillReturnRows(sqlmock.NewRows([]string{"one"}).AddRow(1))
 	call := func() *httptest.ResponseRecorder {
 		return berthPolicyRequest(func(c *gin.Context) {
 			c.Params = gin.Params{{Key: "id", Value: "42"}}

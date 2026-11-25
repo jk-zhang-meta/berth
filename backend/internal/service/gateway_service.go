@@ -642,6 +642,14 @@ type AccountSelectionResult struct {
 	Acquired    bool
 	ReleaseFunc func()
 	WaitPlan    *AccountWaitPlan // nil means no wait allowed
+	// StickySpillover indicates that the session's sticky account was healthy
+	// but busy past micro-wait budget; handlers must NOT overwrite the sticky binding.
+	StickySpillover bool
+	// HandoverCohortTZ is non-empty when an explicit cross-cohort handover moved
+	// the session to a new exit timezone.
+	HandoverCohortTZ string
+	// CohortLevel records which rung of the 4-level cohort ladder satisfied selection.
+	CohortLevel CohortFailoverLevel
 	// stickySessionHit 标记账号来自会话粘性绑定命中，供非高级调度路径回填决策标签。
 	stickySessionHit bool
 	// profitGate 携带本次选号真实生效的利润门（无门为 nil）。门安装在调度栈的
@@ -914,6 +922,16 @@ func (s *GatewayService) BindWorkSessionAccount(ctx context.Context, accountID i
 	}
 }
 
+func (s *GatewayService) BindWorkSessionCohort(ctx context.Context, cohort CageCohort, incrementEpoch bool) {
+	if s == nil || s.workSessions == nil {
+		return
+	}
+	pref := WorkSessionPrefFromContext(ctx)
+	if pref != nil {
+		s.workSessions.BindCohort(ctx, pref.UserID, pref.ClientSessionID, pref.Platform, cohort, incrementEpoch)
+	}
+}
+
 // NewGatewayService creates a new GatewayService
 func NewGatewayService(
 	accountRepo AccountRepository,
@@ -1065,6 +1083,150 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	}
 
 	return ""
+}
+
+// GenerateTurnInvariantSessionAnchor computes a turn-invariant sticky session anchor
+// for Anthropic multi-turn requests lacking metadata.user_id and cache_control (Bug B4).
+// It hashes only static conversation prefix fields:
+//
+//	APIKeyID | ClientIP | normalized UA | model family | canonical tool names |
+//	system prefix (<= 2KB) | first user message prefix (<= 2KB)
+//
+// so turns 1..N of the same conversation map to the exact same sticky key and preserve KV cache.
+func (s *GatewayService) GenerateTurnInvariantSessionAnchor(parsed *ParsedRequest) string {
+	if parsed == nil {
+		return ""
+	}
+	var combined strings.Builder
+	if parsed.SessionContext != nil {
+		_, _ = combined.WriteString(strconv.FormatInt(parsed.SessionContext.APIKeyID, 10))
+		_, _ = combined.WriteString(":")
+		_, _ = combined.WriteString(parsed.SessionContext.ClientIP)
+		_, _ = combined.WriteString(":")
+		_, _ = combined.WriteString(NormalizeSessionUserAgent(parsed.SessionContext.UserAgent))
+		_, _ = combined.WriteString("|")
+	}
+	if modelFamily := normalizeAnchorModelFamily(parsed.Model); modelFamily != "" {
+		_, _ = combined.WriteString("m:")
+		_, _ = combined.WriteString(modelFamily)
+		_, _ = combined.WriteString("|")
+	}
+	if parsed.Body != nil {
+		if bodyBytes := parsed.Body.Bytes(); len(bodyBytes) > 0 {
+			if tools := gjson.GetBytes(bodyBytes, "tools"); tools.IsArray() {
+				var names []string
+				tools.ForEach(func(_, item gjson.Result) bool {
+					if name := strings.TrimSpace(item.Get("name").String()); name != "" {
+						names = append(names, name)
+					}
+					return true
+				})
+				if len(names) > 0 {
+					sort.Strings(names)
+					_, _ = combined.WriteString("t:")
+					_, _ = combined.WriteString(strings.Join(names, ","))
+					_, _ = combined.WriteString("|")
+				}
+			}
+		}
+	}
+	if systemText := extractTextFromSystemRaw(parsed.SystemRaw()); systemText != "" {
+		if len(systemText) > 2048 {
+			systemText = systemText[:2048]
+		}
+		_, _ = combined.WriteString("s:")
+		_, _ = combined.WriteString(systemText)
+		_, _ = combined.WriteString("|")
+	}
+	if firstUser := extractFirstUserMessageTextFromRaw(parsed.MessagesRaw()); firstUser != "" {
+		if len(firstUser) > 2048 {
+			firstUser = firstUser[:2048]
+		}
+		_, _ = combined.WriteString("u0:")
+		_, _ = combined.WriteString(firstUser)
+	}
+	if combined.Len() == 0 {
+		return ""
+	}
+	return "anchor:" + s.hashContent(combined.String())
+}
+
+func normalizeAnchorModelFamily(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(m, "opus"):
+		return "claude-opus"
+	case strings.Contains(m, "sonnet"):
+		return "claude-sonnet"
+	case strings.Contains(m, "haiku"):
+		return "claude-haiku"
+	default:
+		return m
+	}
+}
+
+func extractFirstUserMessageTextFromRaw(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	messages := parseRawJSONView(raw)
+	if !messages.IsArray() {
+		return ""
+	}
+	var out string
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if role != "" && role != "user" {
+			return true
+		}
+		if content := msg.Get("content"); content.Exists() {
+			if txt := extractTextFromContentRaw(content); txt != "" {
+				out = txt
+				return false
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// ResolveAnthropicStickySessionKey resolves a turn-invariant sticky session key
+// for Anthropic requests without breaking legacy GenerateSessionHash semantics:
+//  1. Explicit metadata.user_id session ID
+//  2. Explicit cache_control: ephemeral content hash
+//  3. DigestSessionStore parent-chain lookup (BuildAnthropicDigestChain)
+//  4. Turn-invariant prefix anchor (GenerateTurnInvariantSessionAnchor)
+func (s *GatewayService) ResolveAnthropicStickySessionKey(
+	ctx context.Context,
+	groupID *int64,
+	parsed *ParsedRequest,
+) (sessionKey string, digestChain string, prefixHash string, matchedChain string, boundAccountID int64) {
+	if parsed == nil {
+		return "", "", "", "", 0
+	}
+	// Level 1: explicit metadata.user_id
+	if parsed.MetadataUserID != "" {
+		if uid := ParseMetadataUserID(parsed.MetadataUserID); uid != nil && uid.SessionID != "" {
+			return uid.SessionID, "", "", "", 0
+		}
+	}
+	// Level 2: explicit cache_control: ephemeral
+	if cacheable := s.extractCacheableContent(parsed); cacheable != "" {
+		return s.hashContent(cacheable), "", "", "", 0
+	}
+	// Level 3: DigestSessionStore parent-chain match
+	prefixHash = s.GenerateTurnInvariantSessionAnchor(parsed)
+	digestChain = BuildAnthropicDigestChain(parsed)
+	if digestChain != "" && prefixHash != "" && s.digestStore != nil {
+		if foundUUID, foundAccID, foundMatched, found := s.FindAnthropicSession(ctx, derefGroupID(groupID), prefixHash, digestChain); found && foundUUID != "" {
+			return GenerateAnthropicDigestSessionKey(prefixHash, foundUUID), digestChain, prefixHash, foundMatched, foundAccID
+		}
+	}
+	// Level 4: turn-invariant prefix anchor (falls back to GenerateSessionHash only if anchor empty)
+	if prefixHash != "" {
+		return prefixHash, digestChain, prefixHash, "", 0
+	}
+	return s.GenerateSessionHash(parsed), digestChain, "", "", 0
 }
 
 // BindStickySession sets session -> account binding with standard TTL.

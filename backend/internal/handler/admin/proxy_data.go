@@ -9,14 +9,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
 // ExportData exports proxy-only data for migration.
 func (h *ProxyHandler) ExportData(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	ctx := c.Request.Context()
@@ -101,8 +99,7 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 
 // ImportData imports proxy-only data for migration.
 func (h *ProxyHandler) ImportData(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	type ProxyImportRequest struct {

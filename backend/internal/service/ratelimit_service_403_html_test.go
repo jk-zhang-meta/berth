@@ -222,7 +222,8 @@ func TestHandleUpstreamError_OpenAIStructured403StillPenalizes(t *testing.T) {
 	})
 }
 
-// 作用域守卫：放行只针对 OpenAI 平台。其他平台的 403 处理不受影响。
+// Berth Track B (Bug B12): HTML 403 (CDN/proxy/WAF interstitial) is unified across
+// platforms and MUST NOT permanently disable Anthropic or Gemini accounts on first hit.
 func TestHandleUpstreamError_HTML403OnOtherPlatformsUnchanged(t *testing.T) {
 	for _, platform := range []string{PlatformAnthropic, PlatformGemini} {
 		t.Run(platform, func(t *testing.T) {
@@ -234,8 +235,8 @@ func TestHandleUpstreamError_HTML403OnOtherPlatformsUnchanged(t *testing.T) {
 				context.Background(), account, http.StatusForbidden, http.Header{}, []byte(openAI403HTMLBody),
 			)
 
-			require.True(t, shouldDisable)
-			require.Equal(t, 1, repo.setErrorCalls, "其他平台保持原有 SetError 行为")
+			require.False(t, shouldDisable, "HTML 403 must skip account penalty across platforms")
+			require.Equal(t, 0, repo.setErrorCalls, "HTML 403 must not permanently SetError account")
 		})
 	}
 }

@@ -51,7 +51,7 @@ func referralHandlerRequest(t *testing.T, stub *referralHandlerStub, path, body 
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	h := &OpenAIOAuthHandler{referralService: stub}
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/:id/referrals/refresh", h.RefreshReferrals)
 	router.POST("/:id/referrals/invite", h.SendReferralInvite)
 	rec := httptest.NewRecorder()

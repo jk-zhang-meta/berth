@@ -472,6 +472,8 @@ type Proxy struct {
 	Concurrency    int        `json:"concurrency"`
 	CurrentRPM     int        `json:"current_rpm"`
 	ExitVerified   bool       `json:"exit_verified"`
+	IsRental       bool       `json:"is_rental,omitempty"`
+	RentalOrderID  *int64     `json:"rental_order_id,omitempty"`
 }
 
 type ProxyWithAccountCount struct {

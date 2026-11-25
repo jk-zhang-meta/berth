@@ -650,6 +650,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(h.gatewayService.PrepareWorkSession(
 		c.Request.Context(), apiKey.UserID, apiKey.ID, service.ExtractClientSessionID(c), service.PlatformOpenAI,
 	))
+	attachBerthSchedulerContext(c, len(body))
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
@@ -715,6 +716,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
+				return
+			}
+			var rebindErr *service.ErrCageRebindRequired
+			if errors.As(err, &rebindErr) {
+				writeCageRebindRequiredResponse(c, rebindErr, streamStarted, h.handleStreamingAwareError)
 				return
 			}
 			reqLog.Warn("openai.account_select_failed",
@@ -948,8 +954,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
-					// 池模式：同账号重试
-					if failoverErr.RetryableOnSameAccount {
+					// 池模式：同账号重试（Berth Track B: 403 禁止同账号重试）
+					if failoverErr.StatusCode != http.StatusForbidden && failoverErr.RetryableOnSameAccount {
 						retryLimit := effectiveSameAccountRetryLimit(failoverErr, account)
 						if sameAccountRetryAllowed(failoverErr, sameAccountRetryCount[account.ID], retryLimit) {
 							sameAccountRetryCount[account.ID]++
@@ -972,6 +978,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
+					if decision := service.DefaultBlastRadiusGuard().RecordAndCheckFailover(
+						resolveBerthOperationID(c),
+						sessionHash,
+						account.ID,
+						failoverErr.StatusCode,
+						switchCount,
+					); !decision.AllowSwitch {
+						markSessionToxicHeader(c, decision.SessionToxic, streamStarted)
+						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						return
+					}
 					if switchCount >= maxAccountSwitches {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return

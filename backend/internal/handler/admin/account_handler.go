@@ -29,7 +29,6 @@ import (
 	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
 	"github.com/jk-zhang-meta/berth/internal/pkg/typesafe"
 	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -138,7 +137,7 @@ type CreateAccountRequest struct {
 	Credentials             map[string]any `json:"credentials" binding:"required"`
 	Extra                   map[string]any `json:"extra"`
 	ProxyID                 *int64         `json:"proxy_id"`
-	Concurrency             int            `json:"concurrency"`
+	Concurrency             *int           `json:"concurrency"`
 	Priority                int            `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
 	LoadFactor              *int           `json:"load_factor"`
@@ -689,10 +688,14 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	ownerFilter, _ := strconv.ParseInt(c.Query("owner_user_id"), 10, 64)
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
-			ownerFilter = subject.UserID
+	if !isAdminCaller(c) {
+		uid, ok := requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
 		}
+		ownerFilter = uid
+		includeSchedulerScore = false
+		groupID = 0
 	}
 
 	var accounts []service.Account
@@ -1065,6 +1068,9 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 // CheckMixedChannel handles checking mixed channel risk for account-group binding.
 // POST /api/v1/admin/accounts/check-mixed-channel
 func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	var req CheckMixedChannelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -1122,6 +1128,9 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
+		return
+	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 	if err := service.ValidateUpstreamRequestIDHeaderExtra(req.Extra); err != nil {
@@ -1129,18 +1138,24 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Non-admin users cannot alter admin pool assignments (groups, priority, rate_multiplier); can only bind owned proxy
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
+	adminCaller := isAdminCaller(c)
+	ownerID := getAdminIDFromContext(c)
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
 		req.GroupIDs = nil
 		req.Priority = 0
 		req.RateMultiplier = nil
-		if req.ProxyID != nil && *req.ProxyID > 0 {
-			subject, _ := middleware.GetAuthSubjectFromContext(c)
-			if h.stewards == nil || !h.stewards.CanUseProxy(c.Request.Context(), *req.ProxyID, subject.UserID) {
-				response.Forbidden(c, "not your proxy")
-				return
-			}
-		}
+		req.LoadFactor = nil
+		req.ProbeEnabled = nil
+		req.GroupSyncEnabled = nil
+		stripAdminExtraKeys(req.Extra)
+	}
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, !adminCaller) {
+		return
 	}
 
 	// 确定是否跳过混合渠道检查
@@ -1149,6 +1164,11 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 捕获闭包内创建的账号引用，用于创建成功后触发异步探测。
 	// 幂等重放时闭包不会执行 → createdAccount 为 nil → 不重复调度。
 	var createdAccount *service.Account
+
+	concurrency := 0
+	if req.Concurrency != nil {
+		concurrency = *req.Concurrency
+	}
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		account, execErr := h.adminService.CreateAccount(ctx, accountCreatePolicy(c, &service.CreateAccountInput{
@@ -1159,7 +1179,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			Credentials:           req.Credentials,
 			Extra:                 req.Extra,
 			ProxyID:               req.ProxyID,
-			Concurrency:           req.Concurrency,
+			Concurrency:           concurrency,
 			Priority:              req.Priority,
 			RateMultiplier:        req.RateMultiplier,
 			LoadFactor:            req.LoadFactor,
@@ -1172,6 +1192,11 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		}))
 		if execErr != nil {
 			return nil, execErr
+		}
+		if h.stewards != nil {
+			if claimErr := h.stewards.ClaimAccount(ctx, account.ID, ownerID); claimErr != nil && !adminCaller {
+				return nil, claimErr
+			}
 		}
 		createdAccount = account
 		// Antigravity OAuth: 新账号直接设置隐私
@@ -1206,9 +1231,6 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 探测失败不影响账号创建响应。
 	h.scheduleOpenAIResponsesProbe(createdAccount)
 	h.scheduleGrokImportProbe(createdAccount)
-	if createdAccount != nil && h.stewards != nil {
-		_ = h.stewards.ClaimAccount(c.Request.Context(), createdAccount.ID, getAdminIDFromContext(c))
-	}
 	response.Success(c, result.Data)
 }
 
@@ -1223,6 +1245,24 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 	if !h.allowAccount(c, accountID) {
 		return
 	}
+	adminCaller := isAdminCaller(c)
+	ownerID := getAdminIDFromContext(c)
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+		if source, getErr := h.adminService.GetAccount(c.Request.Context(), accountID); getErr == nil && source != nil {
+			effectiveProxyID := source.ProxyID
+			if source.ProxyFallbackOriginID != nil {
+				effectiveProxyID = source.ProxyFallbackOriginID
+			}
+			if !allowAccountProxyRequired(c, h.stewards, effectiveProxyID, true) {
+				return
+			}
+		}
+	}
 	actorScope := adminActorScope(c)
 
 	result, err := executeAdminIdempotent(
@@ -1233,12 +1273,18 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 		}{AccountID: accountID},
 		service.DefaultWriteIdempotencyTTL(),
 		func(ctx context.Context) (any, error) {
-			account, execErr := h.adminService.DuplicateAccount(ctx, accountID, actorScope, c.GetHeader("Idempotency-Key"))
+			dupCtx := ctx
+			if !adminCaller {
+				dupCtx = service.WithPrivateAccountOwner(ctx, ownerID)
+			}
+			account, execErr := h.adminService.DuplicateAccount(dupCtx, accountID, actorScope, c.GetHeader("Idempotency-Key"))
 			if execErr != nil {
 				return nil, execErr
 			}
-			if err := h.stewards.ClaimAccount(ctx, account.ID, getAdminIDFromContext(c)); err != nil {
-				return nil, err
+			if h.stewards != nil {
+				if err := h.stewards.ClaimAccount(ctx, account.ID, ownerID); err != nil {
+					return nil, err
+				}
 			}
 			return h.buildAccountResponseWithRuntime(ctx, account), nil
 		},
@@ -1253,7 +1299,7 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 				c.Header("X-Idempotency-Recovered", "true")
 				res := h.buildAccountResponseWithRuntime(c.Request.Context(), recovered)
 				if h.stewards != nil && res.ID > 0 {
-					_ = h.stewards.ClaimAccount(c.Request.Context(), res.ID, getAdminIDFromContext(c))
+					_ = h.stewards.ClaimAccount(c.Request.Context(), res.ID, ownerID)
 				}
 				response.Success(c, res)
 				return
@@ -1290,6 +1336,9 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
 	}
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
+		return
+	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 	if err := service.ValidateUpstreamRequestIDHeaderExtra(req.Extra); err != nil {
@@ -1297,24 +1346,34 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Non-admin users cannot alter admin pool assignments (groups, priority, rate_multiplier); can only bind owned proxy
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		req.GroupIDs = nil
-		req.Priority = nil
-		req.RateMultiplier = nil
-		if req.ProxyID != nil && *req.ProxyID > 0 {
-			subject, _ := middleware.GetAuthSubjectFromContext(c)
-			if h.stewards == nil || !h.stewards.CanUseProxy(c.Request.Context(), *req.ProxyID, subject.UserID) {
-				response.Forbidden(c, "not your proxy")
+	adminCaller := isAdminCaller(c)
+	if !adminCaller {
+		if req.ProxyID != nil {
+			if *req.ProxyID <= 0 {
+				response.ErrorFrom(c, service.ErrProxyUnbindForbidden)
 				return
 			}
+			if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, true) {
+				return
+			}
+		}
+	} else if req.ProxyID != nil && *req.ProxyID > 0 {
+		if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, false) {
+			return
 		}
 	}
 
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
-	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+	updateCtx := c.Request.Context()
+	if !adminCaller {
+		if uid := privateAccountOwner(c); uid > 0 {
+			updateCtx = service.WithPrivateAccountOwner(updateCtx, uid)
+		}
+	}
+
+	account, err := h.adminService.UpdateAccount(updateCtx, accountID, accountUpdatePolicy(c, &service.UpdateAccountInput{
 		Name:                  req.Name,
 		Notes:                 req.Notes,
 		Type:                  req.Type,
@@ -1333,7 +1392,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		GroupSyncEnabled:      req.GroupSyncEnabled,
 		RateSyncEnabled:       req.RateSyncEnabled,
 		SkipMixedChannelCheck: skipCheck,
-	})
+	}))
 	if err != nil {
 		// 检查是否为混合渠道错误
 		var mixedErr *service.MixedChannelError
@@ -1500,8 +1559,7 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 // SyncFromCRS handles syncing accounts from claude-relay-service (CRS)
 // POST /api/v1/admin/accounts/sync/crs
 func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 
@@ -1536,8 +1594,7 @@ func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
 // PreviewFromCRS handles previewing accounts from CRS before sync
 // POST /api/v1/admin/accounts/sync/crs/preview
 func (h *AccountHandler) PreviewFromCRS(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	var req PreviewFromCRSRequest
@@ -1945,6 +2002,20 @@ func (h *AccountHandler) RevertProxyFallback(c *gin.Context) {
 	if !h.allowAccount(c, id) {
 		return
 	}
+	if !isAdminCaller(c) {
+		account, getErr := h.adminService.GetAccount(c.Request.Context(), id)
+		if getErr != nil {
+			response.ErrorFrom(c, getErr)
+			return
+		}
+		if account == nil || account.ProxyFallbackOriginID == nil || *account.ProxyFallbackOriginID <= 0 {
+			response.ErrorFrom(c, service.ErrAccountNotInFallback)
+			return
+		}
+		if !allowAccountProxyRequired(c, h.stewards, account.ProxyFallbackOriginID, true) {
+			return
+		}
+	}
 	if err := h.adminService.RevertAccountProxyFallback(c.Request.Context(), id); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -1969,18 +2040,8 @@ func (h *AccountHandler) BatchDelete(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range accountIDs {
-			if !h.stewards.OwnsAccount(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your account")
-				return
-			}
-		}
+	if !requireStewardAccounts(c, h.stewards, accountIDs) {
+		return
 	}
 
 	accounts, err := h.adminService.GetAccountsByIDs(c.Request.Context(), accountIDs)
@@ -2116,18 +2177,8 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range req.AccountIDs {
-			if !h.stewards.OwnsAccount(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your account")
-				return
-			}
-		}
+	if !requireStewardAccounts(c, h.stewards, req.AccountIDs) {
+		return
 	}
 
 	ctx := c.Request.Context()
@@ -2198,18 +2249,8 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range req.AccountIDs {
-			if !h.stewards.OwnsAccount(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your account")
-				return
-			}
-		}
+	if !requireStewardAccounts(c, h.stewards, req.AccountIDs) {
+		return
 	}
 
 	ctx := c.Request.Context()
@@ -2307,9 +2348,15 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			return
 		}
 	}
-	role, hasRole := middleware.GetUserRoleFromContext(c)
-	subject, _ := middleware.GetAuthSubjectFromContext(c)
-	if !hasRole || role == service.RoleAdmin {
+	adminCaller := isAdminCaller(c)
+	ownerID := getAdminIDFromContext(c)
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+	} else {
 		groupIDs := make([]int64, 0)
 		for _, item := range req.Accounts {
 			groupIDs = append(groupIDs, item.GroupIDs...)
@@ -2329,21 +2376,51 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 		var openaiPrivacyAccounts []*service.Account
 
 		for _, item := range req.Accounts {
-			if hasRole && role != service.RoleAdmin {
+			if item.Concurrency != nil {
+				if err := service.ValidateAccountConcurrency(*item.Concurrency); err != nil {
+					failed++
+					results = append(results, gin.H{
+						"name":    item.Name,
+						"success": false,
+						"error":   err.Error(),
+					})
+					continue
+				}
+			}
+			if !adminCaller {
 				item.GroupIDs = nil
 				item.Priority = 0
 				item.RateMultiplier = nil
-				if item.ProxyID != nil && *item.ProxyID > 0 {
-					if h.stewards == nil || !h.stewards.CanUseProxy(ctx, *item.ProxyID, subject.UserID) {
-						failed++
-						results = append(results, gin.H{
-							"name":    item.Name,
-							"success": false,
-							"error":   "not your proxy",
-						})
-						continue
-					}
+				item.LoadFactor = nil
+				item.ProbeEnabled = nil
+				item.GroupSyncEnabled = nil
+				stripAdminExtraKeys(item.Extra)
+				if item.ProxyID == nil || *item.ProxyID <= 0 {
+					failed++
+					results = append(results, gin.H{
+						"name":    item.Name,
+						"success": false,
+						"error":   service.ErrProxyRequired.Message,
+					})
+					continue
 				}
+				if h.stewards == nil || !h.stewards.CanUseProxy(ctx, *item.ProxyID, ownerID) {
+					failed++
+					results = append(results, gin.H{
+						"name":    item.Name,
+						"success": false,
+						"error":   "not your proxy or proxy exit not verified",
+					})
+					continue
+				}
+			} else if item.ProxyID != nil && *item.ProxyID > 0 && h.stewards != nil && !h.stewards.HasVerifiedProxyExit(ctx, *item.ProxyID) {
+				failed++
+				results = append(results, gin.H{
+					"name":    item.Name,
+					"success": false,
+					"error":   "proxy exit IP and timezone must be verified before binding",
+				})
+				continue
 			}
 
 			if item.RateMultiplier != nil && *item.RateMultiplier < 0 {
@@ -2369,6 +2446,10 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			}
 
 			skipCheck := item.ConfirmMixedChannelRisk != nil && *item.ConfirmMixedChannelRisk
+			concurrency := 0
+			if item.Concurrency != nil {
+				concurrency = *item.Concurrency
+			}
 
 			account, err := h.adminService.CreateAccount(ctx, accountCreatePolicy(c, &service.CreateAccountInput{
 				Name:                  item.Name,
@@ -2378,12 +2459,15 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				Credentials:           item.Credentials,
 				Extra:                 item.Extra,
 				ProxyID:               item.ProxyID,
-				Concurrency:           item.Concurrency,
+				Concurrency:           concurrency,
 				Priority:              item.Priority,
 				RateMultiplier:        item.RateMultiplier,
+				LoadFactor:            item.LoadFactor,
 				GroupIDs:              item.GroupIDs,
 				ExpiresAt:             item.ExpiresAt,
 				AutoPauseOnExpired:    item.AutoPauseOnExpired,
+				ProbeEnabled:          item.ProbeEnabled,
+				GroupSyncEnabled:      item.GroupSyncEnabled,
 				SkipMixedChannelCheck: skipCheck,
 			}))
 			if err != nil {
@@ -2396,7 +2480,15 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				continue
 			}
 			if h.stewards != nil {
-				_ = h.stewards.ClaimAccount(ctx, account.ID, getAdminIDFromContext(c))
+				if claimErr := h.stewards.ClaimAccount(ctx, account.ID, ownerID); claimErr != nil && !adminCaller {
+					failed++
+					results = append(results, gin.H{
+						"name":    item.Name,
+						"success": false,
+						"error":   claimErr.Error(),
+					})
+					continue
+				}
 			}
 			// 收集需要异步设置隐私的 OAuth 账号
 			if account.Type == service.AccountTypeOAuth {
@@ -2470,8 +2562,7 @@ type BatchUpdateCredentialsRequest struct {
 // BatchUpdateCredentials handles batch updating credentials fields
 // POST /api/v1/admin/accounts/batch-update-credentials
 func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 
@@ -2557,13 +2648,15 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 // BulkUpdate handles bulk updating accounts with selected fields/credentials.
 // POST /api/v1/admin/accounts/bulk-update
 func (h *AccountHandler) BulkUpdate(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	var req BulkUpdateAccountsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
 		return
 	}
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
@@ -2994,18 +3087,8 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range accountIDs {
-			if !h.stewards.OwnsAccount(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your account")
-				return
-			}
-		}
+	if !requireStewardAccounts(c, h.stewards, accountIDs) {
+		return
 	}
 
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
@@ -3057,18 +3140,8 @@ func (h *AccountHandler) GetBatchUsage(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range accountIDs {
-			if !h.stewards.OwnsAccount(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your account")
-				return
-			}
-		}
+	if !requireStewardAccounts(c, h.stewards, accountIDs) {
+		return
 	}
 
 	usageByAccount, errorsByAccount, err := h.accountUsageService.GetUsageBatch(c.Request.Context(), accountIDs, req.Force)
@@ -3427,6 +3500,9 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 // SyncUpstreamModelsPreview handles syncing live supported models using provided credentials (no account ID needed).
 // POST /api/v1/admin/accounts/models/sync-upstream-preview
 func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	var req struct {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
@@ -3592,8 +3668,7 @@ type BatchRefreshTierRequest struct {
 // BatchRefreshTier handles batch refreshing Google One tier
 // POST /api/v1/admin/accounts/batch-refresh-tier
 func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 
@@ -3708,16 +3783,7 @@ func (h *AccountHandler) GetAntigravityDefaultModelMapping(c *gin.Context) {
 // sanitizeExtraBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。
 // 负值归零，超过 10000 截断为 10000。extra 为 nil 或不含 base_rpm 时无操作。
 func (h *AccountHandler) allowAccount(c *gin.Context, accountID int64) bool {
-	role, ok := middleware.GetUserRoleFromContext(c)
-	if !ok || role == service.RoleAdmin {
-		return true
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || h.stewards == nil || !h.stewards.OwnsAccount(c.Request.Context(), accountID, subject.UserID) {
-		response.Forbidden(c, "not your account")
-		return false
-	}
-	return true
+	return requireStewardAccount(c, h.stewards, accountID)
 }
 
 func (h *AccountHandler) attachStewards(ctx context.Context, result []AccountWithConcurrency) {

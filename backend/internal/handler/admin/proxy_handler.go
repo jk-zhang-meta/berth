@@ -2,13 +2,13 @@ package admin
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jk-zhang-meta/berth/internal/handler/dto"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -110,11 +110,14 @@ func (h *ProxyHandler) List(c *gin.Context) {
 		search = search[:100]
 	}
 
+	adminCaller := isAdminCaller(c)
 	ownerFilter, _ := strconv.ParseInt(c.Query("owner_user_id"), 10, 64)
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
-			ownerFilter = subject.UserID
+	if !adminCaller {
+		uid, ok := requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
 		}
+		ownerFilter = uid
 	}
 
 	var proxies []service.ProxyWithAccountCount
@@ -127,23 +130,77 @@ func (h *ProxyHandler) List(c *gin.Context) {
 			response.ErrorFrom(c, fetchErr)
 			return
 		}
-		total = int64(len(fetched))
+		searchLower := strings.ToLower(search)
+		filtered := make([]service.Proxy, 0, len(fetched))
+		for i := range fetched {
+			p := fetched[i]
+			if protocol != "" && !strings.EqualFold(p.Protocol, protocol) {
+				continue
+			}
+			if status != "" && !strings.EqualFold(p.Status, status) {
+				continue
+			}
+			if searchLower != "" &&
+				!strings.Contains(strings.ToLower(p.Name), searchLower) &&
+				!strings.Contains(strings.ToLower(p.Host), searchLower) {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		desc := strings.EqualFold(sortOrder, "desc")
+		sort.SliceStable(filtered, func(i, j int) bool {
+			var less bool
+			switch sortBy {
+			case "name":
+				less = strings.ToLower(filtered[i].Name) < strings.ToLower(filtered[j].Name)
+			case "protocol":
+				less = filtered[i].Protocol < filtered[j].Protocol
+			case "status":
+				less = filtered[i].Status < filtered[j].Status
+			case "created_at":
+				less = filtered[i].CreatedAt.Before(filtered[j].CreatedAt)
+			default:
+				less = filtered[i].ID < filtered[j].ID
+			}
+			if desc {
+				return !less
+			}
+			return less
+		})
+		total = int64(len(filtered))
 		start := (page - 1) * pageSize
 		if start < 0 {
 			start = 0
 		}
-		if start > len(fetched) {
-			fetched = nil
+		if start >= len(filtered) {
+			filtered = nil
 		} else {
 			end := start + pageSize
-			if end > len(fetched) {
-				end = len(fetched)
+			if end > len(filtered) {
+				end = len(filtered)
 			}
-			fetched = fetched[start:end]
+			filtered = filtered[start:end]
 		}
-		proxies = make([]service.ProxyWithAccountCount, 0, len(fetched))
-		for i := range fetched {
-			proxies = append(proxies, service.ProxyWithAccountCount{Proxy: fetched[i]})
+		proxies = make([]service.ProxyWithAccountCount, 0, len(filtered))
+		for i := range filtered {
+			p := filtered[i]
+			item := service.ProxyWithAccountCount{
+				Proxy:            p,
+				IPAddress:        p.ExitIP,
+				Country:          p.ExitCountry,
+				CountryCode:      p.ExitCountryCode,
+				Region:           p.ExitRegion,
+				City:             p.ExitCity,
+				Timezone:         p.ExitTimezone,
+				UTCOffsetSeconds: p.ExitUTCOffsetSeconds,
+				ASN:              p.ExitASN,
+				ISP:              p.ExitISP,
+			}
+			if p.ExitCheckedAt != nil {
+				ts := p.ExitCheckedAt.Unix()
+				item.ExitCheckedAt = &ts
+			}
+			proxies = append(proxies, item)
 		}
 	} else {
 		proxies, total, err = h.adminService.ListProxiesWithAccountCount(c.Request.Context(), page, pageSize, protocol, status, search, sortBy, sortOrder)
@@ -158,6 +215,9 @@ func (h *ProxyHandler) List(c *gin.Context) {
 	for i := range proxies {
 		ids = append(ids, proxies[i].ID)
 		item := *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i])
+		if !adminCaller {
+			item.Password = ""
+		}
 		out = append(out, item)
 	}
 	cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), ids)
@@ -174,11 +234,6 @@ func (h *ProxyHandler) List(c *gin.Context) {
 			}
 		}
 	}
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		for i := range out {
-			out[i].Password = ""
-		}
-	}
 	response.Paginated(c, out, total, page, pageSize)
 }
 
@@ -190,16 +245,31 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 		return
 	}
 	withCount := c.Query("with_count") == "true"
-	role, ok := middleware.GetUserRoleFromContext(c)
 
-	if ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
+	if !isAdminCaller(c) {
+		ownerID, ok := requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
 			return
 		}
-		ids := h.stewards.ListProxyIDs(c.Request.Context(), subject.UserID)
-		if len(ids) == 0 {
+		ownedIDs := h.stewards.ListProxyIDs(c.Request.Context(), ownerID)
+		rentalInfos := h.stewards.ListActiveRentalProxies(c.Request.Context(), ownerID)
+		rentalByProxyID := make(map[int64]service.RentalProxyInfo, len(rentalInfos))
+		allIDs := make([]int64, 0, len(ownedIDs)+len(rentalInfos))
+		seenID := make(map[int64]struct{}, len(ownedIDs)+len(rentalInfos))
+		for _, id := range ownedIDs {
+			if _, exists := seenID[id]; !exists {
+				seenID[id] = struct{}{}
+				allIDs = append(allIDs, id)
+			}
+		}
+		for _, info := range rentalInfos {
+			rentalByProxyID[info.ProxyID] = info
+			if _, exists := seenID[info.ProxyID]; !exists {
+				seenID[info.ProxyID] = struct{}{}
+				allIDs = append(allIDs, info.ProxyID)
+			}
+		}
+		if len(allIDs) == 0 {
 			if withCount {
 				response.Success(c, []dto.AdminProxyWithAccountCount{})
 			} else {
@@ -207,7 +277,7 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 			}
 			return
 		}
-		fetched, err := h.adminService.GetProxiesByIDs(c.Request.Context(), ids)
+		fetched, err := h.adminService.GetProxiesByIDs(c.Request.Context(), allIDs)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -216,9 +286,38 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 			out := make([]dto.AdminProxyWithAccountCount, 0, len(fetched))
 			fetchIDs := make([]int64, 0, len(fetched))
 			for i := range fetched {
-				fetchIDs = append(fetchIDs, fetched[i].ID)
-				item := *dto.ProxyWithAccountCountFromServiceAdmin(&service.ProxyWithAccountCount{Proxy: fetched[i]})
+				p := fetched[i]
+				fetchIDs = append(fetchIDs, p.ID)
+				pw := service.ProxyWithAccountCount{
+					Proxy:            p,
+					IPAddress:        p.ExitIP,
+					Country:          p.ExitCountry,
+					CountryCode:      p.ExitCountryCode,
+					Region:           p.ExitRegion,
+					City:             p.ExitCity,
+					Timezone:         p.ExitTimezone,
+					UTCOffsetSeconds: p.ExitUTCOffsetSeconds,
+					ASN:              p.ExitASN,
+					ISP:              p.ExitISP,
+				}
+				if p.ExitCheckedAt != nil {
+					ts := p.ExitCheckedAt.Unix()
+					pw.ExitCheckedAt = &ts
+				}
+				item := *dto.ProxyWithAccountCountFromServiceAdmin(&pw)
 				item.Password = ""
+				if rentalInfo, isRental := rentalByProxyID[p.ID]; isRental {
+					item.Host = ""
+					item.Port = 0
+					item.Username = ""
+					item.Password = ""
+					item.IsRental = true
+					orderID := rentalInfo.OrderID
+					item.RentalOrderID = &orderID
+					if rentalInfo.ExpiresAt != nil {
+						item.ExpiresAt = rentalInfo.ExpiresAt
+					}
+				}
 				out = append(out, item)
 			}
 			cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), fetchIDs)
@@ -232,9 +331,22 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 		out := make([]dto.AdminProxy, 0, len(fetched))
 		fetchIDs := make([]int64, 0, len(fetched))
 		for i := range fetched {
-			fetchIDs = append(fetchIDs, fetched[i].ID)
-			item := *dto.ProxyFromServiceAdmin(&fetched[i])
+			p := fetched[i]
+			fetchIDs = append(fetchIDs, p.ID)
+			item := *dto.ProxyFromServiceAdmin(&p)
 			item.Password = ""
+			if rentalInfo, isRental := rentalByProxyID[p.ID]; isRental {
+				item.Host = ""
+				item.Port = 0
+				item.Username = ""
+				item.Password = ""
+				item.IsRental = true
+				orderID := rentalInfo.OrderID
+				item.RentalOrderID = &orderID
+				if rentalInfo.ExpiresAt != nil {
+					item.ExpiresAt = rentalInfo.ExpiresAt
+				}
+			}
 			out = append(out, item)
 		}
 		cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), fetchIDs)
@@ -310,6 +422,9 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 
 	resp := dto.ProxyFromServiceAdmin(proxy)
 	if resp != nil {
+		if !isAdminCaller(c) {
+			resp.Password = ""
+		}
 		cc, rpm := h.proxyRuntimeUsage(c.Request.Context(), []int64{proxyID})
 		resp.Concurrency = cc[proxyID]
 		resp.CurrentRPM = rpm[proxyID]
@@ -325,7 +440,20 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.BackupProxyID) {
+	adminCaller := isAdminCaller(c)
+	ownerID := getAdminIDFromContext(c)
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(req.FallbackMode), service.FallbackModeDirect) {
+			response.ErrorFrom(c, service.ErrProxyDirectFallbackForbidden)
+			return
+		}
+	}
+	if !allowOwnedBackupProxy(c, h.stewards, req.BackupProxyID) {
 		return
 	}
 
@@ -354,23 +482,20 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 			return nil, err
 		}
 		if h.stewards != nil {
-			_ = h.stewards.ClaimProxy(ctx, proxy.ID, getAdminIDFromContext(c))
+			if claimErr := h.stewards.ClaimProxy(ctx, proxy.ID, ownerID); claimErr != nil && !adminCaller {
+				return nil, claimErr
+			}
 		}
-		return dto.ProxyFromServiceAdmin(proxy), nil
+		resp := dto.ProxyFromServiceAdmin(proxy)
+		if resp != nil && !adminCaller {
+			resp.Password = ""
+		}
+		return resp, nil
 	})
 }
 
 func (h *ProxyHandler) allowProxy(c *gin.Context, proxyID int64) bool {
-	role, ok := middleware.GetUserRoleFromContext(c)
-	if !ok || role == service.RoleAdmin {
-		return true
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || h.stewards == nil || !h.stewards.OwnsProxy(c.Request.Context(), proxyID, subject.UserID) {
-		response.Forbidden(c, "not your proxy")
-		return false
-	}
-	return true
+	return requireStewardProxy(c, h.stewards, proxyID)
 }
 
 // Update handles updating a proxy
@@ -390,7 +515,12 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.BackupProxyID.Value) {
+	adminCaller := isAdminCaller(c)
+	if !adminCaller && strings.EqualFold(strings.TrimSpace(req.FallbackMode), service.FallbackModeDirect) {
+		response.ErrorFrom(c, service.ErrProxyDirectFallbackForbidden)
+		return
+	}
+	if !allowOwnedBackupProxy(c, h.stewards, req.BackupProxyID.Value) {
 		return
 	}
 
@@ -428,7 +558,11 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.ProxyFromServiceAdmin(proxy))
+	resp := dto.ProxyFromServiceAdmin(proxy)
+	if resp != nil && !adminCaller {
+		resp.Password = ""
+	}
+	response.Success(c, resp)
 }
 
 // Delete handles deleting a proxy
@@ -465,18 +599,8 @@ func (h *ProxyHandler) BatchDelete(c *gin.Context) {
 		return
 	}
 
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		subject, ok := middleware.GetAuthSubjectFromContext(c)
-		if !ok || h.stewards == nil {
-			response.Forbidden(c, "forbidden")
-			return
-		}
-		for _, id := range req.IDs {
-			if !h.stewards.OwnsProxy(c.Request.Context(), id, subject.UserID) {
-				response.Forbidden(c, "not your proxy")
-				return
-			}
-		}
+	if !requireStewardProxies(c, h.stewards, req.IDs) {
+		return
 	}
 
 	result, err := h.adminService.BatchDeleteProxies(c.Request.Context(), req.IDs)
@@ -571,8 +695,21 @@ func (h *ProxyHandler) GetProxyAccounts(c *gin.Context) {
 		return
 	}
 
+	adminCaller := isAdminCaller(c)
+	var ownerID int64
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+	}
+
 	out := make([]dto.ProxyAccountSummary, 0, len(accounts))
 	for i := range accounts {
+		if !adminCaller && !h.stewards.OwnsAccount(c.Request.Context(), accounts[i].ID, ownerID) {
+			continue
+		}
 		out = append(out, *dto.ProxyAccountSummaryFromService(&accounts[i]))
 	}
 	response.Success(c, out)
@@ -601,6 +738,27 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		return
 	}
 
+	adminCaller := isAdminCaller(c)
+	ownerID := getAdminIDFromContext(c)
+	var ownedDupKeys map[string]struct{}
+	if !adminCaller {
+		var ok bool
+		ownerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+		ownedIDs := h.stewards.ListProxyIDs(c.Request.Context(), ownerID)
+		ownedProxies, err := h.adminService.GetProxiesByIDs(c.Request.Context(), ownedIDs)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		ownedDupKeys = make(map[string]struct{}, len(ownedProxies))
+		for _, p := range ownedProxies {
+			ownedDupKeys[buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)] = struct{}{}
+		}
+	}
+
 	created := 0
 	skipped := 0
 
@@ -611,16 +769,25 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		username := strings.TrimSpace(item.Username)
 		password := strings.TrimSpace(item.Password)
 
-		// Check for duplicates (same host, port, username, password)
-		exists, err := h.adminService.CheckProxyExists(c.Request.Context(), host, item.Port, username, password)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-
-		if exists {
-			skipped++
-			continue
+		// Non-admin duplicate check is strictly scoped to caller's owned proxies
+		// (prevents cross-tenant credential existence oracle).
+		if !adminCaller {
+			key := buildProxyKey(protocol, host, item.Port, username, password)
+			if _, exists := ownedDupKeys[key]; exists {
+				skipped++
+				continue
+			}
+			ownedDupKeys[key] = struct{}{}
+		} else {
+			exists, err := h.adminService.CheckProxyExists(c.Request.Context(), host, item.Port, username, password)
+			if err != nil {
+				response.ErrorFrom(c, err)
+				return
+			}
+			if exists {
+				skipped++
+				continue
+			}
 		}
 
 		// Create proxy with default name
@@ -639,7 +806,10 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		}
 
 		if h.stewards != nil {
-			_ = h.stewards.ClaimProxy(c.Request.Context(), createdProxy.ID, getAdminIDFromContext(c))
+			if claimErr := h.stewards.ClaimProxy(c.Request.Context(), createdProxy.ID, ownerID); claimErr != nil && !adminCaller {
+				response.ErrorFrom(c, claimErr)
+				return
+			}
 		}
 
 		created++

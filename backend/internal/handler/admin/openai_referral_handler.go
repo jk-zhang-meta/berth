@@ -34,6 +34,9 @@ func (h *OpenAIOAuthHandler) referralAccountID(c *gin.Context) (int64, bool) {
 		response.BadRequest(c, "Invalid account ID")
 		return 0, false
 	}
+	if !h.allowAccount(c, id) {
+		return 0, false
+	}
 	if h.referralService == nil {
 		response.BadRequest(c, "OpenAI referral service is not enabled")
 		return 0, false

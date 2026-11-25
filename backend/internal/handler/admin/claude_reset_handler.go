@@ -22,6 +22,9 @@ func (h *AccountHandler) ClaudeResetCredits(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if !h.allowAccount(c, id) {
+		return
+	}
 	if h.claudeResetCredits == nil {
 		response.Error(c, 503, "Claude reset service unavailable")
 		return
@@ -41,6 +44,9 @@ func (h *AccountHandler) RedeemClaudeResetCredit(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if !h.allowAccount(c, id) {
 		return
 	}
 	if h.claudeResetCredits == nil {

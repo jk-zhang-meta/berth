@@ -1314,6 +1314,7 @@ const applyUpstreamBillingRateSnapshots = async (
 }
 
 const refreshUpstreamBillingRates = async (force = false) => {
+  if (!authStore.isAdmin) return
   if (upstreamBillingRateRefreshing.value || loading.value || accounts.value.length === 0) return
   if (!force && (
     probingUpstreamBilling.size > 0 ||
@@ -1560,7 +1561,10 @@ const refreshAccountsIncrementally = async () => {
 }
 
 const handleManualRefresh = async () => {
-  await Promise.all([load(), loadUpstreamBillingProbeGlobalState()])
+  await Promise.all([
+    load(),
+    authStore.isAdmin ? loadUpstreamBillingProbeGlobalState() : Promise.resolve()
+  ])
   // Force usage cells to refetch /usage on explicit user refresh.
   usageManualRefreshToken.value += 1
 }

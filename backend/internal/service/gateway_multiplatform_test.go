@@ -2732,7 +2732,9 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID)
 		require.Contains(t, concurrencyCache.acquiredAccountIDs, int64(1))
 		require.Contains(t, concurrencyCache.acquiredAccountIDs, int64(2))
-		require.Equal(t, int64(2), cache.sessionBindings[sessionHash])
+		// Berth Track B: transient spillover when sticky account is healthy-busy must NOT overwrite sticky binding.
+		require.True(t, result.StickySpillover)
+		require.Equal(t, int64(1), cache.sessionBindings[sessionHash])
 		require.NotNil(t, result.ReleaseFunc)
 		result.ReleaseFunc()
 	})

@@ -37,7 +37,7 @@ func TestProxyHandlerUpdatePreservesFieldPresence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &proxyPartialUpdateService{}
-			router := gin.New()
+			router := newAdminTestRouter()
 			router.PUT("/proxies/:id", NewProxyHandler(svc).Update)
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPut, "/proxies/9", strings.NewReader(tc.body))

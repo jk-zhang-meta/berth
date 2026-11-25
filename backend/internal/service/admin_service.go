@@ -716,6 +716,7 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
 	marketplace          *MarketplaceService
+	concurrencyAdvisor   *BerthConcurrencyAdvisor
 	cfg                  *config.Config
 	userRepo             UserRepository
 	groupRepo            GroupRepository
@@ -746,6 +747,13 @@ type adminServiceImpl struct {
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	// 分组平台变更后用来失效渠道缓存；可为 nil（缓存会在 TTL 到期后自然重建）
 	channelCacheInvalidator ChannelCacheInvalidator
+}
+
+// SetConcurrencyAdvisor installs the adaptive global concurrency advisor on AdminService.
+func (s *adminServiceImpl) SetConcurrencyAdvisor(advisor *BerthConcurrencyAdvisor) {
+	if s != nil {
+		s.concurrencyAdvisor = advisor
+	}
 }
 
 // ChannelCacheInvalidator 失效渠道缓存。

@@ -42,7 +42,7 @@ func newGrokMediaEligibilityRouter(account *service.Account) *gin.Engine {
 		account:          account,
 	}
 	h := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/accounts/:id/grok-media-eligibility", h.GetGrokMediaEligibility)
 	router.PUT("/accounts/:id/grok-media-eligibility", h.UpdateGrokMediaEligibility)
 	return router

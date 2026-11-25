@@ -131,6 +131,14 @@ type FailoverState struct {
 	ForceCacheBilling     bool
 	hasBoundSession       bool
 
+	// Berth Track B: cross-hop 403 blast-radius protection & decorrelated failover jitter.
+	OperationID   string
+	SessionHash   string
+	BlastRadius   *service.BerthBlastRadiusGuard
+	SessionToxic  bool
+	DisableJitter bool
+	lastJitter    time.Duration
+
 	// profitVetoedAccountIDs 记录被分组利润门终检否决的账号，是 FailedAccountIDs
 	// 的子集。之所以单独维护：HandleSelectionExhausted 的 503 退避分支会清空
 	// FailedAccountIDs，而利润否决在同一请求内的判定不会改变（下游倍率 D 已在
@@ -209,8 +217,9 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	// 同账号重试不算切换账号，粘性会话仅在实际切换时强制缓存计费。
+	// Berth Track B (Bug B12): HTTP 403 MUST perform 0 same-account retries.
 	retryCount := s.SameAccountRetryCount[accountID]
-	sameAccountRetry := sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
+	sameAccountRetry := failoverErr.StatusCode != http.StatusForbidden && sameAccountRetryAllowed(failoverErr, retryCount, retryLimit)
 	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true
 	}
@@ -241,6 +250,33 @@ func (s *FailoverState) HandleFailoverError(
 	// 加入失败列表
 	s.FailedAccountIDs[accountID] = struct{}{}
 
+	// Berth Track B (Report 02 §4.4C + Codex Review #3.4):
+	// Enforce cross-hop X-Berth-Operation-ID 403 blast-radius cap (max 1 switch = max 2 accounts),
+	// rapid identical-5xx cap, and 5m session toxicity breaker.
+	if s.BlastRadius != nil {
+		decision := s.BlastRadius.RecordAndCheckFailover(
+			s.OperationID,
+			s.SessionHash,
+			accountID,
+			failoverErr.StatusCode,
+			s.SwitchCount,
+		)
+		if decision.SessionToxic {
+			s.SessionToxic = true
+		}
+		if !decision.AllowSwitch {
+			logger.FromContext(ctx).Warn("gateway.failover_blast_radius_stopped",
+				zap.Int64("account_id", accountID),
+				zap.Int("upstream_status", failoverErr.StatusCode),
+				zap.String("reason", decision.Reason),
+				zap.Bool("session_toxic", decision.SessionToxic),
+				zap.Int("distinct_403_accounts", decision.Distinct403Accounts),
+				zap.Int("switch_count", s.SwitchCount),
+			)
+			return FailoverExhausted
+		}
+	}
+
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {
 		return FailoverExhausted
@@ -258,6 +294,12 @@ func (s *FailoverState) HandleFailoverError(
 	// Antigravity 平台换号线性递增延时
 	if platform == service.PlatformAntigravity {
 		delay := time.Duration(s.SwitchCount-1) * time.Second
+		if !sleepWithContext(ctx, delay) {
+			return FailoverCanceled
+		}
+	} else if s.BlastRadius != nil && !s.DisableJitter {
+		delay := service.DecorrelatedFailoverJitter(s.lastJitter)
+		s.lastJitter = delay
 		if !sleepWithContext(ctx, delay) {
 			return FailoverCanceled
 		}

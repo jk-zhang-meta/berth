@@ -31,6 +31,11 @@ type WorkSession struct {
 	LastAccountID       *int64               `json:"last_account_id,omitempty"`
 	AccountName         string               `json:"account_name,omitempty"`
 	AccountPlatform     string               `json:"account_platform,omitempty"`
+	CohortTimezone      string               `json:"cohort_timezone,omitempty"`
+	CohortCountryCode   string               `json:"cohort_country_code,omitempty"`
+	CohortASNClass      string               `json:"cohort_asn_class,omitempty"`
+	CageStrictMode      bool                 `json:"cage_strict_mode"`
+	FailoverEpoch       int                  `json:"failover_epoch"`
 	Status              string               `json:"status"`
 	StartedAt           time.Time            `json:"started_at"`
 	EndedAt             *time.Time           `json:"ended_at,omitempty"`
@@ -62,6 +67,11 @@ type WorkSessionPref struct {
 	QueueAccountIDs   []int64
 	Importance        int
 	Occupancy         map[int64]int
+	CohortTimezone    string
+	CohortCountryCode string
+	CohortASNClass    string
+	CageStrictMode    bool
+	FailoverEpoch     int
 }
 
 type AgentSessionReport struct {
@@ -144,12 +154,17 @@ func (s *WorkSessionStore) Prepare(ctx context.Context, userID, apiKeyID int64, 
 	queue := s.Queue(ctx, session.ID)
 	session.Queue = queue
 	pref := &WorkSessionPref{
-		UserID:          userID,
-		APIKeyID:        apiKeyID,
-		ClientSessionID: clientSessionID,
-		Platform:        session.Platform,
-		Importance:      session.Importance,
-		Occupancy:       s.LiveOccupancy(ctx),
+		UserID:            userID,
+		APIKeyID:          apiKeyID,
+		ClientSessionID:   clientSessionID,
+		Platform:          session.Platform,
+		Importance:        session.Importance,
+		Occupancy:         s.LiveOccupancy(ctx),
+		CohortTimezone:    session.CohortTimezone,
+		CohortCountryCode: session.CohortCountryCode,
+		CohortASNClass:    session.CohortASNClass,
+		CageStrictMode:    session.CageStrictMode,
+		FailoverEpoch:     session.FailoverEpoch,
 	}
 	for _, member := range queue {
 		if member.Platform == "" || normalizeSessionPlatform(member.Platform) == session.Platform {
@@ -184,8 +199,10 @@ func (s *WorkSessionStore) Touch(ctx context.Context, userID, apiKeyID int64, cl
 		RETURNING id, user_id, api_key_id, client_session_id, platform,
 			COALESCE(agent, ''), COALESCE(ags_id, ''), COALESCE(device_id, ''),
 			COALESCE(title, ''), COALESCE(description, ''), COALESCE(cwd, ''), COALESCE(host, ''),
-			importance, assigned_account_id, last_account_id, status,
-			started_at, ended_at, last_seen_at, created_at
+			importance, assigned_account_id, last_account_id,
+			COALESCE(cohort_timezone, ''), COALESCE(cohort_country_code, ''), COALESCE(cohort_asn_class, ''),
+			COALESCE(cage_strict_mode, false), COALESCE(failover_epoch, 1),
+			status, started_at, ended_at, last_seen_at, created_at
 	`, userID, key, clientSessionID, platform)
 	return scanWorkSession(row)
 }
@@ -245,8 +262,10 @@ func (s *WorkSessionStore) ReportAgentSession(ctx context.Context, userID, apiKe
 		RETURNING id, user_id, api_key_id, client_session_id, platform,
 			COALESCE(agent, ''), COALESCE(ags_id, ''), COALESCE(device_id, ''),
 			COALESCE(title, ''), COALESCE(description, ''), COALESCE(cwd, ''), COALESCE(host, ''),
-			importance, assigned_account_id, last_account_id, status,
-			started_at, ended_at, last_seen_at, created_at
+			importance, assigned_account_id, last_account_id,
+			COALESCE(cohort_timezone, ''), COALESCE(cohort_country_code, ''), COALESCE(cohort_asn_class, ''),
+			COALESCE(cage_strict_mode, false), COALESCE(failover_epoch, 1),
+			status, started_at, ended_at, last_seen_at, created_at
 	`, userID, apiKey, clientID, platform, strings.TrimSpace(report.Agent), report.AgsID, report.DeviceID,
 		strings.TrimSpace(report.Description), strings.TrimSpace(report.CWD), strings.TrimSpace(report.Host),
 		status, started, ended)
@@ -298,6 +317,31 @@ func (s *WorkSessionStore) BindAccount(ctx context.Context, userID int64, client
 		UPDATE work_sessions SET last_account_id = $1, last_seen_at = now(), updated_at = now(), status = 'live', ended_at = NULL
 		WHERE user_id = $2 AND client_session_id = $3 AND platform = $4
 	`, accountID, userID, clientSessionID, normalizeSessionPlatform(platform))
+}
+
+// BindCohort persists the session's active egress cohort (and optionally increments
+// failover_epoch on an explicit cross-cohort handover).
+func (s *WorkSessionStore) BindCohort(ctx context.Context, userID int64, clientSessionID, platform string, cohort CageCohort, incrementEpoch bool) {
+	if s == nil || s.db == nil || userID <= 0 || strings.TrimSpace(clientSessionID) == "" {
+		return
+	}
+	norm := cohort.Normalized()
+	if !norm.IsSet() {
+		return
+	}
+	epochExpr := "COALESCE(failover_epoch, 1)"
+	if incrementEpoch {
+		epochExpr = "COALESCE(failover_epoch, 1) + 1"
+	}
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE work_sessions
+		SET cohort_timezone = $1,
+		    cohort_country_code = NULLIF($2, ''),
+		    cohort_asn_class = NULLIF($3, ''),
+		    failover_epoch = `+epochExpr+`,
+		    updated_at = now()
+		WHERE user_id = $4 AND client_session_id = $5 AND platform = $6
+	`, norm.Timezone, norm.CountryCode, norm.ASNClass, userID, clientSessionID, normalizeSessionPlatform(platform))
 }
 
 func (s *WorkSessionStore) LiveOccupancy(ctx context.Context) map[int64]int {
@@ -353,7 +397,10 @@ func (s *WorkSessionStore) List(ctx context.Context, userID int64) ([]WorkSessio
 		       COALESCE(ws.agent,''), COALESCE(ws.ags_id,''), COALESCE(ws.device_id,''),
 		       COALESCE(ws.title,''), COALESCE(ws.description,''), COALESCE(ws.cwd,''), COALESCE(ws.host,''),
 		       ws.importance, ws.assigned_account_id, ws.last_account_id,
-		       COALESCE(a.name,''), COALESCE(a.platform,''), ws.status,
+		       COALESCE(a.name,''), COALESCE(a.platform,''),
+		       COALESCE(ws.cohort_timezone,''), COALESCE(ws.cohort_country_code,''), COALESCE(ws.cohort_asn_class,''),
+		       COALESCE(ws.cage_strict_mode,false), COALESCE(ws.failover_epoch,1),
+		       ws.status,
 		       ws.started_at, ws.ended_at, ws.last_seen_at, ws.created_at,
 		       COALESCE(u.requests,0), COALESCE(u.input_tokens,0), COALESCE(u.output_tokens,0),
 		       COALESCE(u.cache_read_tokens,0), COALESCE(u.cache_creation_tokens,0), COALESCE(u.total_cost,0)
@@ -703,7 +750,13 @@ func scanWorkSession(row scannable) (*WorkSession, error) {
 	var item WorkSession
 	var apiKey, assigned, last sql.NullInt64
 	var ended sql.NullTime
-	err := row.Scan(&item.ID, &item.UserID, &apiKey, &item.ClientSessionID, &item.Platform, &item.Agent, &item.AgsID, &item.DeviceID, &item.Title, &item.Description, &item.CWD, &item.Host, &item.Importance, &assigned, &last, &item.Status, &item.StartedAt, &ended, &item.LastSeenAt, &item.CreatedAt)
+	err := row.Scan(
+		&item.ID, &item.UserID, &apiKey, &item.ClientSessionID, &item.Platform,
+		&item.Agent, &item.AgsID, &item.DeviceID, &item.Title, &item.Description, &item.CWD, &item.Host,
+		&item.Importance, &assigned, &last,
+		&item.CohortTimezone, &item.CohortCountryCode, &item.CohortASNClass, &item.CageStrictMode, &item.FailoverEpoch,
+		&item.Status, &item.StartedAt, &ended, &item.LastSeenAt, &item.CreatedAt,
+	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -722,6 +775,9 @@ func scanWorkSession(row scannable) (*WorkSession, error) {
 	if ended.Valid {
 		item.EndedAt = &ended.Time
 	}
+	if item.FailoverEpoch <= 0 {
+		item.FailoverEpoch = 1
+	}
 	return &item, nil
 }
 
@@ -729,7 +785,14 @@ func scanWorkSessionList(row scannable) (WorkSession, error) {
 	var item WorkSession
 	var apiKey, assigned, last sql.NullInt64
 	var ended sql.NullTime
-	err := row.Scan(&item.ID, &item.UserID, &apiKey, &item.ClientSessionID, &item.Platform, &item.Agent, &item.AgsID, &item.DeviceID, &item.Title, &item.Description, &item.CWD, &item.Host, &item.Importance, &assigned, &last, &item.AccountName, &item.AccountPlatform, &item.Status, &item.StartedAt, &ended, &item.LastSeenAt, &item.CreatedAt, &item.Requests, &item.InputTokens, &item.OutputTokens, &item.CacheReadTokens, &item.CacheCreationTokens, &item.TotalCost)
+	err := row.Scan(
+		&item.ID, &item.UserID, &apiKey, &item.ClientSessionID, &item.Platform,
+		&item.Agent, &item.AgsID, &item.DeviceID, &item.Title, &item.Description, &item.CWD, &item.Host,
+		&item.Importance, &assigned, &last, &item.AccountName, &item.AccountPlatform,
+		&item.CohortTimezone, &item.CohortCountryCode, &item.CohortASNClass, &item.CageStrictMode, &item.FailoverEpoch,
+		&item.Status, &item.StartedAt, &ended, &item.LastSeenAt, &item.CreatedAt,
+		&item.Requests, &item.InputTokens, &item.OutputTokens, &item.CacheReadTokens, &item.CacheCreationTokens, &item.TotalCost,
+	)
 	if err != nil {
 		return item, err
 	}
@@ -744,6 +807,9 @@ func scanWorkSessionList(row scannable) (WorkSession, error) {
 	}
 	if ended.Valid {
 		item.EndedAt = &ended.Time
+	}
+	if item.FailoverEpoch <= 0 {
+		item.FailoverEpoch = 1
 	}
 	item.TotalTokens = item.InputTokens + item.OutputTokens + item.CacheReadTokens + item.CacheCreationTokens
 	return item, nil

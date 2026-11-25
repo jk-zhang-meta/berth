@@ -12,7 +12,6 @@ import (
 	"github.com/jk-zhang-meta/berth/internal/pkg/adminaccess"
 	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -36,16 +35,7 @@ func (h *OpenAIOAuthHandler) SetStewards(store *service.StewardStore) {
 }
 
 func (h *OpenAIOAuthHandler) allowAccount(c *gin.Context, accountID int64) bool {
-	role, ok := middleware.GetUserRoleFromContext(c)
-	if !ok || role == service.RoleAdmin {
-		return true
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || h.stewards == nil || !h.stewards.OwnsAccount(c.Request.Context(), accountID, subject.UserID) {
-		response.Forbidden(c, "not your account")
-		return false
-	}
-	return true
+	return requireStewardAccount(c, h.stewards, accountID)
 }
 
 type openAIQuotaService interface {
@@ -354,7 +344,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		RedirectURI string  `json:"redirect_uri"`
 		ProxyID     *int64  `json:"proxy_id"`
 		Name        string  `json:"name"`
-		Concurrency int     `json:"concurrency"`
+		Concurrency *int    `json:"concurrency"`
 		Priority    int     `json:"priority"`
 		GroupIDs    []int64 `json:"group_ids"`
 	}
@@ -362,7 +352,10 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
+		return
+	}
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, isAccountUser(c)) {
 		return
 	}
 
@@ -393,6 +386,11 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		name = "OpenAI OAuth Account"
 	}
 
+	concurrency := 0
+	if req.Concurrency != nil {
+		concurrency = *req.Concurrency
+	}
+
 	// Create account
 	account, err := h.adminService.CreateAccount(c.Request.Context(), accountCreatePolicy(c, &service.CreateAccountInput{
 		Name:        name,
@@ -401,7 +399,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Credentials: credentials,
 		Extra:       nil,
 		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
+		Concurrency: concurrency,
 		Priority:    req.Priority,
 		GroupIDs:    req.GroupIDs,
 	}))
@@ -410,7 +408,10 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		return
 	}
 	if h.stewards != nil {
-		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
+		if err := h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c)); err != nil && isAccountUser(c) {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 
 	response.Success(c, dto.AccountFromService(account))
@@ -424,15 +425,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, isAccountUser(c)) {
 		return
 	}
 	if err := service.ValidateOpenAILongContextBillingExtra(service.PlatformOpenAI, req.Extra); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if req.Concurrency != nil && *req.Concurrency < 0 {
-		response.BadRequest(c, "concurrency must be >= 0")
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
 		return
 	}
 	if req.Priority != nil && *req.Priority < 0 {
@@ -641,6 +641,10 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 	var req CreateShadowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.Concurrency < 0 {
+		response.ErrorFrom(c, service.ErrAccountConcurrencyInvalid)
 		return
 	}
 

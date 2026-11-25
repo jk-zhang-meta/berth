@@ -236,6 +236,13 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		}
 	}
 
+	if req.Concurrency < 0 || req.Concurrency > MaxAccountConcurrency {
+		return nil, ErrAccountConcurrencyInvalid
+	}
+	concurrency := req.Concurrency
+	if concurrency == 0 {
+		concurrency = DefaultAccountConcurrencyFor(req.Platform, req.Type)
+	}
 	// 创建账号
 	account := &Account{
 		Name:        req.Name,
@@ -245,7 +252,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		Credentials: SanitizeStoredCredentials(req.Platform, req.Credentials),
 		Extra:       prepareCodexFingerprintExtraForCreate(req.Platform, req.Type, req.Extra),
 		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
+		Concurrency: concurrency,
 		Priority:    req.Priority,
 		Status:      StatusActive,
 		ExpiresAt:   req.ExpiresAt,
@@ -356,6 +363,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	if req.Concurrency != nil {
+		if err := ValidateAccountConcurrency(*req.Concurrency); err != nil {
+			return nil, err
+		}
 		account.Concurrency = *req.Concurrency
 	}
 
