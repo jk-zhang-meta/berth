@@ -140,7 +140,7 @@ func TestScopedCodexImportIdempotencySeparatesKeysAndPolicy(t *testing.T) {
 	memory := &scopedCodexMemoryService{codexImportMemoryAdminService: newCodexImportMemoryAdminService(nil)}
 	h := &AccountHandler{adminService: memory}
 	principal := &adminaccess.Principal{KeyID: "aaaaaaaaaaaaaaaaaaaaaaaa", Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.create", "accounts.credentials", "accounts.schedule", "accounts.network"}, GroupIDs: []int64{2}, AccountTypes: []string{"oauth"}}}}}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.Use(func(c *gin.Context) {
 		if principal != nil {
 			c.Request = c.Request.WithContext(adminaccess.WithPrincipal(c.Request.Context(), principal))

@@ -549,9 +549,10 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
 	t.Run("尊重账号级retryLimit_配置1次只重试1次", func(t *testing.T) {
 		// 回归测试：Anthropic 等路径此前硬编码同账号重试 3 次，忽略账号
 		// pool_mode_retry_count 配置。此处验证传入 retryLimit=1 时只重试 1 次即切换。
+		// 注：403 按 Berth Track B 策略禁止同账号重试，此处使用 503 验证 retryLimit 计数语义。
 		mock := &mockTempUnscheduler{}
 		fs := NewFailoverState(5, false)
-		err := newTestFailoverErr(403, true, false)
+		err := newTestFailoverErr(503, true, false)
 		const retryLimit = 1
 
 		// 第 1 次：同账号重试

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type StewardStore struct {
@@ -63,6 +64,51 @@ func (s *StewardStore) ListAccountIDs(ctx context.Context, userID int64) []int64
 
 func (s *StewardStore) ListProxyIDs(ctx context.Context, userID int64) []int64 {
 	return s.listIDs(ctx, `SELECT proxy_id FROM proxy_stewards WHERE user_id = $1 ORDER BY proxy_id`, userID)
+}
+
+type RentalProxyInfo struct {
+	ProxyID   int64
+	OrderID   int64
+	ExpiresAt *time.Time
+}
+
+// ListActiveRentalProxies returns active rented proxy clones for the given buyer.
+func (s *StewardStore) ListActiveRentalProxies(ctx context.Context, userID int64) []RentalProxyInfo {
+	if s == nil || s.db == nil || userID <= 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT o.rental_proxy_id, o.id, o.expires_at
+		FROM berth_marketplace_orders o
+		JOIN proxies p ON p.id = o.rental_proxy_id
+		WHERE o.buyer_id = $1
+		  AND o.resource_type = 'proxy'
+		  AND o.rental_proxy_id IS NOT NULL
+		  AND o.status = 'active'
+		  AND o.starts_at <= clock_timestamp()
+		  AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+		  AND p.deleted_at IS NULL
+		  AND p.status = 'active'
+		  AND (p.expires_at IS NULL OR p.expires_at > clock_timestamp())
+		ORDER BY o.rental_proxy_id
+	`, userID)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RentalProxyInfo
+	for rows.Next() {
+		var item RentalProxyInfo
+		var expiresAt sql.NullTime
+		if err := rows.Scan(&item.ProxyID, &item.OrderID, &expiresAt); err == nil {
+			if expiresAt.Valid {
+				t := expiresAt.Time
+				item.ExpiresAt = &t
+			}
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *StewardStore) LabelsForAccounts(ctx context.Context, ids []int64) map[int64]OwnerLabel {

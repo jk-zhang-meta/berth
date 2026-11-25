@@ -279,7 +279,19 @@ func (s *adminServiceImpl) validateVerifiedProxyBindingCapacity(ctx context.Cont
 		return err
 	}
 	if !proxy.HasFreshVerifiedExitProfile(time.Now()) {
-		return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
+		// Active rented proxy clones cannot be manually re-tested by buyers via POST /proxies/:id/test.
+		// Verify active lease state and refresh exit profile on-the-fly if prober is available,
+		// falling back to the verified exit profile stored at checkout time so rentals remain bindable >15m post-checkout.
+		rental, allowed, rerr := s.checkRentalProxyForBinding(ctx, *proxyID)
+		if rerr != nil || !rental || !allowed || !proxy.HasVerifiedExitProfile() {
+			return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
+		}
+		if s.proxyProber != nil {
+			if exitInfo, latencyMs, checkedAt, perr := s.probeVerifiedProxyExit(ctx, proxy); perr == nil {
+				_ = s.proxyRepo.Update(ctx, proxy)
+				s.saveVerifiedProxyProbe(ctx, proxy.ID, exitInfo, latencyMs, checkedAt)
+			}
+		}
 	}
 	if proxy.MaxAccounts > 0 && additional > 0 {
 		count, err := s.proxyRepo.CountAccountsByProxyID(ctx, *proxyID)
@@ -292,6 +304,13 @@ func (s *adminServiceImpl) validateVerifiedProxyBindingCapacity(ctx context.Cont
 		}
 	}
 	return nil
+}
+
+func (s *adminServiceImpl) checkRentalProxyForBinding(ctx context.Context, proxyID int64) (rental, allowed bool, err error) {
+	if s != nil && s.marketplace != nil {
+		return s.marketplace.CheckRentalProxy(ctx, proxyID)
+	}
+	return proxyRentalState(ctx, proxyID, false)
 }
 
 func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error) {

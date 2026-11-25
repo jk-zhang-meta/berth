@@ -2387,7 +2387,12 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 
 			h.Responses(c)
 
-			require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
+			if tt.statusCode == http.StatusForbidden {
+				// Berth Track B: 403 performs 0 same-account retries and switches directly to healthy fallback.
+				require.Equal(t, []int64{9910, 9911}, upstream.calls())
+			} else {
+				require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
+			}
 			require.Equal(t, http.StatusOK, rec.Code)
 			require.Equal(t, "resp_healthy", gjson.GetBytes(rec.Body.Bytes(), "id").String())
 		})

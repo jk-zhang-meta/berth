@@ -973,6 +973,24 @@ func newCodexImportMemoryAdminService(accounts []service.Account) *codexImportMe
 	}
 }
 
+func (s *codexImportMemoryAdminService) GetAccountsByIDs(_ context.Context, ids []int64) ([]*service.Account, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	want := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	out := make([]*service.Account, 0, len(ids))
+	for i := range s.accounts {
+		if _, ok := want[s.accounts[i].ID]; ok {
+			acc := s.accounts[i]
+			out = append(out, &acc)
+		}
+	}
+	return out, nil
+}
+
 func (s *codexImportMemoryAdminService) CreateAccount(ctx context.Context, input *service.CreateAccountInput) (*service.Account, error) {
 	s.createdAccounts = append(s.createdAccounts, input)
 	if s.createAccountErr != nil {

@@ -275,6 +275,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 	}
 
+	// Track sticky spillover & sticky cohort across layers so:
+	//  - transient busy spillover NEVER overwrites the existing sticky binding
+	//  - failover prefers the sticky account's cohort when no explicit Cage header is set
+	var stickySpillover bool
+	var stickyAccountForCohort *Account
+	if stickyAccountID > 0 {
+		if acc, ok := accountByID[stickyAccountID]; ok {
+			stickyAccountForCohort = acc
+		}
+	}
+
 	// ============ Layer 1: 模型路由优先选择（优先级高于粘性会话） ============
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
 		// 1. 过滤出路由列表中可调度的账号
@@ -368,8 +379,24 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						rpmPass := gatePass && s.isAccountSchedulableForRPM(ctx, stickyAccount, true)
 
 						if rpmPass { // 粘性会话窗口费用+RPM 检查
-							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, stickyAccount.Concurrency, stickyAccount.GetBaseRPM())
-							if err == nil && result.Acquired {
+							cLive := DefaultAIMDLimiter().EffectiveLimit(stickyAccountID, stickyAccount.Concurrency)
+							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, cLive, stickyAccount.GetBaseRPM())
+							if (err != nil || result == nil || !result.Acquired) && (err == nil && (result == nil || !result.BlockedByRPM())) && ShouldRunStickyMicroWait(ctx) {
+								budget := resolveStickyMicroWaitBudgetForRequest(ctx, cfg.StickySessionWaitTimeout, 0)
+								if budget > 0 {
+									if waitedRes, _, _, werr := WaitForStickySlotFree(ctx, StickyMicroWaitOptions{
+										AccountID: stickyAccountID,
+										CLive:     cLive,
+										Budget:    budget,
+									}, func(wctx context.Context) (*AcquireResult, error) {
+										return s.tryAcquireAccountSlot(wctx, stickyAccountID, cLive, stickyAccount.GetBaseRPM())
+									}); werr == nil && waitedRes != nil && waitedRes.Acquired {
+										result = waitedRes
+										err = nil
+									}
+								}
+							}
+							if err == nil && result != nil && result.Acquired {
 								// 会话数量限制检查
 								if !s.checkAndRegisterSession(ctx, stickyAccount, sessionHash) {
 									result.ReleaseFunc() // 释放槽位
@@ -390,6 +417,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 							if stickyCacheMissReason == "" {
 								stickyCacheMissReason = "capacity_busy"
+								stickySpillover = true
 							}
 							// 粘性账号容量满时继续使用负载感知选择；只有全池耗尽后才排队。
 						} else if !gatePass {
@@ -470,13 +498,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 							continue
 						}
-						if sessionHash != "" && s.cache != nil {
+						if sessionHash != "" && s.cache != nil && !stickySpillover {
 							_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, item.account.ID)
 						}
 						if s.debugModelRoutingEnabled() {
 							logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
 						}
-						return s.newSelectionResult(ctx, item.account, true, result.ReleaseFunc, nil)
+						sel, selErr := s.newSelectionResult(ctx, item.account, true, result.ReleaseFunc, nil)
+						if sel != nil {
+							sel.StickySpillover = stickySpillover
+						}
+						return sel, selErr
 					}
 				}
 				// 路由偏好只决定尝试顺序；容量满时继续到 Layer 2，
@@ -533,8 +565,24 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				)
 
 				if !clearSticky && platformOK && profitOK && modelSupported && channelOK && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
-					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.GetBaseRPM())
-					if err == nil && result.Acquired {
+					cLive := DefaultAIMDLimiter().EffectiveLimit(accountID, account.Concurrency)
+					result, err := s.tryAcquireAccountSlot(ctx, accountID, cLive, account.GetBaseRPM())
+					if (err != nil || result == nil || !result.Acquired) && (err == nil && (result == nil || !result.BlockedByRPM())) && ShouldRunStickyMicroWait(ctx) {
+						budget := resolveStickyMicroWaitBudgetForRequest(ctx, cfg.StickySessionWaitTimeout, 0)
+						if budget > 0 {
+							if waitedRes, _, _, werr := WaitForStickySlotFree(ctx, StickyMicroWaitOptions{
+								AccountID: accountID,
+								CLive:     cLive,
+								Budget:    budget,
+							}, func(wctx context.Context) (*AcquireResult, error) {
+								return s.tryAcquireAccountSlot(wctx, accountID, cLive, account.GetBaseRPM())
+							}); werr == nil && waitedRes != nil && waitedRes.Acquired {
+								result = waitedRes
+								err = nil
+							}
+						}
+					}
+					if err == nil && result != nil && result.Acquired {
 						// 会话数量限制检查
 						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
 							result.ReleaseFunc() // 释放槽位，继续到 Layer 2
@@ -555,13 +603,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
 						}
 					} else {
+						stickySpillover = true
 						slog.Debug("sticky.layer1_5_no_routing_slot_busy",
 							"account_id", accountID,
 							"session", shortSessionHash(sessionHash),
 						)
 					}
 
-					// Preferred/sticky accounts spill to the normal pool before any wait plan.
+					// Preferred/sticky accounts spill to the normal pool before any wait plan
+					// without overwriting the sticky binding.
 				} else if !clearSticky {
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
@@ -654,6 +704,28 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, ErrNoAvailableAccounts
 	}
 
+	// Berth Track B Tier 2: 4-level Cage Cohort ladder (exact TZ+country+ASN -> exact TZ+country ->
+	// offset+country [non-strict only] -> strict ErrCageRebindRequired or explicit handover).
+	cohortTarget, cohortStrict, cohortAllowHandover := resolveCohortTargetForSelection(ctx, stickyAccountForCohort)
+	var cohortLevel CohortFailoverLevel
+	var handoverCohortTZ string
+	if cohortTarget.IsSet() {
+		filteredCohort, lvl, handoverTZ, cohortErr := FilterCandidatesByCohort(candidates, cohortTarget, cohortStrict, cohortAllowHandover)
+		if cohortErr != nil {
+			return nil, cohortErr
+		}
+		if len(filteredCohort) > 0 {
+			candidates = filteredCohort
+			cohortLevel = lvl
+			handoverCohortTZ = handoverTZ
+		}
+	}
+
+	// Berth Track B Tier 0: batch-fetch landing proxy concurrency headroom and avoid
+	// dispatching onto proxy-saturated candidates when other cohort peers have headroom.
+	cohortCandidates := candidates
+	candidates = filterCandidatesByProxyHeadroom(ctx, s.concurrencyService, candidates)
+
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
 	for _, acc := range candidates {
 		accountLoads = append(accountLoads, AccountWithConcurrency{
@@ -664,9 +736,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, stickySpillover); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
+			result.StickySpillover = stickySpillover
+			result.HandoverCohortTZ = handoverCohortTZ
+			result.CohortLevel = cohortLevel
 			return result, nil
 		}
 	} else {
@@ -700,16 +775,23 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				break
 			}
 
-			result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, selected.account.Concurrency, selected.account.GetBaseRPM())
+			cLive := DefaultAIMDLimiter().EffectiveLimit(selected.account.ID, selected.account.Concurrency)
+			result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, cLive, selected.account.GetBaseRPM())
 			if err == nil && result.Acquired {
 				// 会话数量限制检查
 				if !s.checkAndRegisterSession(ctx, selected.account, sessionHash) {
 					result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 				} else {
-					if sessionHash != "" && s.cache != nil {
+					if sessionHash != "" && s.cache != nil && !stickySpillover {
 						_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, selected.account.ID)
 					}
-					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					sel, selErr := s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					if sel != nil {
+						sel.StickySpillover = stickySpillover
+						sel.HandoverCohortTZ = handoverCohortTZ
+						sel.CohortLevel = cohortLevel
+					}
+					return sel, selErr
 				}
 			}
 
@@ -726,36 +808,43 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
-	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
-	for _, acc := range candidates {
+	s.sortCandidatesForFallback(cohortCandidates, preferOAuth, cfg.FallbackSelectionMode)
+	for _, acc := range cohortCandidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 			continue // 会话限制已满，尝试下一个账号
 		}
-		return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
+		sel, selErr := s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
 			AccountID:      acc.ID,
 			MaxConcurrency: acc.Concurrency,
 			MaxRPM:         acc.GetBaseRPM(),
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
 		})
+		if sel != nil {
+			sel.StickySpillover = stickySpillover
+			sel.HandoverCohortTZ = handoverCohortTZ
+			sel.CohortLevel = cohortLevel
+		}
+		return sel, selErr
 	}
 	return nil, ErrNoAvailableAccounts
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, stickySpillover bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
 
 	for _, acc := range ordered {
-		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency, acc.GetBaseRPM())
+		cLive := DefaultAIMDLimiter().EffectiveLimit(acc.ID, acc.Concurrency)
+		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, cLive, acc.GetBaseRPM())
 		if err == nil && result.Acquired {
 			// 会话数量限制检查
 			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 				result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 				continue
 			}
-			if sessionHash != "" && s.cache != nil {
+			if sessionHash != "" && s.cache != nil && !stickySpillover {
 				_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, acc.ID)
 			}
 			selection, err := s.newSelectionResult(ctx, acc, true, result.ReleaseFunc, nil)
@@ -767,6 +856,89 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 	}
 
 	return nil, false, nil
+}
+
+func resolveStickyMicroWaitBudgetForRequest(ctx context.Context, maxConfigTimeout time.Duration, openAISessionRPM int) time.Duration {
+	if override, ok := StickyMicroWaitBudgetOverrideFromContext(ctx); ok {
+		if override <= 0 {
+			return 0
+		}
+		return override
+	}
+	pref := WorkSessionPrefFromContext(ctx)
+	highImp := pref != nil && pref.Importance >= 70
+	return ComputeStickyMicroWaitBudget(RequestPrefixTokensFromContext(ctx), maxConfigTimeout, highImp, openAISessionRPM)
+}
+
+func resolveCohortTargetForSelection(ctx context.Context, stickyAccount *Account) (target CageCohort, strict bool, allowHandover bool) {
+	if req := CageCohortRequestFromContext(ctx); req != nil {
+		if req.Target.IsSet() {
+			return req.Target, req.StrictMode, req.AllowHandover
+		}
+		if stickyAccount != nil {
+			if c := AccountCohort(stickyAccount); c.IsSet() {
+				return c, req.StrictMode, req.AllowHandover
+			}
+		}
+		return CageCohort{}, req.StrictMode, req.AllowHandover
+	}
+	if pref := WorkSessionPrefFromContext(ctx); pref != nil && pref.CohortTimezone != "" {
+		return CageCohort{
+			Timezone:    pref.CohortTimezone,
+			CountryCode: pref.CohortCountryCode,
+			ASNClass:    pref.CohortASNClass,
+		}.Normalized(), pref.CageStrictMode, false
+	}
+	if stickyAccount != nil {
+		if c := AccountCohort(stickyAccount); c.IsSet() {
+			return c, false, false
+		}
+	}
+	return CageCohort{}, false, false
+}
+
+func filterCandidatesByProxyHeadroom(ctx context.Context, concurrencyService *ConcurrencyService, candidates []*Account) []*Account {
+	if concurrencyService == nil || len(candidates) <= 1 {
+		return candidates
+	}
+	seen := make(map[int64]struct{}, len(candidates))
+	proxyReqs := make([]ProxyWithCapacity, 0, len(candidates))
+	for _, acc := range candidates {
+		if acc == nil || acc.Proxy == nil || acc.Proxy.ID <= 0 || acc.Proxy.MaxConcurrency <= 0 {
+			continue
+		}
+		if _, dup := seen[acc.Proxy.ID]; dup {
+			continue
+		}
+		seen[acc.Proxy.ID] = struct{}{}
+		proxyReqs = append(proxyReqs, ProxyWithCapacity{
+			ID:             acc.Proxy.ID,
+			MaxConcurrency: acc.Proxy.MaxConcurrency,
+		})
+	}
+	if len(proxyReqs) == 0 {
+		return candidates
+	}
+	loadMap, err := concurrencyService.GetProxiesLoadBatch(ctx, proxyReqs)
+	if err != nil || len(loadMap) == 0 {
+		return candidates
+	}
+	withHeadroom := make([]*Account, 0, len(candidates))
+	for _, acc := range candidates {
+		if acc == nil || acc.Proxy == nil || acc.Proxy.MaxConcurrency <= 0 {
+			withHeadroom = append(withHeadroom, acc)
+			continue
+		}
+		info := loadMap[acc.Proxy.ID]
+		if info == nil || info.CurrentConcurrency < acc.Proxy.MaxConcurrency {
+			withHeadroom = append(withHeadroom, acc)
+		}
+	}
+	if len(withHeadroom) == 0 {
+		// All proxies are saturated; keep original cohort candidates so Layer 3 fallback wait plan can run.
+		return candidates
+	}
+	return withHeadroom
 }
 
 // applyWorkSessionQueuePriority keeps account policy priority intact for normal

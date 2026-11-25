@@ -34,9 +34,10 @@ const (
 )
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
-	// OAuth/Setup Token 账号：仅 403 重试
+	// Berth Track B (Bug B12): OAuth/Setup Token accounts must perform 0 same-account
+	// retries on 403 (or other errors) to prevent amplifying 403 blast radius (5x per account).
 	if account.IsOAuth() {
-		return statusCode == 403
+		return false
 	}
 
 	// API Key 账号：未配置的错误码重试

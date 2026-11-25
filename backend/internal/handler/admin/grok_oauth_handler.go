@@ -13,7 +13,6 @@ import (
 	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
 	"github.com/jk-zhang-meta/berth/internal/pkg/xai"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -37,16 +36,7 @@ func (h *GrokOAuthHandler) SetStewards(store *service.StewardStore) {
 }
 
 func (h *GrokOAuthHandler) allowAccount(c *gin.Context, accountID int64) bool {
-	role, ok := middleware.GetUserRoleFromContext(c)
-	if !ok || role == service.RoleAdmin {
-		return true
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || h.stewards == nil || !h.stewards.OwnsAccount(c.Request.Context(), accountID, subject.UserID) {
-		response.Forbidden(c, "not your account")
-		return false
-	}
-	return true
+	return requireStewardAccount(c, h.stewards, accountID)
 }
 
 func NewGrokOAuthHandler(
@@ -266,8 +256,7 @@ type GrokOAuthReconcileRequest struct {
 }
 
 func (h *GrokOAuthHandler) ReconcileOAuthAccounts(c *gin.Context) {
-	if isAccountUser(c) {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	var req GrokOAuthReconcileRequest
@@ -313,7 +302,7 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		RedirectURI string  `json:"redirect_uri"`
 		ProxyID     *int64  `json:"proxy_id"`
 		Name        string  `json:"name"`
-		Concurrency int     `json:"concurrency"`
+		Concurrency *int    `json:"concurrency"`
 		Priority    int     `json:"priority"`
 		GroupIDs    []int64 `json:"group_ids"`
 	}
@@ -321,7 +310,10 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
+		return
+	}
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, isAccountUser(c)) {
 		return
 	}
 	tokenInfo, err := h.grokOAuthService.ExchangeCode(c.Request.Context(), &service.GrokExchangeCodeInput{
@@ -345,13 +337,18 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		name = "Grok OAuth Account"
 	}
 
+	concurrency := 0
+	if req.Concurrency != nil {
+		concurrency = *req.Concurrency
+	}
+
 	account, err := h.adminService.CreateAccount(c.Request.Context(), accountCreatePolicy(c, &service.CreateAccountInput{
 		Name:        name,
 		Platform:    service.PlatformGrok,
 		Type:        service.AccountTypeOAuth,
 		Credentials: credentials,
 		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
+		Concurrency: concurrency,
 		Priority:    req.Priority,
 		GroupIDs:    req.GroupIDs,
 	}))
@@ -360,7 +357,10 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		return
 	}
 	if account != nil && h.stewards != nil {
-		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
+		if err := h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c)); err != nil && isAccountUser(c) {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 	h.scheduleGrokImportProbe(account)
 	response.Success(c, dto.AccountFromService(account))
@@ -377,7 +377,7 @@ type GrokSSOToOAuthRequest struct {
 	GroupIDs             []int64        `json:"group_ids"`
 	Credentials          map[string]any `json:"credentials"`
 	Extra                map[string]any `json:"extra"`
-	Concurrency          int            `json:"concurrency"`
+	Concurrency          *int           `json:"concurrency"`
 	LoadFactor           *int           `json:"load_factor"`
 	Priority             int            `json:"priority"`
 	RateMultiplier       *float64       `json:"rate_multiplier"`
@@ -414,13 +414,18 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
+		return
+	}
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, isAccountUser(c)) {
 		return
 	}
 	if isAccountUser(c) {
 		req.GroupIDs = nil
 		req.Priority = 0
 		req.RateMultiplier = nil
+		req.LoadFactor = nil
+		stripAdminExtraKeys(req.Extra)
 		req.skipDefaultGroupBind = true
 		req.privateOwnerUserID = privateAccountOwner(c)
 	}
@@ -492,6 +497,10 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, userID
 	credentials := grokSSOImportCredentials(h.grokOAuthService.BuildAccountCredentials(tokenInfo), req.Credentials)
 	name := grokSSOImportAccountName(req.Name, tokenInfo, index, total)
 	expiresAt, autoPauseOnExpired := grokSSOImportExpiry(req.ExpiresAt, req.AutoPauseOnExpired, tokenInfo)
+	concurrency := 0
+	if req.Concurrency != nil {
+		concurrency = *req.Concurrency
+	}
 	account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 		PrivateOwnerUserID:   req.privateOwnerUserID,
 		Name:                 name,
@@ -501,7 +510,7 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, userID
 		Credentials:          credentials,
 		Extra:                cloneGrokSSOMap(req.Extra),
 		ProxyID:              req.ProxyID,
-		Concurrency:          req.Concurrency,
+		Concurrency:          concurrency,
 		LoadFactor:           req.LoadFactor,
 		Priority:             req.Priority,
 		RateMultiplier:       req.RateMultiplier,
@@ -700,5 +709,8 @@ func (h *GrokOAuthHandler) ResetQuota(c *gin.Context) {
 }
 
 func (h *GrokOAuthHandler) RuntimeSanity(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	response.Success(c, xai.RuntimeSanity())
 }

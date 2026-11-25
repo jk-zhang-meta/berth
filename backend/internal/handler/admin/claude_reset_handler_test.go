@@ -33,7 +33,7 @@ func TestClaudeResetHandlerRedeemContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	stub := &claudeResetHandlerStub{}
 	h := &AccountHandler{claudeResetCredits: stub}
-	r := gin.New()
+	r := newAdminTestRouter()
 	r.POST("/accounts/:id/claude/reset-credits/redeem", h.RedeemClaudeResetCredit)
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts/1/claude/reset-credits/redeem", nil)

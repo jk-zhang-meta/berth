@@ -118,7 +118,7 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 	quotaService := service.NewGrokQuotaService(repo, nil, service.NewGrokTokenProvider(repo, nil), upstream, nil)
 	handler := NewGrokOAuthHandler(nil, nil, quotaService, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/api/v1/admin/grok/accounts/:id/quota", handler.QueryQuota)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/grok/accounts/42/quota", nil)
@@ -173,7 +173,7 @@ func TestGrokOAuthHandlerResetQuotaReturnsUnsupported(t *testing.T) {
 	quotaService := service.NewGrokQuotaService(repo, nil, nil, nil, nil)
 	handler := NewGrokOAuthHandler(nil, nil, quotaService, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/accounts/:id/reset-quota", handler.ResetQuota)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/accounts/43/reset-quota", nil)
@@ -190,7 +190,7 @@ func TestGrokOAuthHandlerRuntimeSanityDoesNotExposeSecrets(t *testing.T) {
 	t.Setenv(xai.EnvClientID, "client-secret-like-value")
 
 	handler := NewGrokOAuthHandler(nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/api/v1/admin/grok/runtime-sanity", handler.RuntimeSanity)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/grok/runtime-sanity", nil)
@@ -233,7 +233,7 @@ func TestGrokOAuthHandlerValidateSSOTokenReturnsTokenInfo(t *testing.T) {
 	defer oauthService.Stop()
 	handler := NewGrokOAuthHandler(oauthService, nil, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/oauth/sso-token", handler.ValidateSSOToken)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/sso-token", strings.NewReader(`{"sso_token":"sso-token"}`))
@@ -255,7 +255,7 @@ func TestGrokOAuthHandlerAuthorizePasswordReturnsTokenInfoWithoutPassword(t *tes
 	defer oauthService.Stop()
 	handler := NewGrokOAuthHandler(oauthService, nil, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/oauth/password", handler.AuthorizePassword)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/password", strings.NewReader(`{"email":"user@example.com","password":"super-secret"}`))
@@ -273,7 +273,7 @@ func TestGrokOAuthHandlerPasswordCapabilityDefaultsToDisabled(t *testing.T) {
 	defer oauthService.Stop()
 	handler := NewGrokOAuthHandler(oauthService, nil, nil, nil)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/api/v1/admin/grok/oauth/capabilities", handler.GetCapabilities)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/grok/oauth/capabilities", nil))
@@ -378,7 +378,7 @@ func TestGrokOAuthHandlerReconcileDefaultsToDryRun(t *testing.T) {
 		NextAfterID: 0,
 	}}
 	handler := NewGrokOAuthHandler(nil, nil, nil, reconciler)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/oauth/reconcile", handler.ReconcileOAuthAccounts)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/reconcile", strings.NewReader(`{}`))
@@ -399,7 +399,7 @@ func TestGrokOAuthHandlerReconcileRequiresExplicitApply(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	reconciler := &grokOAuthReconcilerStub{}
 	handler := NewGrokOAuthHandler(nil, nil, nil, reconciler)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/oauth/reconcile", handler.ReconcileOAuthAccounts)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/reconcile", strings.NewReader(`{"dry_run":false}`))
@@ -416,7 +416,7 @@ func TestGrokOAuthHandlerReconcileExplicitApply(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	reconciler := &grokOAuthReconcilerStub{result: &service.GrokOAuthReconcileResult{DryRun: false, Refreshed: 1}}
 	handler := NewGrokOAuthHandler(nil, nil, nil, reconciler)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/oauth/reconcile", handler.ReconcileOAuthAccounts)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/reconcile", strings.NewReader(`{"apply":true,"dry_run":false,"after_id":10,"limit":25,"refresh_window_seconds":3600}`))

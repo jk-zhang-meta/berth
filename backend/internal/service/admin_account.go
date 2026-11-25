@@ -308,7 +308,25 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		// Proxy fallback is transient runtime state; duplicate the configured origin.
 		proxyID = source.ProxyFallbackOriginID
 	}
+	privateOwnerID := PrivateAccountOwnerFromContext(ctx)
+	if privateOwnerID > 0 {
+		groupIDs = nil
+		groups = nil
+		if proxyID == nil || *proxyID <= 0 {
+			return nil, ErrProxyRequired
+		}
+	}
+	if proxyID != nil && (privateOwnerID > 0 || s.proxyRepo != nil) {
+		if err := s.validateVerifiedProxyBindingCapacity(ctx, proxyID, 1); err != nil {
+			return nil, err
+		}
+	}
+	dupConcurrency := source.Concurrency
+	if dupConcurrency <= 0 {
+		dupConcurrency = s.resolveAccountConcurrency(ctx, source.Platform, source.Type, credentials, extra, proxyID, 0)
+	}
 	input := &CreateAccountInput{
+		PrivateOwnerUserID:    privateOwnerID,
 		Name:                  duplicateAccountName(source.Name),
 		Notes:                 cloneAccountValuePointer(source.Notes),
 		Platform:              source.Platform,
@@ -316,7 +334,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		Credentials:           credentials,
 		Extra:                 extra,
 		ProxyID:               cloneAccountValuePointer(proxyID),
-		Concurrency:           source.Concurrency,
+		Concurrency:           dupConcurrency,
 		Priority:              source.Priority,
 		RateMultiplier:        cloneAccountValuePointer(source.RateMultiplier),
 		LoadFactor:            cloneAccountValuePointer(source.LoadFactor),
@@ -325,6 +343,11 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		AutoPauseOnExpired:    &autoPauseOnExpired,
 		SkipDefaultGroupBind:  true,
 		SkipMixedChannelCheck: true,
+	}
+	if privateOwnerID > 0 {
+		input.Priority = 0
+		input.RateMultiplier = nil
+		input.LoadFactor = nil
 	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
@@ -359,11 +382,96 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	return duplicate, nil
 }
 
-func normalizeAccountConcurrency(platform, accountType string, concurrency int) int {
-	if platform == PlatformGrok && accountType == AccountTypeOAuth {
-		if concurrency <= 0 {
-			return 1
+const (
+	DefaultAccountConcurrency = 2
+	MaxAccountConcurrency     = 10000
+)
+
+var (
+	ErrAccountConcurrencyInvalid = infraerrors.BadRequest(
+		"ACCOUNT_CONCURRENCY_INVALID",
+		"account concurrency must be between 1 and 10000",
+	)
+	ErrProxyRequired = infraerrors.BadRequest(
+		"PROXY_REQUIRED",
+		"a verified landing node (proxy_id) is required",
+	)
+	ErrProxyUnbindForbidden = infraerrors.BadRequest(
+		"PROXY_UNBIND_FORBIDDEN",
+		"cannot unbind landing node (proxy_id) from account",
+	)
+	ErrProxyDirectFallbackForbidden = infraerrors.BadRequest(
+		"PROXY_DIRECT_FALLBACK_FORBIDDEN",
+		"direct fallback is forbidden under single-landing-node policy",
+	)
+)
+
+type privateAccountOwnerCtxKey struct{}
+
+// WithPrivateAccountOwner carries a non-admin caller's user ID through service
+// calls whose method signature is fixed by AdminService (e.g., DuplicateAccount).
+func WithPrivateAccountOwner(ctx context.Context, userID int64) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if userID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, privateAccountOwnerCtxKey{}, userID)
+}
+
+// PrivateAccountOwnerFromContext extracts the non-admin caller user ID if set.
+func PrivateAccountOwnerFromContext(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	uid, _ := ctx.Value(privateAccountOwnerCtxKey{}).(int64)
+	return uid
+}
+
+// ValidateAccountConcurrency enforces concurrency in [1, MaxAccountConcurrency].
+func ValidateAccountConcurrency(concurrency int) error {
+	if concurrency < 1 || concurrency > MaxAccountConcurrency {
+		return ErrAccountConcurrencyInvalid
+	}
+	return nil
+}
+
+// DefaultAccountConcurrencyFor returns the conservative cold-start concurrency >= 1.
+func DefaultAccountConcurrencyFor(platform, accountType string) int {
+	prior := ColdStartConcurrencyPrior(platform, accountType, "")
+	if prior.Prior < 1 {
+		return DefaultAccountConcurrency
+	}
+	return prior.Prior
+}
+
+func (s *adminServiceImpl) resolveAccountConcurrency(
+	ctx context.Context,
+	platform, accountType string,
+	credentials, extra map[string]any,
+	proxyID *int64,
+	requested int,
+) int {
+	if requested > 0 {
+		return requested
+	}
+	tier := NormalizeAccountPlanTier(platform, accountType, credentials, extra)
+	if s != nil && s.concurrencyAdvisor != nil {
+		if rec := s.concurrencyAdvisor.RecommendForAccount(ctx, platform, accountType, tier, proxyID); rec != nil && rec.RecommendedConcurrency >= 1 {
+			return rec.RecommendedConcurrency
 		}
+	}
+	prior := ColdStartConcurrencyPrior(platform, accountType, tier)
+	if prior.Prior >= 1 {
+		return prior.Prior
+	}
+	return DefaultAccountConcurrency
+}
+
+func normalizeAccountConcurrency(platform, accountType string, concurrency int) int {
+	if concurrency <= 0 {
+		return DefaultAccountConcurrencyFor(platform, accountType)
 	}
 	return concurrency
 }
@@ -501,8 +609,23 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if input.PrivateOwnerUserID > 0 && (input.ProxyID == nil || *input.ProxyID <= 0) {
+		return nil, ErrProxyRequired
+	}
+	if input.Concurrency < 0 || input.Concurrency > MaxAccountConcurrency {
+		return nil, ErrAccountConcurrencyInvalid
+	}
 	if err := s.validateVerifiedProxyBinding(ctx, input.ProxyID); err != nil {
 		return nil, err
+	}
+	if input.Concurrency == 0 {
+		input.Concurrency = s.resolveAccountConcurrency(ctx, input.Platform, input.Type, input.Credentials, input.Extra, input.ProxyID, 0)
+		if input.Extra == nil {
+			input.Extra = make(map[string]any)
+		}
+		if _, exists := input.Extra["concurrency_source"]; !exists {
+			input.Extra["concurrency_source"] = "adaptive_default"
+		}
 	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
@@ -605,9 +728,22 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	if input.Concurrency != nil {
+		if err := ValidateAccountConcurrency(*input.Concurrency); err != nil {
+			return nil, err
+		}
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if PrivateAccountOwnerFromContext(ctx) > 0 && !account.IsCredentialShadow() {
+		if input.ProxyID != nil && *input.ProxyID <= 0 {
+			return nil, ErrProxyUnbindForbidden
+		}
+		if input.ProxyID == nil && (account.ProxyID == nil || *account.ProxyID <= 0) {
+			return nil, ErrProxyRequired
+		}
 	}
 	if input.ProxyID != nil && !account.IsCredentialShadow() {
 		currentProxyID := int64(0)
@@ -868,9 +1004,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			delete(account.Extra, OpenCodeGoUsageSnapshotExtraKey)
 		}
 	}
-	// 只在指针非 nil 时更新 Concurrency（支持设置为 0）
+	// 只在指针非 nil 时更新 Concurrency（强制 >= 1）
 	if input.Concurrency != nil {
-		account.Concurrency = normalizeAccountConcurrency(account.Platform, account.Type, *input.Concurrency)
+		if err := ValidateAccountConcurrency(*input.Concurrency); err != nil {
+			return nil, err
+		}
+		account.Concurrency = *input.Concurrency
 	}
 	// 只在指针非 nil 时更新 Priority（支持设置为 0）
 	if input.Priority != nil {
@@ -1232,6 +1371,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		repoUpdates.ProxyID = input.ProxyID
 	}
 	if input.Concurrency != nil {
+		if err := ValidateAccountConcurrency(*input.Concurrency); err != nil {
+			return nil, err
+		}
 		repoUpdates.Concurrency = input.Concurrency
 	}
 	if input.Priority != nil {
@@ -1442,6 +1584,18 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	before, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if before == nil || before.ProxyFallbackOriginID == nil || *before.ProxyFallbackOriginID <= 0 {
+		return ErrAccountNotInFallback
+	}
+	if before.ProxyID == nil || *before.ProxyID != *before.ProxyFallbackOriginID {
+		if err := s.validateVerifiedProxyBindingCapacity(ctx, before.ProxyFallbackOriginID, 1); err != nil {
+			return err
+		}
+	}
 	if err := s.accountRepo.RevertProxyFallback(ctx, id); err != nil {
 		return err
 	}
@@ -1523,10 +1677,16 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 	if runes := []rune(name); len(runes) > 100 {
 		name = string(runes[:100])
 	}
-	// 并发未指定(<=0)时继承母账号，避免 0 被限流器解读为"无限并发"（外审 F3）。
+	if opts.Concurrency < 0 || opts.Concurrency > MaxAccountConcurrency {
+		return nil, ErrAccountConcurrencyInvalid
+	}
+	// 并发未指定(==0)时继承母账号（且不低于 1），避免 0 被限流器解读为"无限并发"（外审 F3）。
 	concurrency := opts.Concurrency
-	if concurrency <= 0 {
+	if concurrency == 0 {
 		concurrency = parent.Concurrency
+	}
+	if concurrency < 1 {
+		concurrency = DefaultAccountConcurrencyFor(PlatformOpenAI, AccountTypeOAuth)
 	}
 	// 优先级未指定(<=0)时继承母账号——前端一键创建只传 name,opts.Priority 省略即 0,而调度
 	// 比较是「数值越小越优先」(openai_account_scheduler.isOpenAIAccountCandidateBetter),且 repo

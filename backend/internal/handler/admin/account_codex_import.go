@@ -125,8 +125,7 @@ func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if req.Concurrency != nil && *req.Concurrency < 0 {
-		response.BadRequest(c, "concurrency must be >= 0")
+	if !rejectInvalidOptionalConcurrency(c, req.Concurrency) {
 		return
 	}
 	if req.Priority != nil && *req.Priority < 0 {
@@ -152,10 +151,19 @@ func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
 		return
 	}
 
-	if !allowAccountProxy(c, h.stewards, req.ProxyID) {
+	restricted := isAccountUser(c)
+	callerID := getAdminIDFromContext(c)
+	if restricted {
+		var ok bool
+		callerID, ok = requireValidNonAdminSubject(c, h.stewards)
+		if !ok {
+			return
+		}
+	}
+	if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, restricted) {
 		return
 	}
-	caller := accountImportCaller{userID: getAdminIDFromContext(c), restricted: isAccountUser(c)}
+	caller := accountImportCaller{userID: callerID, restricted: restricted}
 	executeAdminIdempotentJSON(c, "admin.accounts.import_codex_session", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.importCodexSessions(ctx, req, entries, caller)
 	})
@@ -171,6 +179,8 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		req.GroupIDs = nil
 		req.Priority = nil
 		req.RateMultiplier = nil
+		req.LoadFactor = nil
+		stripAdminExtraKeys(req.Extra)
 		skip := true
 		req.SkipDefaultGroupBind = &skip
 	}
@@ -179,18 +189,28 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		Items: make([]CodexSessionImportItem, 0, len(entries)),
 	}
 
-	existingAccounts, err := h.listAccountsFiltered(ctx, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "", "created_at", "desc")
-	if err != nil {
-		return result, err
-	}
+	var existingAccounts []service.Account
+	var err error
 	if caller.restricted {
-		owned := make([]service.Account, 0, len(existingAccounts))
-		for _, account := range existingAccounts {
-			if h.stewards.OwnsAccount(ctx, account.ID, callerID) {
-				owned = append(owned, account)
+		if h.stewards == nil {
+			return result, fmt.Errorf("steward store unavailable")
+		}
+		ids := h.stewards.ListAccountIDs(ctx, callerID)
+		fetched, fetchErr := h.adminService.GetAccountsByIDs(ctx, ids)
+		if fetchErr != nil {
+			return result, fetchErr
+		}
+		existingAccounts = make([]service.Account, 0, len(fetched))
+		for _, account := range fetched {
+			if account != nil && account.Platform == service.PlatformOpenAI && account.Type == service.AccountTypeOAuth {
+				existingAccounts = append(existingAccounts, *account)
 			}
 		}
-		existingAccounts = owned
+	} else {
+		existingAccounts, err = h.listAccountsFiltered(ctx, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "", "created_at", "desc")
+		if err != nil {
+			return result, err
+		}
 	}
 	index := buildCodexAccountIndex(existingAccounts)
 

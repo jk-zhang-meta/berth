@@ -81,7 +81,7 @@ func TestGrokSSOBatchImportKeepsCreatedAccountsWhenOneAutomaticProbeFails(t *tes
 	handler := NewGrokOAuthHandler(oauthService, adminService, nil, nil)
 	handler.importProber = prober
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/grok/sso-to-oauth", handler.CreateAccountsFromSSO)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(
@@ -109,7 +109,7 @@ func TestAccountCreateWithoutAutomaticGrokProbeServiceStillSucceeds(t *testing.T
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts", handler.Create)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(

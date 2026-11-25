@@ -25,7 +25,7 @@ type proxyImportResponse struct {
 
 func setupProxyDataRouter() (*gin.Engine, *stubAdminService) {
 	gin.SetMode(gin.TestMode)
-	router := gin.New()
+	router := newAdminTestRouter()
 	adminSvc := newStubAdminService()
 
 	h := NewProxyHandler(adminSvc)

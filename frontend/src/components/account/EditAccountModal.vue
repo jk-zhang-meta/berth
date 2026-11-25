@@ -1935,10 +1935,16 @@
 
       <div v-if="!isSparkShadow">
         <div class="mb-1 flex items-center gap-2">
-          <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
+          <label class="input-label mb-0">
+            {{ t('admin.accounts.proxy') }}
+            <span v-if="!isAdmin" class="text-red-500">*</span>
+          </label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <ProxySelector v-model="form.proxy_id" :proxies="proxies" :allow-direct="isAdmin" />
+        <p v-if="!isAdmin && !form.proxy_id" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          Landing proxy is required and cannot be unbound.
+        </p>
       </div>
 
       <UpstreamRequestIdHeaderField
@@ -1948,70 +1954,96 @@
         :type="account.type"
       />
 
-      <div v-if="isAdmin" class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div :class="isAdmin ? 'grid grid-cols-2 gap-4 lg:grid-cols-4' : 'grid grid-cols-1 gap-4'">
         <div>
-          <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" min="1" class="input"
-            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
-          <input v-model.number="form.load_factor" type="number" min="1"
-            class="input" :placeholder="String(form.concurrency || 1)"
-            @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
-          <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.priority') }}</label>
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <label class="input-label mb-0">
+              {{ t('admin.accounts.concurrency') }}
+              <span class="text-red-500">*</span>
+            </label>
+            <button
+              v-if="concurrencyRecommendation"
+              type="button"
+              class="inline-flex items-center rounded bg-primary-50 px-1.5 py-0.5 text-[11px] font-medium text-primary-700 hover:bg-primary-100 dark:bg-primary-900/30 dark:text-primary-300"
+              @click="form.concurrency = Math.max(1, concurrencyRecommendation.recommended_concurrency)"
+            >
+              Rec: {{ concurrencyRecommendation.recommended_concurrency }}
+            </button>
+          </div>
           <input
-            v-model.number="form.priority"
+            v-model.number="form.concurrency"
             type="number"
             min="1"
+            step="1"
+            required
+            data-testid="edit-account-concurrency"
             class="input"
-            data-tour="account-form-priority"
+            @input="form.concurrency = Math.max(1, Math.trunc(Number(form.concurrency) || 1))"
           />
-          <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
-        </div>
-        <div>
-          <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
-          <input
-            v-model.number="form.rate_multiplier"
-            type="number"
-            min="0"
-            step="0.001"
-            class="input disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="account-rate-multiplier"
-            :disabled="upstreamBillingRateSyncEnabled"
-          />
-          <p class="input-hint">
-            {{
-              t(
-                upstreamBillingRateSyncEnabled
-                  ? 'admin.accounts.upstreamBilling.syncRateManagedHint'
-                  : 'admin.accounts.billingRateMultiplierHint'
-              )
-            }}
+          <p v-if="concurrencyRecommendation" class="input-hint">
+            Recommended {{ concurrencyRecommendation.recommended_concurrency }} ({{ concurrencyRecommendation.confidence }}<template v-if="concurrencyRecommendation.proxy_oversubscribed"> · proxy oversubscribed</template>)
           </p>
-          <div
-            v-if="account?.type === 'apikey'"
-            class="mt-3 flex items-center justify-between gap-3"
-          >
-            <div class="min-w-0">
-              <p class="text-xs font-medium text-gray-700 dark:text-gray-200">
-                {{ t('admin.accounts.upstreamBilling.syncRate') }}
-              </p>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.accounts.upstreamBilling.syncRateHint') }}
-              </p>
-            </div>
-            <Toggle
-              :model-value="upstreamBillingRateSyncEnabled"
-              data-testid="upstream-billing-rate-sync"
-              :aria-label="t('admin.accounts.upstreamBilling.syncRate')"
-              @update:model-value="handleUpstreamBillingRateSyncChange"
-            />
-          </div>
         </div>
+        <template v-if="isAdmin">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
+            <input v-model.number="form.load_factor" type="number" min="1"
+              class="input" :placeholder="String(form.concurrency || 1)"
+              @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
+            <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.priority') }}</label>
+            <input
+              v-model.number="form.priority"
+              type="number"
+              min="1"
+              class="input"
+              data-tour="account-form-priority"
+            />
+            <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
+            <input
+              v-model.number="form.rate_multiplier"
+              type="number"
+              min="0"
+              step="0.001"
+              class="input disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="account-rate-multiplier"
+              :disabled="upstreamBillingRateSyncEnabled"
+            />
+            <p class="input-hint">
+              {{
+                t(
+                  upstreamBillingRateSyncEnabled
+                    ? 'admin.accounts.upstreamBilling.syncRateManagedHint'
+                    : 'admin.accounts.billingRateMultiplierHint'
+                )
+              }}
+            </p>
+            <div
+              v-if="account?.type === 'apikey'"
+              class="mt-3 flex items-center justify-between gap-3"
+            >
+              <div class="min-w-0">
+                <p class="text-xs font-medium text-gray-700 dark:text-gray-200">
+                  {{ t('admin.accounts.upstreamBilling.syncRate') }}
+                </p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.upstreamBilling.syncRateHint') }}
+                </p>
+              </div>
+              <Toggle
+                :model-value="upstreamBillingRateSyncEnabled"
+                data-testid="upstream-billing-rate-sync"
+                :aria-label="t('admin.accounts.upstreamBilling.syncRate')"
+                @update:model-value="handleUpstreamBillingRateSyncChange"
+              />
+            </div>
+          </div>
+        </template>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
@@ -4559,6 +4591,31 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const concurrencyRecommendation = ref<Awaited<ReturnType<typeof adminAPI.accounts.getRecommendedConcurrency>> | null>(null)
+let editConcurrencyRecSeq = 0
+
+watch(
+  [() => props.show, () => props.account?.id, () => form.proxy_id],
+  async ([visible]) => {
+    if (!visible || !props.account || typeof adminAPI.accounts.getRecommendedConcurrency !== 'function') {
+      return
+    }
+    const seq = ++editConcurrencyRecSeq
+    try {
+      const rec = await adminAPI.accounts.getRecommendedConcurrency({
+        platform: props.account.platform,
+        type: props.account.type,
+        proxy_id: form.proxy_id
+      })
+      if (seq === editConcurrencyRecSeq) {
+        concurrencyRecommendation.value = rec
+      }
+    } catch {
+      // Non-blocking hint
+    }
+  }
+)
+
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   upstreamBillingRateSyncEnabled.value = enabled
   if (enabled) {
@@ -5714,6 +5771,15 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
+
+  if (!isAdmin.value && !isSparkShadow.value && (!form.proxy_id || form.proxy_id <= 0)) {
+    appStore.showError('Landing proxy is required for every account')
+    return
+  }
+  if (!Number.isInteger(form.concurrency) || form.concurrency < 1) {
+    appStore.showError('Concurrency must be an integer >= 1')
+    return
+  }
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))

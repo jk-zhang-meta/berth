@@ -926,6 +926,8 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 	// Match the current proxy even after an earlier fallback. Keep the first
 	// origin so manual revert still restores the originally assigned proxy.
 	if target == nil {
+		// Fail closed for non-admin stewarded accounts: NEVER migrate a user's
+		// stewarded account to direct egress (proxy_id = NULL) on proxy expiry.
 		rows, err = exec.QueryContext(ctx, `
 			UPDATE accounts SET proxy_id=NULL, proxy_fallback_origin_id=COALESCE(proxy_fallback_origin_id,$1),
 				extra=CASE
@@ -935,8 +937,15 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 				END,
 				updated_at=NOW()
 			WHERE proxy_id=$1 AND deleted_at IS NULL
+			  AND NOT EXISTS (
+				SELECT 1 FROM account_stewards st
+				JOIN users u ON u.id = st.user_id
+				WHERE st.account_id = accounts.id AND u.role <> 'admin'
+			  )
 			RETURNING id`, proxyID)
 	} else {
+		// For backup-proxy migration, non-admin stewarded accounts may only move to
+		// an active, verified proxy owned by the same steward.
 		rows, err = exec.QueryContext(ctx, `
 			UPDATE accounts SET proxy_id=$2, proxy_fallback_origin_id=COALESCE(proxy_fallback_origin_id,$1),
 				extra=CASE
@@ -946,6 +955,27 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 				END,
 				updated_at=NOW()
 			WHERE proxy_id=$1 AND deleted_at IS NULL
+			  AND (
+				NOT EXISTS (
+					SELECT 1 FROM account_stewards st
+					JOIN users u ON u.id = st.user_id
+					WHERE st.account_id = accounts.id AND u.role <> 'admin'
+				)
+				OR (
+					EXISTS (
+						SELECT 1 FROM proxies tp
+						WHERE tp.id = $2 AND tp.deleted_at IS NULL AND tp.status = 'active'
+						  AND NULLIF(tp.exit_ip, '') IS NOT NULL
+						  AND NULLIF(tp.exit_timezone, '') IS NOT NULL
+						  AND tp.exit_checked_at IS NOT NULL
+					)
+					AND EXISTS (
+						SELECT 1 FROM account_stewards ast
+						JOIN proxy_stewards pst ON pst.user_id = ast.user_id
+						WHERE ast.account_id = accounts.id AND pst.proxy_id = $2
+					)
+				)
+			  )
 			RETURNING id`, proxyID, *target)
 	}
 	if err != nil {

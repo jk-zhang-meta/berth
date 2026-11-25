@@ -79,7 +79,7 @@ func TestAccountAdminBoundariesRejectMalformedOpenAILongContextBillingValue(t *t
 				tt.setup(stub)
 			}
 			handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-			router := gin.New()
+			router := newAdminTestRouter()
 			tt.mount(router, handler)
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(tt.method, tt.path, bytes.NewBufferString(tt.body))
@@ -100,7 +100,7 @@ func TestAccountAdminBoundariesRejectMalformedOpenAILongContextBillingValue(t *t
 func TestAccountCreateBoundaryDoesNotApplyOpenAIValidationToOtherPlatforms(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewAccountHandler(newStubAdminService(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/accounts", handler.Create)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/accounts", bytes.NewBufferString(
@@ -122,7 +122,7 @@ func TestApplyOAuthCredentialsRejectsMalformedOpenAILongContextBillingBeforeMuta
 		Type:     service.AccountTypeOAuth,
 	}
 	handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/accounts/:id/apply-oauth-credentials", handler.ApplyOAuthCredentials)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/accounts/1/apply-oauth-credentials", bytes.NewBufferString(
@@ -160,7 +160,7 @@ func TestApplyOAuthCredentialsPreservesExistingNonAuthCredentials(t *testing.T) 
 		},
 	}
 	handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/accounts/:id/apply-oauth-credentials", handler.ApplyOAuthCredentials)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/accounts/1/apply-oauth-credentials", bytes.NewBufferString(
@@ -183,7 +183,7 @@ func TestApplyOAuthCredentialsPreservesExistingNonAuthCredentials(t *testing.T) 
 func TestOpenAIOAuthCodexPATBoundaryRejectsMalformedOpenAILongContextBillingValueBeforeTokenValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewOpenAIOAuthHandler(nil, newStubAdminService(), nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.Use(gin.Recovery())
 	router.POST("/openai/create-from-codex-pat", handler.CreateAccountFromCodexPAT)
 	recorder := httptest.NewRecorder()

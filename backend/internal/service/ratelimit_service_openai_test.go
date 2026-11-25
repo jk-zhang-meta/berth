@@ -362,14 +362,15 @@ func TestRateLimitService_HandleUpstreamError_403PreservesOriginalUpstreamMessag
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 	}
+	body := []byte(`{"error":{"message":"workspace forbidden by policy","type":"invalid_request_error"}}`)
 
-	shouldDisable := service.HandleUpstreamError(
-		context.Background(),
-		account,
-		403,
-		http.Header{},
-		[]byte(`{"error":{"message":"workspace forbidden by policy","type":"invalid_request_error"}}`),
-	)
+	// First 2 ambiguous 403s trigger temporary cooldown preserving upstream message; 3rd disables permanently.
+	for i := 0; i < openAI403DisableThreshold-1; i++ {
+		require.True(t, service.HandleUpstreamError(context.Background(), account, 403, http.Header{}, body))
+		require.Contains(t, repo.lastTempReason, "workspace forbidden by policy")
+		require.NotContains(t, repo.lastTempReason, "account may be suspended or lack permissions")
+	}
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, 403, http.Header{}, body)
 
 	require.True(t, shouldDisable)
 	require.Equal(t, 1, repo.setErrorCalls)
@@ -385,14 +386,14 @@ func TestRateLimitService_HandleUpstreamError_403FallsBackToRawBody(t *testing.T
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 	}
+	body := []byte(`{"error":{"type":"access_denied","details":{"reason":"ip_blocked"}}}`)
 
-	shouldDisable := service.HandleUpstreamError(
-		context.Background(),
-		account,
-		403,
-		http.Header{},
-		[]byte(`{"error":{"type":"access_denied","details":{"reason":"ip_blocked"}}}`),
-	)
+	for i := 0; i < openAI403DisableThreshold-1; i++ {
+		require.True(t, service.HandleUpstreamError(context.Background(), account, 403, http.Header{}, body))
+		require.Contains(t, repo.lastTempReason, `"access_denied"`)
+		require.Contains(t, repo.lastTempReason, `"ip_blocked"`)
+	}
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, 403, http.Header{}, body)
 
 	require.True(t, shouldDisable)
 	require.Equal(t, 1, repo.setErrorCalls)

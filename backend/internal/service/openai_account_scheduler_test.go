@@ -2545,8 +2545,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyEscapeByTT
 		selection.ReleaseFunc()
 	}
 
-	slowTTFT := 20000
-	for i := 0; i < 3; i++ {
+	// Berth Track B sane sticky escape normalizes TTFT by model family (gpt-5.1 baseline 8000ms -> 2.5x = 20000ms).
+	slowTTFT := 30000
+	for i := 0; i < 4; i++ {
 		svc.openaiAccountStats.report(21101, true, &slowTTFT)
 	}
 
@@ -2583,7 +2584,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyEscapeByEr
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquireResults: map[int64]bool{21202: true}}),
 		openaiAccountStats: newOpenAIAccountRuntimeStats(),
 	}
-	for i := 0; i < 3; i++ {
+	// Berth Track B sane sticky escape: 2 consecutive failures remain sticky; 3rd consecutive triggers escape.
+	for i := 0; i < 2; i++ {
 		svc.openaiAccountStats.report(21201, false, nil)
 	}
 	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_sticky_error_rate", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
@@ -2596,9 +2598,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyEscapeByEr
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
-	for i := 0; i < 2; i++ {
-		svc.openaiAccountStats.report(21201, false, nil)
-	}
+	svc.openaiAccountStats.report(21201, false, nil)
 
 	selection, decision, err = svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_sticky_error_rate", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)

@@ -571,11 +571,7 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.fallbackMode') }}</label>
-          <Select v-model="createForm.fallback_mode" :options="[
-            { label: t('admin.proxies.fallbackNone'), value: 'none' },
-            { label: t('admin.proxies.fallbackProxy'), value: 'proxy' },
-            { label: t('admin.proxies.fallbackDirect'), value: 'direct' },
-          ]" />
+          <Select v-model="createForm.fallback_mode" :options="fallbackModeOptions" />
         </div>
         <div v-if="createForm.fallback_mode === 'proxy'">
           <label class="input-label">{{ t('admin.proxies.backupProxy') }}</label>
@@ -820,11 +816,7 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.fallbackMode') }}</label>
-          <Select v-model="editForm.fallback_mode" :options="[
-            { label: t('admin.proxies.fallbackNone'), value: 'none' },
-            { label: t('admin.proxies.fallbackProxy'), value: 'proxy' },
-            { label: t('admin.proxies.fallbackDirect'), value: 'direct' },
-          ]" />
+          <Select v-model="editForm.fallback_mode" :options="fallbackModeOptions" />
         </div>
         <div v-if="editForm.fallback_mode === 'proxy'">
           <label class="input-label">{{ t('admin.proxies.backupProxy') }}</label>
@@ -1244,13 +1236,24 @@ const editForm = reactive({
   max_concurrency: 0 as number,
 })
 
+const fallbackModeOptions = computed(() => {
+  const opts = [
+    { label: t('admin.proxies.fallbackNone'), value: 'none' },
+    { label: t('admin.proxies.fallbackProxy'), value: 'proxy' }
+  ]
+  if (authStore.isAdmin) {
+    opts.push({ label: t('admin.proxies.fallbackDirect'), value: 'direct' })
+  }
+  return opts
+})
+
 const allProxiesForBackup = ref<Proxy[]>([])
 const loadBackupProxyOptions = async () => {
   allProxiesForBackup.value = await adminAPI.proxies.getAllWithCount()
 }
 const backupProxyOptions = (excludeId?: number) =>
   allProxiesForBackup.value
-    .filter(p => p.id !== excludeId)
+    .filter(p => p.id !== excludeId && !p.is_rental && Boolean(p.host))
     .map(p => ({ label: `${p.name} (${p.host}:${p.port})`, value: p.id }))
 
 let abortController: AbortController | null = null

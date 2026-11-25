@@ -14,7 +14,6 @@ import (
 	infraerrors "github.com/jk-zhang-meta/berth/internal/pkg/errors"
 	"github.com/jk-zhang-meta/berth/internal/pkg/openai"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
@@ -111,8 +110,7 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	ctx := c.Request.Context()
@@ -246,8 +244,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	var req DataImportRequest
@@ -745,8 +742,8 @@ func validateDataAccount(item DataAccount) error {
 	if item.RateMultiplier != nil && *item.RateMultiplier < 0 {
 		return errors.New("rate_multiplier must be >= 0")
 	}
-	if item.Concurrency < 0 {
-		return errors.New("concurrency must be >= 0")
+	if item.Concurrency <= 0 {
+		return errors.New("concurrency must be >= 1")
 	}
 	if item.Priority < 0 {
 		return errors.New("priority must be >= 0")

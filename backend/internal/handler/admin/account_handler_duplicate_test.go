@@ -55,6 +55,10 @@ func (r *failOnceMarkSucceededRepo) MarkSucceeded(ctx context.Context, id int64,
 	return r.memoryIdempotencyRepoStub.MarkSucceeded(ctx, id, responseStatus, responseBody, expiresAt)
 }
 
+func (s *duplicateAccountAdminServiceStub) GetAccount(_ context.Context, _ int64) (*service.Account, error) {
+	return s.account, nil
+}
+
 func (s *duplicateAccountAdminServiceStub) DuplicateAccount(_ context.Context, accountID int64, actorScope, operationKey string) (*service.Account, error) {
 	s.calls++
 	s.accountID = accountID
@@ -99,6 +103,7 @@ func setupDuplicateAccountRouter(t *testing.T, svc service.AdminService) *gin.En
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 77})
+		c.Set(string(middleware2.ContextKeyUserRole), service.RoleAdmin)
 		c.Next()
 	})
 	handler := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)

@@ -1000,9 +1000,29 @@ export interface Proxy {
   expires_at: string | null
   fallback_mode: 'none' | 'proxy' | 'direct'
   backup_proxy_id?: number | null
+  is_rental?: boolean
+  rental_order_id?: number | null
   expiry_warn_days: number
   created_at: string
   updated_at: string
+}
+
+export interface RecommendedConcurrencyResponse {
+  platform: string
+  account_type: string
+  plan_tier: string
+  recommended_concurrency: number
+  c_prior: number
+  c_hard_max: number
+  c_star_empirical?: number | null
+  safety_factor: number
+  effective_samples: number
+  distinct_accounts: number
+  confidence: 'high' | 'medium' | 'low' | 'cold_start' | string
+  limiting_factor: string
+  proxy_capped?: boolean
+  proxy_oversubscribed?: boolean
+  proxy_share?: number
 }
 
 export interface ProxyAccountSummary {

@@ -112,7 +112,7 @@ func performOpenAIQuotaResetRequestWithContext(t *testing.T, handler *OpenAIOAut
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/openai/accounts/:id/reset-quota", handler.ResetQuota)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/accounts/42/reset-quota", nil)
@@ -130,7 +130,7 @@ func performOpenAIQuotaRefreshRequest(t *testing.T, handler *OpenAIOAuthHandler)
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/openai/accounts/:id/quota/refresh", handler.RefreshQuota)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/accounts/42/quota/refresh", nil)
@@ -508,7 +508,7 @@ func TestNewOpenAIOAuthHandlerKeepsNilQuotaCapabilitiesGuarded(t *testing.T) {
 	require.Nil(t, handler.quotaService)
 	require.Nil(t, handler.rateLimitService)
 
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.Use(gin.Recovery())
 	router.GET("/openai/accounts/:id/quota", handler.QueryQuota)
 	router.POST("/openai/accounts/:id/quota/refresh", handler.RefreshQuota)

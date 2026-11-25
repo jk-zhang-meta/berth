@@ -49,7 +49,7 @@ type dataAccount struct {
 
 func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
 	gin.SetMode(gin.TestMode)
-	router := gin.New()
+	router := newAdminTestRouter()
 	adminSvc := newStubAdminService()
 
 	h := NewAccountHandler(

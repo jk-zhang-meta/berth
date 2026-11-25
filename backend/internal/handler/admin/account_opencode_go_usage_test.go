@@ -89,7 +89,7 @@ func newOpenCodeGoUsageHandlerContext(method, target, body, id string) (*gin.Con
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
-	ctx, _ := gin.CreateTestContext(recorder)
+	ctx, _ := newAdminTestContext(recorder)
 	ctx.Request = request
 	if id != "" {
 		ctx.Params = gin.Params{{Key: "id", Value: id}}
@@ -158,7 +158,7 @@ func TestOpenCodeGoUsageStateEmbeddedInListAndDetail(t *testing.T) {
 	t.Cleanup(usageService.Stop)
 	handler := NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	handler.SetOpenCodeGoUsageService(usageService)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/accounts", handler.List)
 	router.GET("/accounts/:id", handler.GetByID)
 	router.GET("/accounts/:id/opencode-go-usage", handler.GetOpenCodeGoUsage)

@@ -706,20 +706,18 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				googleConcurrencyError(c, err, "account")
 				return
 			}
-			accountReleaseFunc, err = geminiConcurrency.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
-			if err != nil {
-				reqLog.Warn("gemini.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				if accountWaitCounted {
-					geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
-					accountWaitCounted = false
-				}
-				googleError(c, http.StatusTooManyRequests, err.Error())
-				return
-			}
 			if accountWaitCounted {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false
 			}
+		}
+		// Berth Track B (Bug B10): Unconditionally enforce landing proxy concurrency & RPM
+		// on BOTH fast-path (selection.Acquired == true) and slow-path!
+		accountReleaseFunc, err = geminiConcurrency.WithProxySlot(c.Request.Context(), account, accountReleaseFunc)
+		if err != nil {
+			reqLog.Warn("gemini.proxy_capacity_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			googleError(c, http.StatusTooManyRequests, err.Error())
+			return
 		}
 		// 终检与准入后绑定使用选号结果携带的门（见 responses 同名注释）。
 		admissionCtx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)

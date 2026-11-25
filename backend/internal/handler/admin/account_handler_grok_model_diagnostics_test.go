@@ -172,14 +172,14 @@ func TestAccountHandlerGrokModelDiagnosticsSyncErrorAndPreviewStayUnchanged(t *t
 
 func newGrokDiagDetailRouter(adminSvc service.AdminService, upstream *grokDiagHandlerUpstream) (*AccountHandler, *gin.Engine) {
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, newGrokDiagTestService(nil, upstream), nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.GET("/accounts/:id", handler.GetByID)
 	return handler, router
 }
 
 func newGrokDiagSyncRouter(adminSvc service.AdminService, repo service.AccountRepository, upstream *grokDiagHandlerUpstream) *gin.Engine {
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, newGrokDiagTestService(repo, upstream), nil, nil, nil, nil, nil)
-	router := gin.New()
+	router := newAdminTestRouter()
 	router.POST("/api/v1/admin/accounts/:id/models/sync-upstream", handler.SyncUpstreamModels)
 	router.POST("/api/v1/admin/accounts/models/sync-upstream-preview", handler.SyncUpstreamModelsPreview)
 	return router

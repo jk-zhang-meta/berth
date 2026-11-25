@@ -4,7 +4,6 @@ import (
 	"strconv"
 
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -18,8 +17,7 @@ type ollamaCloudUsageAutoRefreshRequest struct {
 }
 
 func (h *AccountHandler) GetOllamaCloudUsageSettings(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	if h.ollamaCloudUsage == nil {
@@ -35,8 +33,7 @@ func (h *AccountHandler) GetOllamaCloudUsageSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateOllamaCloudUsageSettings(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	if h.ollamaCloudUsage == nil {

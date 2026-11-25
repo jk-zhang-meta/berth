@@ -13,7 +13,7 @@ import (
 
 func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	gin.SetMode(gin.TestMode)
-	router := gin.New()
+	router := newAdminTestRouter()
 	adminSvc := newStubAdminService()
 
 	userHandler := NewUserHandler(adminSvc, nil, nil, nil, nil, nil, nil)

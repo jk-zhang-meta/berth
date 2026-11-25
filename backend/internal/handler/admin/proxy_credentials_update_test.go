@@ -18,7 +18,7 @@ func TestProxyHandlerUpdateCredentialPresence(t *testing.T) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
 			svc := &proxyPartialUpdateService{}
-			router := gin.New()
+			router := newAdminTestRouter()
 			router.PUT("/proxies/:id", NewProxyHandler(svc).Update)
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPut, "/proxies/9", strings.NewReader(body))

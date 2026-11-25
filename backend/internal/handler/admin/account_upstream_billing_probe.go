@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jk-zhang-meta/berth/internal/pkg/response"
-	"github.com/jk-zhang-meta/berth/internal/server/middleware"
 	"github.com/jk-zhang-meta/berth/internal/service"
 )
 
@@ -19,8 +18,7 @@ type upstreamBillingProbeBatchRequest struct {
 }
 
 func (h *AccountHandler) GetUpstreamBillingProbeSettings(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	if h.upstreamBillingProbe == nil {
@@ -36,8 +34,7 @@ func (h *AccountHandler) GetUpstreamBillingProbeSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateUpstreamBillingProbeSettings(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	if h.upstreamBillingProbe == nil {
@@ -150,10 +147,10 @@ func (h *AccountHandler) PreviewUpstreamGroup(c *gin.Context) {
 			Platform: req.Platform, Type: service.AccountTypeAPIKey, ProxyID: req.ProxyID,
 			Credentials: map[string]any{"base_url": strings.TrimSpace(req.BaseURL), "api_key": strings.TrimSpace(req.APIKey)},
 		}
-		if req.ProxyID != nil {
-			if !allowAccountProxy(c, h.stewards, req.ProxyID) {
-				return
-			}
+		if !allowAccountProxyRequired(c, h.stewards, req.ProxyID, isAccountUser(c)) {
+			return
+		}
+		if req.ProxyID != nil && *req.ProxyID > 0 {
 			proxy, err := h.adminService.GetProxy(ctx, *req.ProxyID)
 			if err != nil {
 				response.ErrorFrom(c, err)
@@ -171,8 +168,7 @@ func (h *AccountHandler) PreviewUpstreamGroup(c *gin.Context) {
 }
 
 func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {
-	if role, ok := middleware.GetUserRoleFromContext(c); ok && role != service.RoleAdmin {
-		response.Forbidden(c, "admin only")
+	if !requireAdmin(c) {
 		return
 	}
 	if h.upstreamBillingProbe == nil {
