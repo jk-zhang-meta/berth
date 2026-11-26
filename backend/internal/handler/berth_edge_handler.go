@@ -70,6 +70,7 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	edgeGroup.POST("/failover", h.EdgeFailover)
 	edgeGroup.GET("/oauth-tasks", h.EdgeListOAuthTasks)
 	edgeGroup.POST("/oauth-tasks/:id/complete", h.EdgeCompleteOAuthTask)
+	edgeGroup.GET("/binary/:os/:arch", h.EdgeDownloadBinary)
 
 	// Admin Topology & Landing Grants endpoints
 	adminGroup := r.Group("/api/v1/admin/network")
@@ -84,6 +85,7 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	adminGroup.GET("/links", h.AdminListLinks)
 	adminGroup.POST("/links", h.AdminCreateLink)
 	adminGroup.DELETE("/links/:id", h.AdminDeleteLink)
+	adminGroup.GET("/edge-releases", h.AdminListEdgeReleases)
 	adminGroup.GET("/grants", h.AdminListGrants)
 	adminGroup.POST("/grants", h.AdminCreateGrant)
 	adminGroup.POST("/grants/:id/approve", h.AdminApproveGrant)
@@ -395,11 +397,46 @@ func (h *BerthEdgeHandler) EdgeHeartbeat(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{
+	osName, archName := service.ParseEdgeArchPair(upd.AgentArch)
+	edgeRelease, _, _ := service.LookupEdgeRelease(service.ResolveEdgeReleaseDir(), osName, archName)
+	payload := gin.H{
 		"node":                node,
 		"revocation_snapshot": snap,
 		"central_pubkey":      h.leases.PublicKeyBase64(),
-	})
+	}
+	if edgeRelease != nil {
+		payload["edge_release"] = edgeRelease
+	}
+	response.Success(c, payload)
+}
+
+func (h *BerthEdgeHandler) EdgeDownloadBinary(c *gin.Context) {
+	if _, ok := getAuthenticatedEdgeNodeID(c); !ok {
+		return
+	}
+	goos := c.Param("os")
+	goarch := c.Param("arch")
+	rel, binPath, err := service.LookupEdgeRelease(service.ResolveEdgeReleaseDir(), goos, goarch)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if rel == nil || binPath == "" {
+		response.NotFound(c, "No staged berth-edge binary for platform")
+		return
+	}
+	c.Header("X-Berth-Edge-Version", rel.Version)
+	c.Header("X-Berth-Edge-SHA256", rel.SHA256)
+	c.Header("Content-Type", "application/octet-stream")
+	c.File(binPath)
+}
+
+func (h *BerthEdgeHandler) AdminListEdgeReleases(c *gin.Context) {
+	if _, ok := requireEdgeAdmin(c); !ok {
+		return
+	}
+	items := service.ListEdgeReleases(service.ResolveEdgeReleaseDir())
+	response.Success(c, gin.H{"items": items})
 }
 
 func (h *BerthEdgeHandler) EdgeGrantSlice(c *gin.Context) {

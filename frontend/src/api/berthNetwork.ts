@@ -1,5 +1,5 @@
 /**
- * Berth v2 Edge Network Topology, Landing Nodes & Grant Approval API client.
+ * Berth v2 Edge Network Topology, Landing Nodes, Edge Releases & Grant Approval API client.
  */
 import { apiClient } from './client'
 
@@ -7,9 +7,18 @@ export interface BerthNetworkZone {
   id: number
   slug: string
   display_name: string
-  description?: string
-  default_ingress_strategy?: string
+  is_centre?: boolean
+  default_mgmt_policy?: string
+  dns_hint_domains?: string[]
+  geo_country_codes?: string[]
   created_at?: string
+}
+
+export interface BerthEdgeNodeMeta {
+  agent_version?: string
+  agent_arch?: string
+  agent_sha256?: string
+  [key: string]: unknown
 }
 
 export interface BerthEdgeNode {
@@ -18,24 +27,41 @@ export interface BerthEdgeNode {
   zone_id?: number | null
   roles: string[]
   public_addr?: string
+  tunnel_addr?: string
+  mgmt_entry_addr?: string
   connect_mode?: string
+  provider_region?: string
   exit_ip?: string
   exit_country_code?: string
   exit_timezone?: string
   exit_locale?: string
-  asn_class?: string
+  exit_asn_class?: string
+  pubkey_ed25519?: string
   max_bytes_month: number
   used_bytes_month: number
   reserved_bytes_month: number
   status: string
-  last_seen_at?: string | null
+  last_heartbeat_at?: string | null
+  meta?: BerthEdgeNodeMeta | null
   created_at?: string
+  updated_at?: string
+}
+
+export interface BerthEdgeRelease {
+  os: string
+  arch: string
+  version: string
+  sha256: string
+  size: number
+  updated_at: string
+  download_path: string
 }
 
 export interface BerthServerLink {
   id: number
   src_node_id: number
   dst_node_id: number
+  direction?: string
   link_class: string
   rtt_ms: number
   weight: number
@@ -120,20 +146,74 @@ export interface ApproveLandingGrantPayload {
   notes?: string
 }
 
+export interface UpsertEdgeNodePayload {
+  name: string
+  zone_id: number
+  roles: string[]
+  public_addr?: string
+  tunnel_addr?: string
+  mgmt_entry_addr?: string
+  connect_mode?: string
+  provider_region?: string
+  exit_ip?: string
+  exit_country_code?: string
+  exit_timezone?: string
+  exit_locale?: string
+  exit_asn_class?: string
+  pubkey_ed25519?: string
+  status?: string
+  max_bytes_month?: number
+}
+
+export interface CreateServerLinkPayload {
+  src_node_id: number
+  dst_node_id: number
+  direction: string
+  link_class: string
+  weight: number
+  rtt_ms: number
+  enabled: boolean
+}
+
 export const berthNetworkAPI = {
-  // ---- Admin APIs ----
+  // ---- Admin Infrastructure (Nodes / Zones / Links / Releases) ----
   async listZones(): Promise<BerthNetworkZone[]> {
     const { data } = await apiClient.get<{ items: BerthNetworkZone[] }>('/admin/network/zones')
     return data?.items ?? []
+  },
+  async createZone(payload: { slug: string; display_name: string }): Promise<BerthNetworkZone> {
+    const { data } = await apiClient.post<BerthNetworkZone>('/admin/network/zones', payload)
+    return data
   },
   async listNodes(): Promise<BerthEdgeNode[]> {
     const { data } = await apiClient.get<{ items: BerthEdgeNode[] }>('/admin/network/nodes')
     return data?.items ?? []
   },
+  async createNode(payload: UpsertEdgeNodePayload): Promise<BerthEdgeNode> {
+    const { data } = await apiClient.post<BerthEdgeNode>('/admin/network/nodes', payload)
+    return data
+  },
+  async updateNode(nodeId: number, payload: UpsertEdgeNodePayload): Promise<BerthEdgeNode> {
+    const { data } = await apiClient.put<BerthEdgeNode>(`/admin/network/nodes/${nodeId}`, payload)
+    return data
+  },
   async listLinks(): Promise<BerthServerLink[]> {
     const { data } = await apiClient.get<{ items: BerthServerLink[] }>('/admin/network/links')
     return data?.items ?? []
   },
+  async createLink(payload: CreateServerLinkPayload): Promise<BerthServerLink> {
+    const { data } = await apiClient.post<BerthServerLink>('/admin/network/links', payload)
+    return data
+  },
+  async deleteLink(linkId: number): Promise<void> {
+    await apiClient.delete(`/admin/network/links/${linkId}`)
+  },
+  async listEdgeReleases(): Promise<BerthEdgeRelease[]> {
+    const { data } = await apiClient.get<{ items: BerthEdgeRelease[] }>('/admin/network/edge-releases')
+    return data?.items ?? []
+  },
+
+  // ---- Admin Landing Grants & Approvals ----
   async listAdminGrants(): Promise<BerthLandingGrant[]> {
     const { data } = await apiClient.get<{ items: BerthLandingGrant[] }>('/admin/network/grants')
     return data?.items ?? []

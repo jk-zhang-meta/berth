@@ -729,7 +729,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/accounts', label: '账号管理', icon: GlobeIcon },
-    { path: '/proxies', label: 'IP管理', icon: ServerIcon },
+    { path: '/proxies', label: '代理管理', icon: ServerIcon },
     { path: '/marketplace', label: '租赁市场', icon: PriceTagIcon },
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
@@ -806,7 +806,8 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/pelican-test', label: '鹈鹕测智', icon: ChartIcon },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
-    { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
+    { path: '/admin/nodes', label: t('nav.nodes'), icon: ServerIcon },
+    { path: '/admin/proxies', label: t('nav.proxies'), icon: GlobeIcon },
     {
       path: '/admin/security-audit',
       label: t('nav.securityAudit'),

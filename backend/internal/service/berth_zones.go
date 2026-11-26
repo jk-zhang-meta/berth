@@ -149,6 +149,9 @@ type EdgeHeartbeatUpdate struct {
 	ExitTimezone    string          `json:"exit_timezone,omitempty"`
 	ExitLocale      string          `json:"exit_locale,omitempty"`
 	ExitASNClass    string          `json:"exit_asn_class,omitempty"`
+	AgentVersion    string          `json:"agent_version,omitempty"`
+	AgentArch       string          `json:"agent_arch,omitempty"`
+	AgentSHA256     string          `json:"agent_sha256,omitempty"`
 	Meta            json.RawMessage `json:"meta,omitempty"`
 }
 
@@ -337,6 +340,24 @@ func (s *BerthZoneService) RecordHeartbeat(ctx context.Context, nodeID int64, up
 	}
 	if at.IsZero() {
 		at = time.Now()
+	}
+	if upd.AgentVersion != "" || upd.AgentArch != "" || upd.AgentSHA256 != "" {
+		metaMap := map[string]any{}
+		if trimmed := strings.TrimSpace(string(upd.Meta)); trimmed != "" {
+			_ = json.Unmarshal([]byte(trimmed), &metaMap)
+		}
+		if upd.AgentVersion != "" {
+			metaMap["agent_version"] = strings.TrimSpace(upd.AgentVersion)
+		}
+		if upd.AgentArch != "" {
+			metaMap["agent_arch"] = strings.TrimSpace(upd.AgentArch)
+		}
+		if upd.AgentSHA256 != "" {
+			metaMap["agent_sha256"] = strings.ToLower(strings.TrimSpace(upd.AgentSHA256))
+		}
+		if b, mErr := json.Marshal(metaMap); mErr == nil {
+			upd.Meta = b
+		}
 	}
 	return s.store.RecordHeartbeat(ctx, nodeID, upd, at)
 }
@@ -911,7 +932,7 @@ func (s *sqlZoneStore) RecordHeartbeat(ctx context.Context, nodeID int64, upd Ed
 			exit_timezone = CASE WHEN $5 <> '' THEN $5 ELSE exit_timezone END,
 			exit_locale = CASE WHEN $6 <> '' THEN $6 ELSE exit_locale END,
 			exit_asn_class = CASE WHEN $7 <> '' THEN $7 ELSE exit_asn_class END,
-			meta = COALESCE($8::jsonb, meta),
+			meta = COALESCE(meta, '{}'::jsonb) || COALESCE($8::jsonb, '{}'::jsonb),
 			last_heartbeat_at = $9,
 			updated_at = NOW()
 		WHERE id = $1

@@ -207,7 +207,7 @@ const routes: RouteRecordRaw[] = [
     path: '/proxies',
     name: 'MyProxies',
     component: () => import('@/views/admin/ProxiesView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'IP管理' }
+    meta: { requiresAuth: true, requiresAdmin: false, title: '代理管理' }
   },
   {
     path: '/dashboard',
@@ -606,6 +606,17 @@ const routes: RouteRecordRaw[] = [
       title: 'Announcements',
       titleKey: 'admin.announcements.title',
       descriptionKey: 'admin.announcements.description'
+    }
+  },
+  {
+    path: '/admin/nodes',
+    name: 'AdminNodes',
+    component: () => import('@/views/admin/NodesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: '节点管理',
+      titleKey: 'nav.nodes'
     }
   },
   {

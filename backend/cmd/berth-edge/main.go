@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,7 +22,10 @@ import (
 	"github.com/jk-zhang-meta/berth/internal/pkg/edgeproto"
 )
 
-const version = "2.0.0-edge"
+var (
+	version = "2.1.0-edge"
+	commit  = "dev"
+)
 
 func main() {
 	var (
@@ -42,7 +46,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("berth-edge", version)
+		fmt.Printf("berth-edge %s (commit: %s)\n", version, commit)
 		return
 	}
 
@@ -120,21 +124,19 @@ func main() {
 		cfg.WALDir = filepath.Join(os.TempDir(), fmt.Sprintf("berth-edge-%d", cfg.NodeID))
 	}
 
-	var grantWAL *edgeproto.GrantWAL
-	var outboxWAL *edgeproto.OutboxWAL
-	if cfg.HasRole(edge.RoleLanding) || cfg.HasRole(edge.RoleCompat) {
-		grantWAL, err = edgeproto.OpenGrantWAL(filepath.Join(cfg.WALDir, "grant_wal.jsonl"))
-		if err != nil {
-			log.Fatalf("open grant WAL: %v", err)
-		}
-		defer func() { _ = grantWAL.Close() }()
-
-		outboxWAL, err = edgeproto.OpenOutboxWAL(filepath.Join(cfg.WALDir, "outbox_wal.jsonl"))
-		if err != nil {
-			log.Fatalf("open outbox WAL: %v", err)
-		}
-		defer func() { _ = outboxWAL.Close() }()
+	// Always initialize lightweight GrantWAL and OutboxWAL so any server can
+	// dynamically hot-enable the "landing" role via Central heartbeat without restart.
+	grantWAL, err := edgeproto.OpenGrantWAL(filepath.Join(cfg.WALDir, "grant_wal.jsonl"))
+	if err != nil {
+		log.Fatalf("open grant WAL: %v", err)
 	}
+	defer func() { _ = grantWAL.Close() }()
+
+	outboxWAL, err := edgeproto.OpenOutboxWAL(filepath.Join(cfg.WALDir, "outbox_wal.jsonl"))
+	if err != nil {
+		log.Fatalf("open outbox WAL: %v", err)
+	}
+	defer func() { _ = outboxWAL.Close() }()
 
 	var centralClient *edge.CentralClient
 	if cfg.CentralURL != "" {
@@ -169,6 +171,15 @@ func main() {
 		log.Fatalf("init edge server: %v", err)
 	}
 
+	exePath, selfSHA256, selfErr := edge.ComputeSelfSHA256()
+	if selfErr != nil {
+		log.Printf("berth-edge[%s] warning: compute self sha256 failed (auto-update disabled): %v", cfg.NodeName, selfErr)
+	}
+	var updater *edge.SelfUpdater
+	if exePath != "" && selfSHA256 != "" && !strings.EqualFold(os.Getenv("BERTH_EDGE_DISABLE_AUTO_UPDATE"), "true") {
+		updater = edge.NewSelfUpdater(exePath, selfSHA256)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -181,12 +192,12 @@ func main() {
 		srv.Gate().StartFreshnessWatchdog(ctx, 500*time.Millisecond)
 	}()
 
-	// Background heartbeat + OAuth task polling loop.
+	// Background heartbeat + dynamic role hot-sync + SHA-256 auto-update + OAuth task loop.
 	if centralClient != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runHeartbeatLoop(ctx, cfg, centralClient, srv)
+			runHeartbeatLoop(ctx, stop, cfg, centralClient, srv, updater, selfSHA256)
 		}()
 	}
 
@@ -261,12 +272,43 @@ func main() {
 	wg.Wait()
 }
 
-func runHeartbeatLoop(ctx context.Context, cfg *edge.Config, client *edge.CentralClient, srv *edge.EdgeServer) {
+func runHeartbeatLoop(
+	ctx context.Context,
+	triggerRestart context.CancelFunc,
+	cfg *edge.Config,
+	client *edge.CentralClient,
+	srv *edge.EdgeServer,
+	updater *edge.SelfUpdater,
+	selfSHA256 string,
+) {
+	agentVersion := version
+	if commit != "" && commit != "dev" {
+		agentVersion = fmt.Sprintf("%s-%s", version, commit)
+	}
+	report := edge.HeartbeatReport{
+		Status:       "active",
+		AgentVersion: agentVersion,
+		AgentArch:    runtime.GOOS + "/" + runtime.GOARCH,
+		AgentSHA256:  selfSHA256,
+	}
 	tick := func() {
-		if snap, err := client.Heartbeat(ctx, "active"); err == nil {
-			_ = srv.Gate().UpdateSnapshot(snap)
+		if res, err := client.HeartbeatFull(ctx, report); err == nil {
+			_ = srv.Gate().UpdateSnapshot(res.RevocationSnapshot)
+			if len(res.NodeRoles) > 0 {
+				prev := srv.Roles()
+				if srv.ApplyRuntimeRoles(res.NodeRoles) {
+					log.Printf("berth-edge[%s] runtime roles hot-updated: %v -> %v", cfg.NodeName, prev, srv.Roles())
+				}
+			}
+			if updater != nil && res.EdgeRelease != nil {
+				if updated, uErr := updater.MaybeUpdate(ctx, res.EdgeRelease, client.DownloadBinary, triggerRestart); uErr != nil {
+					log.Printf("berth-edge[%s] auto-update failed (will retry with backoff): %v", cfg.NodeName, uErr)
+				} else if updated {
+					return
+				}
+			}
 		}
-		if cfg.HasRole(edge.RoleLanding) || cfg.HasRole(edge.RoleCompat) {
+		if srv.HasRole(edge.RoleLanding) || srv.HasRole(edge.RoleCompat) {
 			_, _ = srv.ExecutePendingOAuthTasks(ctx)
 		}
 	}

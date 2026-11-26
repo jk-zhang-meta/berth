@@ -159,9 +159,33 @@ func (c *CentralClient) doSignedJSON(ctx context.Context, method, path string, r
 	return resp.StatusCode, respBytes, err
 }
 
+// HeartbeatReport describes the runtime status and running binary identity reported by berth-edge.
+type HeartbeatReport struct {
+	Status       string `json:"status"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	AgentArch    string `json:"agent_arch,omitempty"`
+	AgentSHA256  string `json:"agent_sha256,omitempty"`
+}
+
+// HeartbeatResult carries the fresh revocation snapshot, live node roles, and optional staged release.
+type HeartbeatResult struct {
+	RevocationSnapshot *edgeproto.RevocationSnapshot
+	NodeRoles          []string
+	EdgeRelease        *EdgeReleaseInfo
+}
+
 // Heartbeat reports node health to Berth Central and returns the fresh signed RevocationSnapshot.
 func (c *CentralClient) Heartbeat(ctx context.Context, status string) (*edgeproto.RevocationSnapshot, error) {
-	code, raw, err := c.doSignedJSON(ctx, http.MethodPost, "/api/v1/internal/edge/heartbeat", map[string]any{"status": status})
+	res, err := c.HeartbeatFull(ctx, HeartbeatReport{Status: status})
+	if err != nil {
+		return nil, err
+	}
+	return res.RevocationSnapshot, nil
+}
+
+// HeartbeatFull reports node health + running binary metadata and returns snapshot, live roles, and staged release.
+func (c *CentralClient) HeartbeatFull(ctx context.Context, report HeartbeatReport) (*HeartbeatResult, error) {
+	code, raw, err := c.doSignedJSON(ctx, http.MethodPost, "/api/v1/internal/edge/heartbeat", report)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +194,11 @@ func (c *CentralClient) Heartbeat(ctx context.Context, status string) (*edgeprot
 	}
 	var env struct {
 		Data struct {
+			Node *struct {
+				Roles []string `json:"roles"`
+			} `json:"node"`
 			RevocationSnapshot *edgeproto.RevocationSnapshot `json:"revocation_snapshot"`
+			EdgeRelease        *EdgeReleaseInfo              `json:"edge_release"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -179,7 +207,51 @@ func (c *CentralClient) Heartbeat(ctx context.Context, status string) (*edgeprot
 	if env.Data.RevocationSnapshot == nil {
 		return nil, edgeproto.ErrRevocationSnapshotMissing
 	}
-	return env.Data.RevocationSnapshot, nil
+	res := &HeartbeatResult{
+		RevocationSnapshot: env.Data.RevocationSnapshot,
+		EdgeRelease:        env.Data.EdgeRelease,
+	}
+	if env.Data.Node != nil && len(env.Data.Node.Roles) > 0 {
+		res.NodeRoles = append([]string(nil), env.Data.Node.Roles...)
+	}
+	return res, nil
+}
+
+// DownloadBinary fetches a Central-hosted berth-edge binary over an Ed25519-signed GET request.
+func (c *CentralClient) DownloadBinary(ctx context.Context, path string, dst io.Writer) error {
+	if c == nil || c.BaseURL == "" {
+		return errors.New("edge: central client not configured")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	ts := time.Now().Unix()
+	sig, err := edgeproto.SignNodeRequest(c.PrivateKey, c.NodeID, http.MethodGet, req.URL.Path, ts, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(edgeproto.HeaderNodeID, strconv.FormatInt(c.NodeID, 10))
+	req.Header.Set(edgeproto.HeaderNodeTimestamp, strconv.FormatInt(ts, 10))
+	req.Header.Set(edgeproto.HeaderNodeSignature, sig)
+
+	dlClient := &http.Client{
+		Transport: c.HTTPClient.Transport,
+		Timeout:   2 * time.Minute,
+	}
+	resp, err := dlClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: status %d", ErrDownloadFailed, resp.StatusCode)
+	}
+	_, err = io.Copy(dst, io.LimitReader(resp.Body, 64*1024*1024))
+	return err
 }
 
 // RequestGrantSlice atomically reserves the next disjoint byte slice from Berth Central.
@@ -305,8 +377,10 @@ type EdgeServer struct {
 	h2Client       *http.Client
 	failoverLookup func(*edgeproto.SessionLeaseClaims) []FailoverCandidateDTO
 
-	mu  sync.Mutex
-	srv *http.Server
+	mu      sync.Mutex
+	srv     *http.Server
+	rolesMu sync.RWMutex
+	roles   []string
 }
 
 // EdgeServerOptions configures an EdgeServer cleanly for production or E2E tests.
@@ -343,11 +417,9 @@ func NewEdgeServer(opts EdgeServerOptions) (*EdgeServer, error) {
 		refiller = opts.CentralClient.RequestGrantSlice
 	}
 
-	var walForGate *edgeproto.GrantWAL
-	if opts.Config.HasRole(RoleLanding) || opts.Config.HasRole(RoleCompat) {
-		walForGate = opts.GrantWAL
-	}
-	gate := NewAdmissionGate(opts.CentralPubKey, walForGate, refiller, opts.Config.GrantSliceBytes, opts.Config.GrantLowWatermark)
+	// Always attach GrantWAL when provided so nodes can hot-enable landing role at runtime.
+	// AdmissionGate only touches GrantWAL when expectedLandingNodeID > 0 (landing execution).
+	gate := NewAdmissionGate(opts.CentralPubKey, opts.GrantWAL, refiller, opts.Config.GrantSliceBytes, opts.Config.GrantLowWatermark)
 	if opts.CentralClient != nil {
 		cc := opts.CentralClient
 		gate.SetSnapshotRefresher(func(ctx context.Context) (*edgeproto.RevocationSnapshot, error) {
@@ -375,7 +447,63 @@ func NewEdgeServer(opts EdgeServerOptions) (*EdgeServer, error) {
 		ssrfGuard:      guard,
 		h2Client:       &http.Client{Transport: h2Tr},
 		failoverLookup: opts.FailoverLookup,
+		roles:          append([]string(nil), opts.Config.Roles...),
 	}, nil
+}
+
+// HasRole checks whether role is currently active on this node (supporting runtime hot-updates).
+func (s *EdgeServer) HasRole(role string) bool {
+	s.rolesMu.RLock()
+	defer s.rolesMu.RUnlock()
+	for _, r := range s.roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// Roles returns a copy of the node's current active runtime roles.
+func (s *EdgeServer) Roles() []string {
+	s.rolesMu.RLock()
+	defer s.rolesMu.RUnlock()
+	return append([]string(nil), s.roles...)
+}
+
+// ApplyRuntimeRoles atomically replaces the node's active runtime roles from Central heartbeat.
+// Returns true if the role set changed.
+func (s *EdgeServer) ApplyRuntimeRoles(next []string) bool {
+	cleaned := make([]string, 0, len(next))
+	seen := make(map[string]struct{}, len(next))
+	for _, r := range next {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		cleaned = append(cleaned, r)
+	}
+	if len(cleaned) == 0 {
+		return false
+	}
+	s.rolesMu.Lock()
+	defer s.rolesMu.Unlock()
+	changed := len(cleaned) != len(s.roles)
+	if !changed {
+		for i := range cleaned {
+			if cleaned[i] != s.roles[i] {
+				changed = true
+				break
+			}
+		}
+	}
+	if changed {
+		s.roles = cleaned
+	}
+	return changed
 }
 
 // Gate exposes the node's single fenced AdmissionGate.
@@ -426,7 +554,7 @@ func (s *EdgeServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"status":         "ok",
 		"node_id":        s.cfg.NodeID,
 		"node_name":      s.cfg.NodeName,
-		"roles":          s.cfg.Roles,
+		"roles":          s.Roles(),
 		"active_streams": s.gate.ActiveStreamCount(),
 	})
 }
@@ -469,7 +597,7 @@ func defaultProviderBaseURL(platform, reqPath string) string {
 }
 
 func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.HasRole(RoleIngressRelay) {
+	if !s.HasRole(RoleIngressRelay) {
 		http.Error(w, "ingress_relay role not enabled on this node", http.StatusNotFound)
 		return
 	}
@@ -834,7 +962,7 @@ func (s *EdgeServer) handleTunnelExecute(w http.ResponseWriter, r *http.Request)
 
 	// Transit forwarding hop!
 	if hopIdx < len(route)-1 {
-		if !s.cfg.HasRole(RoleTransit) && !s.cfg.HasRole(RoleIngressRelay) {
+		if !s.HasRole(RoleTransit) && !s.HasRole(RoleIngressRelay) {
 			http.Error(w, "transit role not enabled", http.StatusForbidden)
 			return
 		}
@@ -868,7 +996,7 @@ func (s *EdgeServer) handleTunnelExecute(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *EdgeServer) handleLandingExecute(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.HasRole(RoleLanding) && !s.cfg.HasRole(RoleCompat) {
+	if !s.HasRole(RoleLanding) && !s.HasRole(RoleCompat) {
 		http.Error(w, "landing/compat role not enabled", http.StatusForbidden)
 		return
 	}
@@ -1017,7 +1145,7 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 
 	// Transit hop: forward full-duplex H2 stream opaquely!
 	if hopIdx < len(route)-1 {
-		if !s.cfg.HasRole(RoleTransit) && !s.cfg.HasRole(RoleIngressRelay) {
+		if !s.HasRole(RoleTransit) && !s.HasRole(RoleIngressRelay) {
 			http.Error(w, "transit role not enabled", http.StatusForbidden)
 			return
 		}
@@ -1046,7 +1174,7 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 	}
 
 	// Final Landing / Compat WS hop — passes through the SAME single AdmissionGate!
-	if !s.cfg.HasRole(RoleLanding) && !s.cfg.HasRole(RoleCompat) {
+	if !s.HasRole(RoleLanding) && !s.HasRole(RoleCompat) {
 		http.Error(w, "landing/compat role not enabled", http.StatusForbidden)
 		return
 	}
@@ -1205,7 +1333,7 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 // ExecutePendingOAuthTasks polls Berth Central for OAuth/refresh/probe tasks and
 // executes them locally from this Landing node so Central NEVER contacts AI providers.
 func (s *EdgeServer) ExecutePendingOAuthTasks(ctx context.Context) (int, error) {
-	if s.central == nil || (!s.cfg.HasRole(RoleLanding) && !s.cfg.HasRole(RoleCompat)) {
+	if s.central == nil || (!s.HasRole(RoleLanding) && !s.HasRole(RoleCompat)) {
 		return 0, nil
 	}
 	tasks, err := s.central.PollOAuthTasks(ctx)
