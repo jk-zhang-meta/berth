@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -236,6 +237,89 @@ func (g *CompatSSRFGuard) DialValidatedTCP(ctx context.Context, addr string) (ne
 	}
 	dialer := &net.Dialer{Timeout: g.dialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp4", net.JoinHostPort(ip.String(), port))
+	if err != nil {
+		return nil, "", err
+	}
+	return conn, host, nil
+}
+
+// isBlockedLocalDomain returns true for hostnames that should never be dialed by
+// a generic Landing egress CONNECT tunnel.
+func isBlockedLocalDomain(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "" || h == "localhost" || !strings.Contains(h, ".") {
+		return true
+	}
+	for _, suf := range []string{".localhost", ".local", ".internal", ".lan", ".home.arpa", ".localdomain"} {
+		if strings.HasSuffix(h, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// DialValidatedPublicTCP resolves host:port strictly on the Landing node and dials a
+// validated public IPv4 address for lease-authorized CONNECT proxy tunneling.
+// Blocks private/loopback/CGNAT/IMDS/IPv6 addresses, local domains, and SMTP port 25.
+func (g *CompatSSRFGuard) DialValidatedPublicTCP(ctx context.Context, addr string) (net.Conn, string, error) {
+	host, portStr, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: invalid connect target %q", ErrSSRFAuthorityBlocked, addr)
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	portNum, pErr := strconv.Atoi(portStr)
+	if pErr != nil || portNum <= 0 || portNum > 65535 || portNum == 25 {
+		return nil, "", fmt.Errorf("%w: blocked connect port %q", ErrSSRFAuthorityBlocked, portStr)
+	}
+	authority := net.JoinHostPort(host, portStr)
+	testOK := g.isTestAllowed(authority)
+
+	var targetIP netip.Addr
+	if literal, parseErr := netip.ParseAddr(host); parseErr == nil {
+		if testOK && literal.Is4() && literal.IsLoopback() {
+			targetIP = literal
+		} else if IsPublicIPv4(literal) {
+			targetIP = literal
+		} else {
+			return nil, "", fmt.Errorf("%w: %s", ErrSSRFPrivateIPBlocked, literal)
+		}
+	} else {
+		if !testOK && isBlockedLocalDomain(host) {
+			return nil, "", fmt.Errorf("%w: local domain %s", ErrSSRFAuthorityBlocked, host)
+		}
+		ips, lErr := g.resolver.LookupIPAddr(ctx, host)
+		if lErr != nil {
+			return nil, "", lErr
+		}
+		sawPrivateOrV6 := false
+		for _, ip := range ips {
+			a, ok := netip.AddrFromSlice(ip.IP)
+			if !ok {
+				continue
+			}
+			if ip.IP.To4() != nil {
+				a = a.Unmap()
+			}
+			if testOK && a.Is4() && a.IsLoopback() {
+				targetIP = a
+				break
+			}
+			if IsPublicIPv4(a) {
+				targetIP = a
+				break
+			}
+			sawPrivateOrV6 = true
+		}
+		if !targetIP.IsValid() {
+			if sawPrivateOrV6 {
+				return nil, "", fmt.Errorf("%w: host=%s", ErrSSRFPrivateIPBlocked, host)
+			}
+			return nil, "", fmt.Errorf("%w: host=%s", ErrSSRFNoPublicIPv4Found, host)
+		}
+	}
+
+	dialer := &net.Dialer{Timeout: g.dialTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp4", net.JoinHostPort(targetIP.String(), portStr))
 	if err != nil {
 		return nil, "", err
 	}

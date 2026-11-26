@@ -27,6 +27,7 @@ const (
 	HeaderOperationID    = "X-Berth-Operation-ID"
 	HeaderUpstreamMethod = "X-Berth-Upstream-Method"
 	HeaderUpstreamURL    = "X-Berth-Upstream-URL"
+	HeaderConnectTarget  = "X-Berth-Connect-Target"
 	HeaderAccountID      = "X-Berth-Account-ID"
 	HeaderLandingNode    = "X-Berth-Landing-Node"
 	HeaderCageCohort     = "X-Berth-Cage-Cohort"
@@ -38,6 +39,7 @@ const (
 
 	TunnelExecutePath  = "/edge/v1/execute"
 	TunnelWSBridgePath = "/edge/v1/ws-bridge"
+	TunnelConnectPath  = "/edge/v1/connect"
 
 	// Reverse-tunnel registration frame ("BRT1").
 	BRT1Magic    = "BRT1"

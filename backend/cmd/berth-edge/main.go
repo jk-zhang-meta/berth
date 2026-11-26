@@ -159,6 +159,9 @@ func main() {
 		}, nil)
 	}
 
+	ssrfGuard := edge.NewCompatSSRFGuard(cfg.AllowedUpstreamHosts, cfg.TestAllowLoopbackHosts, nil)
+	landingCageExec := edge.NewLandingCageExecutor(ssrfGuard, nil)
+
 	srv, err := edge.NewEdgeServer(edge.EdgeServerOptions{
 		Config:        cfg,
 		CentralPubKey: cPub,
@@ -166,6 +169,8 @@ func main() {
 		GrantWAL:      grantWAL,
 		OutboxWAL:     outboxWAL,
 		ReverseHub:    revHub,
+		SSRFGuard:     ssrfGuard,
+		Upstream:      landingCageExec,
 	})
 	if err != nil {
 		log.Fatalf("init edge server: %v", err)

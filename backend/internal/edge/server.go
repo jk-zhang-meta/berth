@@ -585,8 +585,16 @@ func (s *EdgeServer) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc(edgeproto.TunnelExecutePath, s.handleTunnelExecute)
 	mux.HandleFunc(edgeproto.TunnelWSBridgePath, s.handleTunnelWSBridge)
+	mux.HandleFunc(edgeproto.TunnelConnectPath, s.handleTunnelConnect)
 	mux.HandleFunc("/", s.handleIngressClient)
-	return h2c.NewHandler(mux, &http2.Server{
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			s.handleIngressClient(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	return h2c.NewHandler(root, &http2.Server{
 		MaxConcurrentStreams: uint32(s.cfg.MaxConcurrentStreams),
 	})
 }
@@ -685,6 +693,19 @@ func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request)
 	route := admitted.Claims().RouteChain
 	if len(route) > 0 && route[0].NodeID != s.cfg.NodeID && !s.HasRole(RoleIngressRelay) {
 		http.Error(w, "node is not authorized entry hop for this lease", http.StatusForbidden)
+		return
+	}
+
+	if r.Method == http.MethodConnect {
+		connectTarget := strings.TrimSpace(r.Header.Get(edgeproto.HeaderConnectTarget))
+		if connectTarget == "" {
+			connectTarget = strings.TrimSpace(r.Host)
+		}
+		if connectTarget == "" {
+			http.Error(w, "missing CONNECT target host:port", http.StatusBadRequest)
+			return
+		}
+		s.handleIngressConnect(w, r, admitted, leaseToken, connectTarget)
 		return
 	}
 
@@ -972,7 +993,7 @@ func (s *EdgeServer) nextHopDispatch(
 	if err != nil {
 		return nil, err
 	}
-	if path == edgeproto.TunnelWSBridgePath {
+	if path == edgeproto.TunnelWSBridgePath || path == edgeproto.TunnelConnectPath {
 		fwdReq.ContentLength = -1
 	}
 	copyForwardHeaders(fwdReq.Header, origHeaders)
@@ -980,7 +1001,11 @@ func (s *EdgeServer) nextHopDispatch(
 	fwdReq.Header.Set(edgeproto.HeaderHopIndex, strconv.Itoa(nextIdx))
 	fwdReq.Header.Set(edgeproto.HeaderLease, leaseToken)
 	fwdReq.Header.Set(edgeproto.HeaderUpstreamMethod, method)
-	fwdReq.Header.Set(edgeproto.HeaderUpstreamURL, targetURL)
+	if path == edgeproto.TunnelConnectPath {
+		fwdReq.Header.Set(edgeproto.HeaderConnectTarget, targetURL)
+	} else {
+		fwdReq.Header.Set(edgeproto.HeaderUpstreamURL, targetURL)
+	}
 
 	if nextHop.LinkClass == "reverse_tunnel" {
 		if s.reverseHub == nil {
@@ -1018,6 +1043,293 @@ func (s *EdgeServer) dispatchTunnelWSBridge(
 		return s.nextHopDispatch(ctx, []edgeproto.RouteHop{route[0], route[0]}, 0, edgeproto.TunnelWSBridgePath, leaseToken, http.MethodGet, targetURL, origHeaders, body)
 	}
 	return s.nextHopDispatch(ctx, route, curHopIdx, edgeproto.TunnelWSBridgePath, leaseToken, http.MethodGet, targetURL, origHeaders, body)
+}
+
+func (s *EdgeServer) dispatchTunnelConnect(
+	ctx context.Context,
+	route []edgeproto.RouteHop,
+	curHopIdx int,
+	leaseToken, connectTarget string,
+	origHeaders http.Header,
+	body io.Reader,
+) (*http.Response, error) {
+	if len(route) == 1 && route[0].NodeID == s.cfg.NodeID {
+		return s.nextHopDispatch(ctx, []edgeproto.RouteHop{route[0], route[0]}, 0, edgeproto.TunnelConnectPath, leaseToken, http.MethodConnect, connectTarget, origHeaders, body)
+	}
+	return s.nextHopDispatch(ctx, route, curHopIdx, edgeproto.TunnelConnectPath, leaseToken, http.MethodConnect, connectTarget, origHeaders, body)
+}
+
+// ---------- Ingress & Transit/Landing Transparent CONNECT Tunnel ----------
+
+func (s *EdgeServer) handleIngressConnect(
+	w http.ResponseWriter,
+	r *http.Request,
+	admitted *AdmittedStream,
+	leaseToken string,
+	connectTarget string,
+) {
+	pr, pw := io.Pipe()
+	bridgeResp, err := s.dispatchTunnelConnect(admitted.Context(), admitted.Claims().RouteChain, 0, leaseToken, connectTarget, r.Header, pr)
+	if err != nil {
+		_ = pw.Close()
+		http.Error(w, fmt.Sprintf("connect tunnel failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	if bridgeResp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(bridgeResp.Body, 4096))
+		_ = bridgeResp.Body.Close()
+		_ = pw.Close()
+		http.Error(w, string(errBody), bridgeResp.StatusCode)
+		return
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		_ = bridgeResp.Body.Close()
+		_ = pw.Close()
+		http.Error(w, "connect hijack unsupported", http.StatusInternalServerError)
+		return
+	}
+	clientConn, clientRW, err := hj.Hijack()
+	if err != nil {
+		_ = bridgeResp.Body.Close()
+		_ = pw.Close()
+		return
+	}
+	defer func() {
+		_ = pw.Close()
+		_ = bridgeResp.Body.Close()
+		_ = clientConn.Close()
+	}()
+
+	if _, err := io.WriteString(clientRW, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return
+	}
+	if err := clientRW.Flush(); err != nil {
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go func() {
+		<-admitted.Context().Done()
+		_ = pw.Close()
+		_ = bridgeResp.Body.Close()
+		_ = clientConn.Close()
+	}()
+	go func() {
+		defer func() {
+			_ = pw.Close()
+			done <- struct{}{}
+		}()
+		_, _ = io.Copy(pw, clientRW)
+	}()
+	go func() {
+		defer func() {
+			done <- struct{}{}
+		}()
+		_, _ = io.Copy(clientConn, bridgeResp.Body)
+	}()
+
+	<-done
+}
+
+func (s *EdgeServer) handleTunnelConnect(w http.ResponseWriter, r *http.Request) {
+	route, err := edgeproto.DecodeRouteHeader(r.Header.Get(edgeproto.HeaderRoute))
+	if err != nil || len(route) == 0 {
+		http.Error(w, "invalid X-Berth-Route header", http.StatusBadRequest)
+		return
+	}
+	hopIdx, err := strconv.Atoi(strings.TrimSpace(r.Header.Get(edgeproto.HeaderHopIndex)))
+	if err != nil || hopIdx < 0 || hopIdx >= len(route) {
+		http.Error(w, "invalid X-Berth-Hop-Index header", http.StatusBadRequest)
+		return
+	}
+
+	// Mesh forwarding hop (works across direct, 1-way IPLC, and H2 reverse tunnels).
+	if hopIdx < len(route)-1 {
+		if route[hopIdx].NodeID != s.cfg.NodeID {
+			http.Error(w, "route hop node mismatch", http.StatusForbidden)
+			return
+		}
+		resp, err := s.nextHopDispatch(
+			r.Context(),
+			route,
+			hopIdx,
+			edgeproto.TunnelConnectPath,
+			r.Header.Get(edgeproto.HeaderLease),
+			http.MethodConnect,
+			r.Header.Get(edgeproto.HeaderConnectTarget),
+			r.Header,
+			r.Body,
+		)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("transit connect hop failed: %v", err), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		streamCopyWithFlush(w, resp.Body)
+		return
+	}
+
+	s.handleLandingConnect(w, r)
+}
+
+func (s *EdgeServer) handleLandingConnect(w http.ResponseWriter, r *http.Request) {
+	if !s.HasRole(RoleLanding) && !s.HasRole(RoleCompat) {
+		http.Error(w, "landing/compat role not enabled", http.StatusForbidden)
+		return
+	}
+
+	startTime := time.Now()
+	leaseToken := extractBearerLease(r)
+	var targetMu sync.Mutex
+	var targetConn net.Conn
+
+	admitted, err := s.gate.Admit(r.Context(), leaseToken, s.cfg.NodeID, func(_ error) {
+		targetMu.Lock()
+		c := targetConn
+		targetMu.Unlock()
+		if c != nil {
+			_ = c.Close()
+		}
+	})
+	if err != nil {
+		writeAdmissionError(w, err)
+		return
+	}
+	defer admitted.Release()
+	claims := admitted.Claims()
+
+	connectTarget := strings.TrimSpace(r.Header.Get(edgeproto.HeaderConnectTarget))
+	if connectTarget == "" {
+		http.Error(w, "missing X-Berth-Connect-Target", http.StatusBadRequest)
+		return
+	}
+
+	conn, _, err := s.ssrfGuard.DialValidatedPublicTCP(admitted.Context(), connectTarget)
+	if err != nil {
+		statusCode := http.StatusBadGateway
+		if errors.Is(err, ErrSSRFAuthorityBlocked) || errors.Is(err, ErrSSRFPrivateIPBlocked) || errors.Is(err, ErrSSRFNoPublicIPv4Found) {
+			statusCode = http.StatusForbidden
+		}
+		s.recordReceipt(claims, 0, 0, statusCode, 0, time.Since(startTime))
+		http.Error(w, fmt.Sprintf("connect dial error: %v", err), statusCode)
+		return
+	}
+	targetMu.Lock()
+	targetConn = conn
+	targetMu.Unlock()
+	defer func() { _ = conn.Close() }()
+
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	var ingressBytes, egressBytes int64
+	var bytesMu sync.Mutex
+	var writeRespMu sync.Mutex
+	respClosed := false
+
+	inboundDone := make(chan struct{})
+	outboundDone := make(chan struct{})
+
+	// Client -> Target TCP (pre-debiting ingress bytes)
+	go func() {
+		defer func() {
+			if tc, ok := conn.(*net.TCPConn); ok {
+				_ = tc.CloseWrite()
+			}
+			close(inboundDone)
+		}()
+		buf := make([]byte, min(s.cfg.PreDebitChunkSize, 32*1024))
+		for {
+			n, rerr := r.Body.Read(buf)
+			if n > 0 {
+				if _, derr := admitted.PreDebit(admitted.Context(), int64(n)); derr != nil {
+					_ = conn.Close()
+					return
+				}
+				if _, werr := conn.Write(buf[:n]); werr != nil {
+					return
+				}
+				bytesMu.Lock()
+				ingressBytes += int64(n)
+				bytesMu.Unlock()
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Target TCP -> Client (pre-debiting egress bytes)
+	go func() {
+		defer close(outboundDone)
+		buf := make([]byte, min(s.cfg.PreDebitChunkSize, 32*1024))
+		for {
+			n, rerr := conn.Read(buf)
+			if n > 0 {
+				allowed, _, derr := admitted.PreDebitUpTo(admitted.Context(), int64(n))
+				if allowed > 0 {
+					writeRespMu.Lock()
+					closed := respClosed
+					var werr error
+					if !closed {
+						_, werr = w.Write(buf[:allowed])
+						if werr == nil && flusher != nil {
+							flusher.Flush()
+						}
+					}
+					writeRespMu.Unlock()
+					if closed || werr != nil {
+						return
+					}
+					bytesMu.Lock()
+					egressBytes += allowed
+					bytesMu.Unlock()
+				}
+				if derr != nil || allowed < int64(n) {
+					return
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-admitted.Context().Done():
+		_ = conn.Close()
+	case <-outboundDone:
+		_ = conn.Close()
+	case <-inboundDone:
+		// Wait briefly for target's remaining response bytes before closing.
+		select {
+		case <-outboundDone:
+		case <-admitted.Context().Done():
+			_ = conn.Close()
+		case <-time.After(10 * time.Second):
+			_ = conn.Close()
+		}
+	}
+
+	writeRespMu.Lock()
+	respClosed = true
+	writeRespMu.Unlock()
+	_ = conn.Close()
+	<-outboundDone
+
+	bytesMu.Lock()
+	inB, outB := ingressBytes, egressBytes
+	bytesMu.Unlock()
+	s.recordReceipt(claims, inB, outB, http.StatusOK, 0, time.Since(startTime))
 }
 
 // ---------- Transit & Landing HTTP / SSE Execution ----------
