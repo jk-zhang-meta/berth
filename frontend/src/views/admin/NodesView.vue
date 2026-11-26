@@ -6,7 +6,7 @@
         <div>
           <h1 class="text-xl font-semibold text-gray-900 dark:text-white">节点管理</h1>
           <p class="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-            管理全部已部署 <code>berth-edge</code> 的服务器节点（入口 / 转发 / 落地）、角色热切换与自动更新状态；启用「落地」后可在「代理管理」中直接选择生成代理。
+            管理全部已部署 <code>berth-edge</code> 的服务器：所有在线节点自动承担所属逻辑分区的接入与网内转发；开启「落地」开关后 ≤15 秒热生效，并出现在「代理管理」中供绑定账号。
           </p>
         </div>
         <div class="flex items-center gap-2">
@@ -45,7 +45,7 @@
           </div>
         </div>
         <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
-          <div class="text-xs text-gray-500 dark:text-gray-400">区域 / 转发链路</div>
+          <div class="text-xs text-gray-500 dark:text-gray-400">逻辑分区 / 链路</div>
           <div class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
             {{ zones.length }}
             <span class="text-sm font-normal text-gray-500 dark:text-gray-400">/ {{ links.length }} 条</span>
@@ -93,10 +93,10 @@
             </button>
           </div>
           <div v-if="activeTab === 'nodes'" class="flex items-center gap-2 pb-2">
-            <select v-model="roleFilter" class="input py-1 text-xs">
-              <option value="all">全部角色</option>
+            <select v-model="nodeFilter" class="input py-1 text-xs">
+              <option value="all">全部节点</option>
+              <option value="relay">仅转发节点</option>
               <option value="landing">仅落地节点</option>
-              <option value="relay">仅入口/转发节点</option>
             </select>
           </div>
         </div>
@@ -106,9 +106,9 @@
           <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-dark-700">
             <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-900/60 dark:text-gray-400">
               <tr>
-                <th class="px-4 py-2.5 text-left">节点 / 分区</th>
-                <th class="px-4 py-2.5 text-left">角色</th>
-                <th class="px-4 py-2.5 text-left">落地功能（热切换）</th>
+                <th class="px-4 py-2.5 text-left">节点 / 逻辑分区</th>
+                <th class="px-4 py-2.5 text-left">角色（转发 / 落地）</th>
+                <th class="px-4 py-2.5 text-left">落地开关（热切换）</th>
                 <th class="px-4 py-2.5 text-left">出口 IP / 地区时区</th>
                 <th class="px-4 py-2.5 text-left">月流量</th>
                 <th class="px-4 py-2.5 text-left">Edge 版本 / 状态</th>
@@ -124,19 +124,26 @@
                 <td class="px-4 py-2.5">
                   <div class="font-medium text-gray-900 dark:text-white">{{ node.name }}</div>
                   <div class="text-xs text-gray-500 dark:text-gray-400">
-                    #{{ node.id }} · {{ zoneName(node.zone_id) }} · {{ node.connect_mode || 'direct' }}
+                    #{{ node.id }} · {{ zoneName(node.zone_id) }}
                   </div>
                 </td>
                 <td class="px-4 py-2.5">
-                  <div class="flex flex-wrap gap-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
                     <span
-                      v-for="role in node.roles"
-                      :key="role"
-                      class="rounded px-1.5 py-0.5 text-[11px] font-medium"
-                      :class="roleBadgeClass(role)"
+                      v-if="isRelayNode(node)"
+                      class="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
                     >
-                      {{ roleLabel(role) }}
+                      转发
                     </span>
+                    <span
+                      v-if="hasRole(node, 'landing')"
+                      class="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                    >
+                      落地
+                    </span>
+                  </div>
+                  <div class="mt-0.5 text-[11px] text-gray-400">
+                    {{ nodeAccessSummary(node) }}
                   </div>
                 </td>
                 <td class="px-4 py-2.5">
@@ -221,7 +228,9 @@
                   <span class="font-medium text-gray-900 dark:text-white">{{ z.display_name }}</span>
                   <span class="ml-2 font-mono text-gray-400">{{ z.slug }}</span>
                 </div>
-                <span class="text-gray-500">ID #{{ z.id }}</span>
+                <span class="rounded bg-gray-200/70 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                  {{ zonePolicyLabel(z.default_mgmt_policy) }}
+                </span>
               </div>
             </div>
           </div>
@@ -257,7 +266,7 @@
       </div>
     </div>
 
-    <!-- Create / Edit Node Modal -->
+    <!-- Create / Edit Node Modal (Simplified MeshHarbor Model) -->
     <BaseDialog
       :show="showNodeModal"
       :title="editingNodeId ? '编辑服务器节点' : '新增服务器节点'"
@@ -265,52 +274,80 @@
       @close="showNodeModal = false"
     >
       <div class="space-y-4">
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <label class="input-label">节点名称 *</label>
             <input v-model="nodeForm.name" type="text" class="input" placeholder="如 houston-vm104" />
           </div>
           <div>
-            <label class="input-label">逻辑分区 (Zone) *</label>
+            <label class="input-label">所属逻辑分区 (Zone) *</label>
             <select v-model.number="nodeForm.zone_id" class="input">
               <option v-for="z in zones" :key="z.id" :value="z.id">
                 {{ z.display_name }} ({{ z.slug }})
               </option>
             </select>
           </div>
-        </div>
-
-        <div>
-          <label class="input-label">节点角色（勾选「落地」后节点 ≤15 秒内自动热启落地能力）</label>
-          <div class="mt-1 flex flex-wrap gap-3">
-            <label v-for="r in allRoles" :key="r.value" class="inline-flex cursor-pointer items-center gap-1.5 text-sm">
-              <input
-                type="checkbox"
-                :value="r.value"
-                v-model="nodeForm.roles"
-                class="rounded border-gray-300 text-primary-600"
-              />
-              <span>{{ r.label }}</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div>
-            <label class="input-label">公网入口地址 (Public Addr)</label>
-            <input v-model="nodeForm.public_addr" type="text" class="input" placeholder="ip:19443" />
-          </div>
-          <div>
-            <label class="input-label">节点隧道地址 (Tunnel Addr)</label>
-            <input v-model="nodeForm.tunnel_addr" type="text" class="input" placeholder="ip:19443" />
-          </div>
           <div>
             <label class="input-label">连接模式</label>
             <select v-model="nodeForm.connect_mode" class="input">
               <option value="direct">直连 (direct)</option>
-              <option value="reverse_tunnel">反向隧道 (reverse_tunnel / 家宽 NAT)</option>
+              <option value="reverse_tunnel">反向隧道 (家宽 / NAT)</option>
             </select>
           </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label class="input-label">对外入口地址（留空 = 仅网内中转 / 反向隧道）</label>
+            <input
+              v-model="nodeForm.public_addr"
+              type="text"
+              class="input font-mono text-xs"
+              :disabled="nodeForm.connect_mode === 'reverse_tunnel'"
+              placeholder="如 http://1.2.3.4:19443（填写后本区客户端可直接连入）"
+            />
+          </div>
+          <div>
+            <label class="input-label">网内隧道地址 (Tunnel Addr)</label>
+            <input
+              v-model="nodeForm.tunnel_addr"
+              type="text"
+              class="input font-mono text-xs"
+              :disabled="nodeForm.connect_mode === 'reverse_tunnel'"
+              placeholder="如 10.x.x.x:19443 或公网 ip:19443"
+            />
+          </div>
+        </div>
+
+        <!-- Two Clear Roles: Relay + Landing -->
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3 dark:border-dark-600 dark:bg-dark-900/40">
+            <div>
+              <div class="text-sm font-medium text-gray-900 dark:text-white">转发节点</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">
+                承担本逻辑分区接入与网内流量转发
+              </div>
+            </div>
+            <input
+              v-model="nodeForm.is_relay"
+              type="checkbox"
+              :disabled="nodeForm.connect_mode === 'reverse_tunnel'"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600"
+            />
+          </label>
+          <label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3 dark:border-dark-600 dark:bg-dark-900/40">
+            <div>
+              <div class="text-sm font-medium text-gray-900 dark:text-white">落地节点（出口 IP）</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">
+                ≤15 秒热生效，并出现在「代理管理」中
+              </div>
+            </div>
+            <input
+              v-model="nodeForm.is_landing"
+              type="checkbox"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600"
+            />
+          </label>
         </div>
 
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
@@ -350,7 +387,7 @@
 
         <div>
           <label class="input-label">节点 Ed25519 公钥 (base64url)</label>
-          <input v-model="nodeForm.pubkey_ed25519" type="text" class="input font-mono text-xs" placeholder="可选，用于节点心跳与二进制下载签名认证" />
+          <input v-model="nodeForm.pubkey_ed25519" type="text" class="input font-mono text-xs" placeholder="可选，用于节点心跳与自动更新签名认证" />
         </div>
       </div>
       <template #footer>
@@ -456,7 +493,7 @@ const appStore = useAppStore()
 const loading = ref(false)
 const submitting = ref(false)
 const activeTab = ref<'nodes' | 'topology'>('nodes')
-const roleFilter = ref<'all' | 'landing' | 'relay'>('all')
+const nodeFilter = ref<'all' | 'relay' | 'landing'>('all')
 const togglingNodeIds = reactive(new Set<number>())
 
 const zones = ref<BerthNetworkZone[]>([])
@@ -464,14 +501,10 @@ const nodes = ref<BerthEdgeNode[]>([])
 const links = ref<BerthServerLink[]>([])
 const releases = ref<BerthEdgeRelease[]>([])
 
-const allRoles = [
-  { value: 'ingress_relay', label: '入口中继 (ingress_relay)' },
-  { value: 'transit', label: '转发中转 (transit)' },
-  { value: 'landing', label: '落地节点 (landing)' },
-  { value: 'mgmt_entry', label: '管理入口 (mgmt_entry)' },
-]
-
 const hasRole = (node: BerthEdgeNode, role: string) => (node.roles || []).includes(role)
+const isRelayNode = (node: BerthEdgeNode) =>
+  node.connect_mode !== 'reverse_tunnel' &&
+  (hasRole(node, 'transit') || hasRole(node, 'ingress_relay') || (node.public_addr || '').trim() !== '')
 
 const activeNodesCount = computed(() => nodes.value.filter((n) => n.status === 'active').length)
 const landingNodesCount = computed(() => nodes.value.filter((n) => hasRole(n, 'landing')).length)
@@ -486,42 +519,38 @@ const syncedAgentsCount = computed(() => {
 })
 
 const filteredNodes = computed(() => {
-  if (roleFilter.value === 'landing') {
+  if (nodeFilter.value === 'landing') {
     return nodes.value.filter((n) => hasRole(n, 'landing'))
   }
-  if (roleFilter.value === 'relay') {
-    return nodes.value.filter((n) => !hasRole(n, 'landing'))
+  if (nodeFilter.value === 'relay') {
+    return nodes.value.filter((n) => isRelayNode(n))
   }
   return nodes.value
 })
 
+const findZone = (zoneId?: number | null) => zones.value.find((z) => z.id === zoneId)
 const zoneName = (zoneId?: number | null) => {
   if (!zoneId) return '默认区'
-  return zones.value.find((z) => z.id === zoneId)?.display_name || `Zone #${zoneId}`
+  return findZone(zoneId)?.display_name || `Zone #${zoneId}`
 }
 const nodeName = (nodeId: number) => nodes.value.find((n) => n.id === nodeId)?.name || `Node #${nodeId}`
 
-const roleLabel = (role: string) => {
-  switch (role) {
-    case 'landing': return '落地'
-    case 'ingress_relay': return '入口'
-    case 'transit': return '转发'
-    case 'mgmt_entry': return '管理入口'
-    default: return role
+const zonePolicyLabel = (policy?: string) => {
+  switch (policy) {
+    case 'entry_required': return '经本区转发节点透传中央'
+    case 'direct_allowed': return '中央管理区'
+    default: return '直连中央'
   }
 }
 
-const roleBadgeClass = (role: string) => {
-  switch (role) {
-    case 'landing':
-      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-    case 'ingress_relay':
-      return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-    case 'transit':
-      return 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
-    default:
-      return 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-300'
+const nodeAccessSummary = (node: BerthEdgeNode) => {
+  if (node.connect_mode === 'reverse_tunnel') {
+    return '反向隧道接入'
   }
+  if ((node.public_addr || '').trim() !== '') {
+    return node.public_addr!
+  }
+  return node.tunnel_addr ? `网内中转 (${node.tunnel_addr})` : '网内中转'
 }
 
 const statusBadgeClass = (status: string) => {
@@ -555,6 +584,26 @@ const formatTime = (iso: string): string => {
   }
 }
 
+const deriveRoles = (zoneId: number, connectMode: string, publicAddr: string, isRelay: boolean, isLanding: boolean): string[] => {
+  const roles: string[] = []
+  if (connectMode !== 'reverse_tunnel' && isRelay) {
+    roles.push('transit')
+    if (publicAddr.trim() !== '') {
+      roles.push('ingress_relay')
+      if (findZone(zoneId)?.default_mgmt_policy === 'entry_required') {
+        roles.push('mgmt_entry')
+      }
+    }
+  }
+  if (isLanding) {
+    roles.push('landing')
+  }
+  if (roles.length === 0) {
+    roles.push('transit')
+  }
+  return roles
+}
+
 const loadAll = async () => {
   loading.value = true
   try {
@@ -577,18 +626,13 @@ const loadAll = async () => {
 
 const toggleLandingRole = async (node: BerthEdgeNode) => {
   const currentlyLanding = hasRole(node, 'landing')
-  const nextRoles = currentlyLanding
-    ? node.roles.filter((r) => r !== 'landing')
-    : [...node.roles, 'landing']
-  if (nextRoles.length === 0) {
-    appStore.showError('节点至少需要保留一个角色')
-    return
-  }
+  const zoneId = node.zone_id || zones.value[0]?.id || 1
+  const nextRoles = deriveRoles(zoneId, node.connect_mode || 'direct', node.public_addr || '', isRelayNode(node), !currentlyLanding)
   togglingNodeIds.add(node.id)
   try {
     await berthNetworkAPI.updateNode(node.id, {
       name: node.name,
-      zone_id: node.zone_id || zones.value[0]?.id || 1,
+      zone_id: zoneId,
       roles: nextRoles,
       public_addr: node.public_addr || '',
       tunnel_addr: node.tunnel_addr || '',
@@ -611,7 +655,7 @@ const toggleLandingRole = async (node: BerthEdgeNode) => {
     )
     await loadAll()
   } catch (err: any) {
-    appStore.showError(err?.message || '切换落地角色失败')
+    appStore.showError(err?.message || '切换落地功能失败')
   } finally {
     togglingNodeIds.delete(node.id)
   }
@@ -623,11 +667,12 @@ const editingNodeId = ref<number | null>(null)
 const nodeForm = reactive({
   name: '',
   zone_id: 1,
-  roles: ['landing'] as string[],
+  connect_mode: 'direct',
   public_addr: '',
   tunnel_addr: '',
   mgmt_entry_addr: '',
-  connect_mode: 'direct',
+  is_relay: true,
+  is_landing: true,
   exit_ip: '',
   exit_country_code: 'US',
   exit_timezone: 'America/Chicago',
@@ -640,12 +685,13 @@ const nodeForm = reactive({
 const openCreateNodeModal = () => {
   editingNodeId.value = null
   nodeForm.name = ''
-  nodeForm.zone_id = zones.value[0]?.id || 1
-  nodeForm.roles = ['landing']
+  nodeForm.zone_id = zones.value.find((z) => z.slug === 'overseas')?.id || zones.value[0]?.id || 1
+  nodeForm.connect_mode = 'direct'
   nodeForm.public_addr = ''
   nodeForm.tunnel_addr = ''
   nodeForm.mgmt_entry_addr = ''
-  nodeForm.connect_mode = 'direct'
+  nodeForm.is_relay = true
+  nodeForm.is_landing = true
   nodeForm.exit_ip = ''
   nodeForm.exit_country_code = 'US'
   nodeForm.exit_timezone = 'America/Chicago'
@@ -660,11 +706,12 @@ const openEditNodeModal = (node: BerthEdgeNode) => {
   editingNodeId.value = node.id
   nodeForm.name = node.name
   nodeForm.zone_id = node.zone_id || zones.value[0]?.id || 1
-  nodeForm.roles = [...(node.roles || [])]
+  nodeForm.connect_mode = node.connect_mode || 'direct'
   nodeForm.public_addr = node.public_addr || ''
   nodeForm.tunnel_addr = node.tunnel_addr || ''
   nodeForm.mgmt_entry_addr = node.mgmt_entry_addr || ''
-  nodeForm.connect_mode = node.connect_mode || 'direct'
+  nodeForm.is_relay = isRelayNode(node)
+  nodeForm.is_landing = hasRole(node, 'landing')
   nodeForm.exit_ip = node.exit_ip || ''
   nodeForm.exit_country_code = node.exit_country_code || ''
   nodeForm.exit_timezone = node.exit_timezone || ''
@@ -676,18 +723,21 @@ const openEditNodeModal = (node: BerthEdgeNode) => {
 }
 
 const submitNode = async () => {
-  if (!nodeForm.name.trim() || nodeForm.roles.length === 0) {
-    appStore.showError('请填写节点名称并至少勾选一个角色')
+  if (!nodeForm.name.trim()) {
+    appStore.showError('请填写节点名称')
     return
   }
+  const publicAddr = nodeForm.connect_mode === 'reverse_tunnel' ? '' : nodeForm.public_addr.trim()
+  const tunnelAddr = nodeForm.connect_mode === 'reverse_tunnel' ? '' : nodeForm.tunnel_addr.trim()
+  const roles = deriveRoles(nodeForm.zone_id, nodeForm.connect_mode, publicAddr, nodeForm.is_relay, nodeForm.is_landing)
   submitting.value = true
   try {
     const payload = {
       name: nodeForm.name.trim(),
       zone_id: nodeForm.zone_id,
-      roles: [...nodeForm.roles],
-      public_addr: nodeForm.public_addr.trim(),
-      tunnel_addr: nodeForm.tunnel_addr.trim(),
+      roles,
+      public_addr: publicAddr,
+      tunnel_addr: tunnelAddr,
       mgmt_entry_addr: nodeForm.mgmt_entry_addr.trim(),
       connect_mode: nodeForm.connect_mode,
       exit_ip: nodeForm.exit_ip.trim(),
@@ -700,7 +750,7 @@ const submitNode = async () => {
     }
     if (editingNodeId.value) {
       await berthNetworkAPI.updateNode(editingNodeId.value, payload)
-      appStore.showSuccess('节点已更新（角色变更将在 ≤15 秒内心跳热同步）')
+      appStore.showSuccess('节点已更新（配置将在 ≤15 秒内心跳热同步）')
     } else {
       await berthNetworkAPI.createNode(payload)
       appStore.showSuccess('服务器节点已创建')

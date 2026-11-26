@@ -597,10 +597,6 @@ func defaultProviderBaseURL(platform, reqPath string) string {
 }
 
 func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request) {
-	if !s.HasRole(RoleIngressRelay) {
-		http.Error(w, "ingress_relay role not enabled on this node", http.StatusNotFound)
-		return
-	}
 	leaseToken := extractBearerLease(r)
 	if leaseToken == "" {
 		http.Error(w, "missing session lease token", http.StatusUnauthorized)
@@ -613,6 +609,14 @@ func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer admitted.Release()
+
+	// Uniform mesh entry check: Central's Ed25519-signed route_chain[0] cryptographically
+	// authorizes this node as the client's zone entry hop (no static ingress_relay tag required).
+	route := admitted.Claims().RouteChain
+	if len(route) > 0 && route[0].NodeID != s.cfg.NodeID && !s.HasRole(RoleIngressRelay) {
+		http.Error(w, "node is not authorized entry hop for this lease", http.StatusForbidden)
+		return
+	}
 
 	targetURL := strings.TrimSpace(r.Header.Get(edgeproto.HeaderUpstreamURL))
 	if targetURL == "" {
@@ -960,10 +964,10 @@ func (s *EdgeServer) handleTunnelExecute(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Transit forwarding hop!
+	// Mesh forwarding hop: any online berth-edge node forwards hops addressed to it in route_chain.
 	if hopIdx < len(route)-1 {
-		if !s.HasRole(RoleTransit) && !s.HasRole(RoleIngressRelay) {
-			http.Error(w, "transit role not enabled", http.StatusForbidden)
+		if route[hopIdx].NodeID != s.cfg.NodeID {
+			http.Error(w, "route hop node mismatch", http.StatusForbidden)
 			return
 		}
 		resp, err := s.nextHopDispatch(
@@ -1143,10 +1147,10 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Transit hop: forward full-duplex H2 stream opaquely!
+	// Mesh WS forwarding hop: any online berth-edge node forwards hops addressed to it in route_chain.
 	if hopIdx < len(route)-1 {
-		if !s.HasRole(RoleTransit) && !s.HasRole(RoleIngressRelay) {
-			http.Error(w, "transit role not enabled", http.StatusForbidden)
+		if route[hopIdx].NodeID != s.cfg.NodeID {
+			http.Error(w, "route hop node mismatch", http.StatusForbidden)
 			return
 		}
 		resp, err := s.nextHopDispatch(

@@ -179,3 +179,72 @@ func TestBerthZoneService_SQLMockListZones(t *testing.T) {
 	require.Equal(t, []string{"CN"}, zones[0].GeoCountryCodes)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+
+func TestBerthZoneService_PublicAddrEntryAndEndToEndRTTRouting(t *testing.T) {
+	ctx := context.Background()
+	svc := NewBerthZoneServiceWithStore(NewMemoryZoneStore(true))
+	zones, err := svc.ListZones(ctx)
+	require.NoError(t, err)
+	cnZoneID := zones[1].ID
+	overseasZoneID := zones[2].ID
+
+	// Two CN zone relay nodes identified as entries purely by public_addr (no separate ingress_relay tag needed).
+	gz, err := svc.CreateNode(ctx, EdgeNode{
+		Name:       "gz",
+		ZoneID:     cnZoneID,
+		Roles:      []string{EdgeRoleTransit},
+		PublicAddr: "http://1.1.1.1:19443",
+		Status:     EdgeNodeStatusActive,
+	})
+	require.NoError(t, err)
+	sh, err := svc.CreateNode(ctx, EdgeNode{
+		Name:       "sh",
+		ZoneID:     cnZoneID,
+		Roles:      []string{EdgeRoleTransit},
+		PublicAddr: "http://2.2.2.2:19443",
+		Status:     EdgeNodeStatusActive,
+	})
+	require.NoError(t, err)
+	// Internal-only IPLC jump box (empty public_addr -> never picked as direct client entry).
+	jump, err := svc.CreateNode(ctx, EdgeNode{
+		Name:       "iplc-jump",
+		ZoneID:     cnZoneID,
+		Roles:      []string{EdgeRoleTransit},
+		TunnelAddr: "10.0.0.1:19443",
+		Status:     EdgeNodeStatusActive,
+	})
+	require.NoError(t, err)
+	landing, err := svc.CreateNode(ctx, EdgeNode{
+		Name:        "la-land",
+		ZoneID:      overseasZoneID,
+		Roles:       []string{EdgeRoleLanding},
+		ConnectMode: ConnectModeReverseTunnel,
+		Status:      EdgeNodeStatusActive,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateLink(ctx, ServerLink{SrcNodeID: gz.ID, DstNodeID: jump.ID, Direction: LinkDirectionOneWay, LinkClass: LinkClassIPLC, Weight: 5, RTTMs: 10, Enabled: true})
+	require.NoError(t, err)
+	_, err = svc.CreateLink(ctx, ServerLink{SrcNodeID: jump.ID, DstNodeID: landing.ID, Direction: LinkDirectionOneWay, LinkClass: LinkClassDirect, Weight: 5, RTTMs: 120, Enabled: true})
+	require.NoError(t, err)
+	_, err = svc.CreateLink(ctx, ServerLink{SrcNodeID: sh.ID, DstNodeID: landing.ID, Direction: LinkDirectionOneWay, LinkClass: LinkClassDirect, Weight: 5, RTTMs: 125, Enabled: true})
+	require.NoError(t, err)
+
+	// Without client RTT, sh path (130) beats gz->jump->la (140), and jump is never picked as client entry.
+	entry, hops, cost, err := svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, landing.ID, map[int64]bool{landing.ID: true}, nil)
+	require.NoError(t, err)
+	require.Equal(t, sh.ID, entry.ID)
+	require.Equal(t, 130, cost)
+	require.Equal(t, sh.ID, hops[0].NodeID)
+
+	// With client RTT (Guangzhou client: 8ms to gz, 45ms to sh), gz wins end-to-end (148 < 175)!
+	entry2, hops2, cost2, err := svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, landing.ID, map[int64]bool{landing.ID: true}, map[int64]int{
+		gz.ID: 8,
+		sh.ID: 45,
+	})
+	require.NoError(t, err)
+	require.Equal(t, gz.ID, entry2.ID)
+	require.Equal(t, 148, cost2)
+	require.Equal(t, gz.ID, hops2[0].NodeID)
+}

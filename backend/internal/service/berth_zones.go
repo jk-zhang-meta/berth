@@ -720,12 +720,36 @@ func solveDijkstraPath(
 	return hops, dist[dstNodeID], nil
 }
 
-// SelectBestIngressAndRoute picks the lowest-cost active ingress_relay in clientZoneID
+// isZoneClientEntry reports whether an active node in a logical zone can directly
+// accept client connections: any direct-mode node with a configured public_addr
+// (or legacy ingress_relay role) serves as a zone entry without needing a separate role flag.
+func isZoneClientEntry(n EdgeNode) bool {
+	if n.Status != EdgeNodeStatusActive || n.ConnectMode == ConnectModeReverseTunnel {
+		return false
+	}
+	if strings.TrimSpace(n.PublicAddr) != "" {
+		return true
+	}
+	return n.HasRole(EdgeRoleIngressRelay)
+}
+
+// SelectBestIngressAndRoute picks the lowest-cost active zone entry node in clientZoneID
 // that has a healthy Dijkstra path to landingNodeID.
 func (s *BerthZoneService) SelectBestIngressAndRoute(
 	ctx context.Context,
 	clientZoneID, landingNodeID int64,
 	liveReverseTunnels map[int64]bool,
+) (*EdgeNode, []edgeproto.RouteHop, int, error) {
+	return s.SelectBestIngressAndRouteWithRTT(ctx, clientZoneID, landingNodeID, liveReverseTunnels, nil)
+}
+
+// SelectBestIngressAndRouteWithRTT picks the zone entry node E in clientZoneID minimizing
+// total end-to-end cost: clientEntryRTTMs[E.ID] + dijkstra_cost(E -> landingNodeID).
+func (s *BerthZoneService) SelectBestIngressAndRouteWithRTT(
+	ctx context.Context,
+	clientZoneID, landingNodeID int64,
+	liveReverseTunnels map[int64]bool,
+	clientEntryRTTMs map[int64]int,
 ) (*EdgeNode, []edgeproto.RouteHop, int, error) {
 	nodes, err := s.store.ListNodes(ctx)
 	if err != nil {
@@ -738,7 +762,7 @@ func (s *BerthZoneService) SelectBestIngressAndRoute(
 
 	candidates := make([]EdgeNode, 0, 8)
 	for _, n := range nodes {
-		if n.Status != EdgeNodeStatusActive || !n.HasRole(EdgeRoleIngressRelay) {
+		if !isZoneClientEntry(n) {
 			continue
 		}
 		if clientZoneID > 0 && n.ZoneID != clientZoneID {
@@ -754,12 +778,16 @@ func (s *BerthZoneService) SelectBestIngressAndRoute(
 
 	for i := range candidates {
 		c := &candidates[i]
-		hops, cost, err := solveDijkstraPath(nodes, links, c.ID, landingNodeID, liveReverseTunnels)
+		hops, pathCost, err := solveDijkstraPath(nodes, links, c.ID, landingNodeID, liveReverseTunnels)
 		if err != nil {
 			continue
 		}
-		if cost < bestCost {
-			bestCost = cost
+		totalCost := pathCost
+		if rtt, ok := clientEntryRTTMs[c.ID]; ok && rtt > 0 {
+			totalCost += rtt
+		}
+		if totalCost < bestCost {
+			bestCost = totalCost
 			bestIngress = c
 			bestHops = hops
 		}

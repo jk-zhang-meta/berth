@@ -145,6 +145,7 @@ type MintLeaseInput struct {
 	LandingNodeID      int64          `json:"landing_node_id"`
 	PreferredZoneSlug  string         `json:"preferred_zone_slug"`
 	ZonePreference     string         `json:"zone_preference,omitempty"`
+	EntryRTTMs         map[int64]int  `json:"entry_rtt_ms,omitempty"`
 	CohortHint         string         `json:"cohort_hint,omitempty"`
 	PinnedZoneSlug     string         `json:"-"`
 	PeerCountryCode    string         `json:"peer_country_code"`
@@ -557,12 +558,12 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 		clientZoneSlug = zoneRes.Zone.Slug
 	}
 
-	// Select best ingress relay in resolved zone and compute Dijkstra route_chain.
+	// Select best zone entry node and compute end-to-end Dijkstra route_chain.
 	liveTunnels := s.liveTunnelsSnapshot(in.LiveReverseTunnels)
-	ingressNode, routeChain, _, err := s.zones.SelectBestIngressAndRoute(ctx, clientZoneID, landingNode.ID, liveTunnels)
+	ingressNode, routeChain, _, err := s.zones.SelectBestIngressAndRouteWithRTT(ctx, clientZoneID, landingNode.ID, liveTunnels, in.EntryRTTMs)
 	if err != nil && clientZoneID > 0 {
-		// Fall back to any non-centre ingress if resolved zone has no dedicated relay configured.
-		ingressNode, routeChain, _, err = s.zones.SelectBestIngressAndRoute(ctx, 0, landingNode.ID, liveTunnels)
+		// Fall back to any non-centre entry if resolved zone has no reachable entry node.
+		ingressNode, routeChain, _, err = s.zones.SelectBestIngressAndRouteWithRTT(ctx, 0, landingNode.ID, liveTunnels, in.EntryRTTMs)
 	}
 	if err != nil {
 		return nil, err
