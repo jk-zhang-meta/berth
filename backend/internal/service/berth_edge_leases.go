@@ -424,7 +424,7 @@ func mapAgentToPlatform(agent string) string {
 	case "agy", "antigravity", "gemini":
 		return "antigravity"
 	case "grok", "xai":
-		return "xai"
+		return "grok"
 	default:
 		return strings.ToLower(strings.TrimSpace(agent))
 	}
@@ -1030,6 +1030,7 @@ func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64,
 			    $1 = ''
 			    OR LOWER(platform) = LOWER($1)
 			    OR (LOWER($1) IN ('antigravity','gemini') AND LOWER(platform) IN ('antigravity','gemini'))
+			    OR (LOWER($1) IN ('grok','xai') AND LOWER(platform) IN ('grok','xai'))
 			  )
 			  AND (id::text = $2 OR LOWER(name) = LOWER($2))
 			ORDER BY priority ASC, id ASC
@@ -1045,6 +1046,7 @@ func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64,
 		    $1 = ''
 		    OR LOWER(platform) = LOWER($1)
 		    OR (LOWER($1) IN ('antigravity','gemini') AND LOWER(platform) IN ('antigravity','gemini'))
+		    OR (LOWER($1) IN ('grok','xai') AND LOWER(platform) IN ('grok','xai'))
 		  )
 		ORDER BY priority ASC, id ASC
 		LIMIT 1`, platform).Scan(&id)
