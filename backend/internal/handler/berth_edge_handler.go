@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -185,18 +186,79 @@ func parsePathInt64(c *gin.Context, param string) (int64, bool) {
 
 // ---------- AGS v2 & User Handlers ----------
 
+type mintLeaseHTTPBody struct {
+	WorkSessionID     json.RawMessage `json:"work_session_id"`
+	Agent             string          `json:"agent"`
+	Platform          string          `json:"platform"`
+	AccountID         int64           `json:"account_id"`
+	AccountPreference []string        `json:"account_preference"`
+	CageID            int64           `json:"cage_id"`
+	CageEpoch         int64           `json:"cage_epoch"`
+	GrantID           int64           `json:"grant_id"`
+	LandingNodeID     int64           `json:"landing_node_id"`
+	PreferredZoneSlug string          `json:"preferred_zone_slug"`
+	ZonePreference    string          `json:"zone_preference"`
+	CohortHint        string          `json:"cohort_hint"`
+	PeerCountryCode   string          `json:"peer_country_code"`
+	DNSHintDomain     string          `json:"dns_hint_domain"`
+	DefaultRouteVPN   bool            `json:"default_route_vpn"`
+	LastCleanZoneSlug string          `json:"last_clean_zone_slug"`
+	CohortTimezone    string          `json:"cohort_timezone"`
+	CohortCountryCode string          `json:"cohort_country_code"`
+	CohortLocale      string          `json:"cohort_locale"`
+}
+
+func parseFlexibleInt64(raw json.RawMessage) int64 {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if n, err := strconv.ParseInt(str, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 func (h *BerthEdgeHandler) MintLease(c *gin.Context) {
 	userID, apiKeyID, _, ok := edgeCallerIdentity(c)
 	if !ok {
 		return
 	}
-	var req service.MintLeaseInput
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var rawBody mintLeaseHTTPBody
+	if err := c.ShouldBindJSON(&rawBody); err != nil {
 		response.BadRequest(c, "Invalid lease request body")
 		return
 	}
-	req.UserID = userID
-	req.APIKeyID = apiKeyID
+	req := service.MintLeaseInput{
+		UserID:            userID,
+		APIKeyID:          apiKeyID,
+		WorkSessionID:     parseFlexibleInt64(rawBody.WorkSessionID),
+		Agent:             rawBody.Agent,
+		Platform:          rawBody.Platform,
+		AccountID:         rawBody.AccountID,
+		AccountPreference: rawBody.AccountPreference,
+		CageID:            rawBody.CageID,
+		CageEpoch:         rawBody.CageEpoch,
+		GrantID:           rawBody.GrantID,
+		LandingNodeID:     rawBody.LandingNodeID,
+		PreferredZoneSlug: rawBody.PreferredZoneSlug,
+		ZonePreference:    rawBody.ZonePreference,
+		CohortHint:        rawBody.CohortHint,
+		PeerCountryCode:   rawBody.PeerCountryCode,
+		DNSHintDomain:     rawBody.DNSHintDomain,
+		DefaultRouteVPN:   rawBody.DefaultRouteVPN,
+		LastCleanZoneSlug: rawBody.LastCleanZoneSlug,
+		CohortTimezone:    rawBody.CohortTimezone,
+		CohortCountryCode: rawBody.CohortCountryCode,
+		CohortLocale:      rawBody.CohortLocale,
+	}
 
 	resp, err := h.leases.MintLease(c.Request.Context(), req)
 	if err != nil {

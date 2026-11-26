@@ -132,25 +132,29 @@ type WorkSessionLeaseRecord struct {
 
 // MintLeaseInput describes the AGS v2 POST /api/v1/ags/leases request.
 type MintLeaseInput struct {
-	UserID             int64                  `json:"-"`
-	APIKeyID           int64                  `json:"-"`
-	WorkSessionID      int64                  `json:"work_session_id"`
-	Platform           string                 `json:"platform"`
-	AccountID          int64                  `json:"account_id"`
-	CageID             int64                  `json:"cage_id"`
-	CageEpoch          int64                  `json:"cage_epoch"`
-	GrantID            int64                  `json:"grant_id"`
-	LandingNodeID      int64                  `json:"landing_node_id"`
-	PreferredZoneSlug  string                 `json:"preferred_zone_slug"`
-	PinnedZoneSlug     string                 `json:"-"`
-	PeerCountryCode    string                 `json:"peer_country_code"`
-	DNSHintDomain      string                 `json:"dns_hint_domain"`
-	DefaultRouteVPN    bool                   `json:"default_route_vpn"`
-	LastCleanZoneSlug  string                 `json:"last_clean_zone_slug"`
-	CohortTimezone     string                 `json:"cohort_timezone"`
-	CohortCountryCode  string                 `json:"cohort_country_code"`
-	CohortLocale       string                 `json:"cohort_locale"`
-	LiveReverseTunnels map[int64]bool         `json:"-"`
+	UserID             int64          `json:"-"`
+	APIKeyID           int64          `json:"-"`
+	WorkSessionID      int64          `json:"work_session_id"`
+	Agent              string         `json:"agent,omitempty"`
+	Platform           string         `json:"platform"`
+	AccountID          int64          `json:"account_id"`
+	AccountPreference  []string       `json:"account_preference,omitempty"`
+	CageID             int64          `json:"cage_id"`
+	CageEpoch          int64          `json:"cage_epoch"`
+	GrantID            int64          `json:"grant_id"`
+	LandingNodeID      int64          `json:"landing_node_id"`
+	PreferredZoneSlug  string         `json:"preferred_zone_slug"`
+	ZonePreference     string         `json:"zone_preference,omitempty"`
+	CohortHint         string         `json:"cohort_hint,omitempty"`
+	PinnedZoneSlug     string         `json:"-"`
+	PeerCountryCode    string         `json:"peer_country_code"`
+	DNSHintDomain      string         `json:"dns_hint_domain"`
+	DefaultRouteVPN    bool           `json:"default_route_vpn"`
+	LastCleanZoneSlug  string         `json:"last_clean_zone_slug"`
+	CohortTimezone     string         `json:"cohort_timezone"`
+	CohortCountryCode  string         `json:"cohort_country_code"`
+	CohortLocale       string         `json:"cohort_locale"`
+	LiveReverseTunnels map[int64]bool `json:"-"`
 }
 
 // MintedLeaseCage describes the authoritative Cage metadata returned to AGS v2.
@@ -400,13 +404,94 @@ func (s *BerthEdgeLeaseService) liveTunnelsSnapshot(override map[int64]bool) map
 	return cp
 }
 
+func mapAgentToPlatform(agent string) string {
+	switch strings.ToLower(strings.TrimSpace(agent)) {
+	case "codex", "openai":
+		return "openai"
+	case "claude", "claude-code", "anthropic":
+		return "anthropic"
+	case "agy", "antigravity", "gemini":
+		return "antigravity"
+	case "grok", "xai":
+		return "xai"
+	default:
+		return strings.ToLower(strings.TrimSpace(agent))
+	}
+}
+
+type edgeLeaseAccountResolver interface {
+	ResolveAccountForLease(ctx context.Context, userID int64, platform string, preferred []string) (int64, error)
+}
+
 // MintLease resolves client zone, validates grant & landing node, solves shortest route,
 // persists berth_work_session_leases, and signs a compact Ed25519 SessionLease JWS.
 func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput) (*MintedLeaseResponse, error) {
+	if in.Platform == "" && in.Agent != "" {
+		in.Platform = mapAgentToPlatform(in.Agent)
+	}
+	if in.PreferredZoneSlug == "" && in.ZonePreference != "" && !strings.EqualFold(strings.TrimSpace(in.ZonePreference), "auto") {
+		in.PreferredZoneSlug = strings.TrimSpace(in.ZonePreference)
+	}
+	now := time.Now()
+
+	// Auto-resolve an eligible active Admin Landing Grant & active Landing node when
+	// AGS v2 omits explicit landing_node_id/grant_id.
+	if in.UserID > 0 && s.grants != nil {
+		if in.LandingNodeID <= 0 && in.GrantID > 0 {
+			if g, gErr := s.grants.GetGrant(ctx, in.GrantID); gErr == nil && g != nil {
+				in.LandingNodeID = g.NodeID
+			}
+		}
+		if in.LandingNodeID <= 0 {
+			userGrants, gErr := s.grants.ListUserGrants(ctx, in.UserID)
+			if gErr == nil {
+				hint := strings.ToLower(strings.TrimSpace(in.CohortHint))
+				var fallbackGrant *LandingNodeGrant
+				for i := range userGrants {
+					g := &userGrants[i]
+					if g.Status != GrantStatusActive {
+						continue
+					}
+					if g.ExpiresAt != nil && !now.Before(*g.ExpiresAt) {
+						continue
+					}
+					if g.MaxBytes > 0 && g.RemainingBytes <= 0 {
+						continue
+					}
+					node, nErr := s.zones.GetNode(ctx, g.NodeID)
+					if nErr != nil || node == nil || node.Status != EdgeNodeStatusActive {
+						continue
+					}
+					if fallbackGrant == nil {
+						fallbackGrant = g
+					}
+					if hint != "" && (strings.Contains(strings.ToLower(node.Name), hint) ||
+						strings.Contains(strings.ToLower(node.ExitTimezone), hint) ||
+						strings.EqualFold(node.ExitCountryCode, hint)) {
+						fallbackGrant = g
+						break
+					}
+				}
+				if fallbackGrant != nil {
+					in.GrantID = fallbackGrant.ID
+					in.LandingNodeID = fallbackGrant.NodeID
+				}
+			}
+		}
+	}
+
+	// Auto-resolve an active schedulable account for the requested platform when AGS v2 omits account_id.
+	if in.UserID > 0 && in.AccountID <= 0 {
+		if resolver, ok := s.store.(edgeLeaseAccountResolver); ok {
+			if resolvedID, rErr := resolver.ResolveAccountForLease(ctx, in.UserID, in.Platform, in.AccountPreference); rErr == nil && resolvedID > 0 {
+				in.AccountID = resolvedID
+			}
+		}
+	}
+
 	if in.UserID <= 0 || in.AccountID <= 0 || in.LandingNodeID <= 0 {
 		return nil, fmt.Errorf("%w: user_id, account_id, and landing_node_id are required", ErrEdgeLeaseInvalid)
 	}
-	now := time.Now()
 
 	// Validate landing node.
 	landingNode, err := s.zones.GetNode(ctx, in.LandingNodeID)
@@ -917,6 +1002,36 @@ func (s *sqlEdgeLeaseStore) CurrentRevSeq(ctx context.Context) (int64, error) {
 		return 1, nil
 	}
 	return seq, err
+}
+
+func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64, platform string, preferred []string) (int64, error) {
+	for _, pref := range preferred {
+		pref = strings.TrimSpace(pref)
+		if pref == "" {
+			continue
+		}
+		var id int64
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT id FROM accounts
+			WHERE deleted_at IS NULL AND status = 'active' AND schedulable = TRUE
+			  AND ($1 = '' OR LOWER(platform) = LOWER($1))
+			  AND (id::text = $2 OR LOWER(name) = LOWER($2))
+			ORDER BY priority ASC, id ASC
+			LIMIT 1`, platform, pref).Scan(&id); err == nil && id > 0 {
+			return id, nil
+		}
+	}
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM accounts
+		WHERE deleted_at IS NULL AND status = 'active' AND schedulable = TRUE
+		  AND ($1 = '' OR LOWER(platform) = LOWER($1))
+		ORDER BY priority ASC, id ASC
+		LIMIT 1`, platform).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (s *sqlEdgeLeaseStore) BumpRevSeq(ctx context.Context) (int64, error) {

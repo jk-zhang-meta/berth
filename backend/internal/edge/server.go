@@ -450,6 +450,24 @@ func newReceiptID() string {
 
 // ---------- Ingress Relay Client Handling ----------
 
+func defaultProviderBaseURL(platform, reqPath string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "openai", "codex":
+		if strings.HasPrefix(reqPath, "/backend-api/") {
+			return "https://chatgpt.com"
+		}
+		return "https://api.openai.com"
+	case "anthropic", "claude":
+		return "https://api.anthropic.com"
+	case "antigravity", "gemini":
+		return "https://generativelanguage.googleapis.com"
+	case "xai", "grok":
+		return "https://api.x.ai"
+	default:
+		return ""
+	}
+}
+
 func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.HasRole(RoleIngressRelay) {
 		http.Error(w, "ingress_relay role not enabled on this node", http.StatusNotFound)
@@ -471,6 +489,9 @@ func (s *EdgeServer) handleIngressClient(w http.ResponseWriter, r *http.Request)
 	targetURL := strings.TrimSpace(r.Header.Get(edgeproto.HeaderUpstreamURL))
 	if targetURL == "" {
 		base := strings.TrimRight(s.cfg.DefaultUpstreamBaseURL, "/")
+		if base == "" {
+			base = defaultProviderBaseURL(admitted.Claims().Platform, r.URL.Path)
+		}
 		if base == "" {
 			http.Error(w, "missing upstream target url", http.StatusBadRequest)
 			return
