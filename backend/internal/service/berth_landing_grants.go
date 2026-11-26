@@ -392,9 +392,9 @@ func (s *sqlLandingGrantStore) CreateGrant(ctx context.Context, in CreateLanding
 		INSERT INTO proxies (
 			name, protocol, host, port, username, password, status,
 			max_accounts, max_rpm, max_concurrency,
-			exit_ip, exit_country_code, exit_timezone, expires_at,
+			exit_ip, exit_country_code, exit_timezone, exit_checked_at, expires_at,
 			edge_node_id, source_type
-		) VALUES ($1, 'https', $2, 443, NULL, NULL, 'active', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, 'https', $2, 443, NULL, NULL, 'active', $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11)
 		RETURNING id`,
 		proxyName, proxyHost, in.MaxAccounts, in.MaxRPM, in.MaxConcurrency,
 		nullIfEmpty(exitIP), nullIfEmpty(exitCC), nullIfEmpty(exitTZ), in.ExpiresAt,
@@ -782,9 +782,9 @@ func (s *sqlLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLandi
 		INSERT INTO proxies (
 			name, protocol, host, port, username, password, status,
 			max_accounts, max_rpm, max_concurrency,
-			exit_ip, exit_country_code, exit_timezone, expires_at,
+			exit_ip, exit_country_code, exit_timezone, exit_checked_at, expires_at,
 			edge_node_id, grant_id, source_type
-		) VALUES ($1, 'https', $2, 443, NULL, NULL, 'active', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		) VALUES ($1, 'https', $2, 443, NULL, NULL, 'active', $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11, $12)
 		RETURNING id`,
 		proxyName, proxyHost, maxAccounts, maxRPM, maxConc,
 		nullIfEmpty(exitIP), nullIfEmpty(exitCC), nullIfEmpty(exitTZ), in.ExpiresAt,

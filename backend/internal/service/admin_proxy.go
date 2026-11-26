@@ -279,17 +279,19 @@ func (s *adminServiceImpl) validateVerifiedProxyBindingCapacity(ctx context.Cont
 		return err
 	}
 	if !proxy.HasFreshVerifiedExitProfile(time.Now()) {
-		// Active rented proxy clones cannot be manually re-tested by buyers via POST /proxies/:id/test.
-		// Verify active lease state and refresh exit profile on-the-fly if prober is available,
-		// falling back to the verified exit profile stored at checkout time so rentals remain bindable >15m post-checkout.
-		rental, allowed, rerr := s.checkRentalProxyForBinding(ctx, *proxyID)
-		if rerr != nil || !rental || !allowed || !proxy.HasVerifiedExitProfile() {
-			return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
-		}
-		if s.proxyProber != nil {
-			if exitInfo, latencyMs, checkedAt, perr := s.probeVerifiedProxyExit(ctx, proxy); perr == nil {
-				_ = s.proxyRepo.Update(ctx, proxy)
-				s.saveVerifiedProxyProbe(ctx, proxy.ID, exitInfo, latencyMs, checkedAt)
+		if !(s.isActiveEdgeLandingGrantProxy(ctx, proxy) && proxy.HasVerifiedExitProfile()) {
+			// Active rented proxy clones cannot be manually re-tested by buyers via POST /proxies/:id/test.
+			// Verify active lease state and refresh exit profile on-the-fly if prober is available,
+			// falling back to the verified exit profile stored at checkout time so rentals remain bindable >15m post-checkout.
+			rental, allowed, rerr := s.checkRentalProxyForBinding(ctx, *proxyID)
+			if rerr != nil || !rental || !allowed || !proxy.HasVerifiedExitProfile() {
+				return infraerrors.BadRequest("PROXY_EXIT_PROFILE_REQUIRED", "proxy exit IP and timezone must be verified recently before binding; test the proxy again")
+			}
+			if s.proxyProber != nil {
+				if exitInfo, latencyMs, checkedAt, perr := s.probeVerifiedProxyExit(ctx, proxy); perr == nil {
+					_ = s.proxyRepo.Update(ctx, proxy)
+					s.saveVerifiedProxyProbe(ctx, proxy.ID, exitInfo, latencyMs, checkedAt)
+				}
 			}
 		}
 	}

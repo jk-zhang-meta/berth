@@ -253,9 +253,11 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 		}
 		ownedIDs := h.stewards.ListProxyIDs(c.Request.Context(), ownerID)
 		rentalInfos := h.stewards.ListActiveRentalProxies(c.Request.Context(), ownerID)
+		grantInfos := h.stewards.ListActiveLandingGrantProxies(c.Request.Context(), ownerID)
 		rentalByProxyID := make(map[int64]service.RentalProxyInfo, len(rentalInfos))
-		allIDs := make([]int64, 0, len(ownedIDs)+len(rentalInfos))
-		seenID := make(map[int64]struct{}, len(ownedIDs)+len(rentalInfos))
+		grantByProxyID := make(map[int64]service.LandingGrantProxyInfo, len(grantInfos))
+		allIDs := make([]int64, 0, len(ownedIDs)+len(rentalInfos)+len(grantInfos))
+		seenID := make(map[int64]struct{}, len(ownedIDs)+len(rentalInfos)+len(grantInfos))
 		for _, id := range ownedIDs {
 			if _, exists := seenID[id]; !exists {
 				seenID[id] = struct{}{}
@@ -264,6 +266,13 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 		}
 		for _, info := range rentalInfos {
 			rentalByProxyID[info.ProxyID] = info
+			if _, exists := seenID[info.ProxyID]; !exists {
+				seenID[info.ProxyID] = struct{}{}
+				allIDs = append(allIDs, info.ProxyID)
+			}
+		}
+		for _, info := range grantInfos {
+			grantByProxyID[info.ProxyID] = info
 			if _, exists := seenID[info.ProxyID]; !exists {
 				seenID[info.ProxyID] = struct{}{}
 				allIDs = append(allIDs, info.ProxyID)
@@ -317,6 +326,15 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 					if rentalInfo.ExpiresAt != nil {
 						item.ExpiresAt = rentalInfo.ExpiresAt
 					}
+				} else if grantInfo, isGrant := grantByProxyID[p.ID]; isGrant {
+					item.Host = ""
+					item.Port = 0
+					item.Username = ""
+					item.Password = ""
+					item.IPAddress = ""
+					if grantInfo.ExpiresAt != nil {
+						item.ExpiresAt = grantInfo.ExpiresAt
+					}
 				}
 				out = append(out, item)
 			}
@@ -345,6 +363,14 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 				item.RentalOrderID = &orderID
 				if rentalInfo.ExpiresAt != nil {
 					item.ExpiresAt = rentalInfo.ExpiresAt
+				}
+			} else if grantInfo, isGrant := grantByProxyID[p.ID]; isGrant {
+				item.Host = ""
+				item.Port = 0
+				item.Username = ""
+				item.Password = ""
+				if grantInfo.ExpiresAt != nil {
+					item.ExpiresAt = grantInfo.ExpiresAt
 				}
 			}
 			out = append(out, item)
