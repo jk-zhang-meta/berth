@@ -18,9 +18,11 @@ import (
 )
 
 const (
+	GrantStatusPending        = "pending"
 	GrantStatusActive         = "active"
 	GrantStatusPaused         = "paused"
 	GrantStatusRevoked        = "revoked"
+	GrantStatusRejected       = "rejected"
 	GrantStatusExpired        = "expired"
 	GrantStatusQuotaExhausted = "quota_exhausted"
 
@@ -38,30 +40,75 @@ var (
 	ErrLandingGrantQuotaExhausted = infraerrors.New(http.StatusForbidden, "LANDING_GRANT_QUOTA_EXHAUSTED", "Landing grant or node byte quota exhausted")
 	ErrLandingGrantExpired        = infraerrors.New(http.StatusForbidden, "LANDING_GRANT_EXPIRED", "Landing grant has expired")
 	ErrLandingGrantInactive       = infraerrors.New(http.StatusForbidden, "LANDING_GRANT_INACTIVE", "Landing grant is not active")
+	ErrLandingGrantPendingExists  = infraerrors.New(http.StatusConflict, "LANDING_GRANT_PENDING_EXISTS", "A pending application for this landing node already exists")
+	ErrLandingGrantNotPending     = infraerrors.New(http.StatusBadRequest, "LANDING_GRANT_NOT_PENDING", "Landing grant is not in pending state")
 )
 
 // LandingNodeGrant maps to berth_landing_node_grants with redacted node/proxy summary.
 type LandingNodeGrant struct {
-	ID                int64      `json:"id"`
-	NodeID            int64      `json:"node_id"`
-	NodeName          string     `json:"node_name,omitempty"`
-	ExitCountryCode   string     `json:"exit_country_code,omitempty"`
-	ExitTimezone      string     `json:"exit_timezone,omitempty"`
-	GranteeUserID     int64      `json:"grantee_user_id"`
-	GrantedByAdminID  *int64     `json:"granted_by_admin_id,omitempty"`
-	ProxyID           *int64     `json:"proxy_id,omitempty"`
-	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
-	MaxBytes          int64      `json:"max_bytes"`
-	UsedBytes         int64      `json:"used_bytes"`
-	ReservedBytes     int64      `json:"reserved_bytes"`
-	RemainingBytes    int64      `json:"remaining_bytes"` // -1 if unlimited
-	MaxAccounts       int        `json:"max_accounts"`
-	MaxRPM            int        `json:"max_rpm"`
-	MaxConcurrency    int        `json:"max_concurrency"`
-	Status            string     `json:"status"`
-	Notes             string     `json:"notes"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	NodeID           int64      `json:"node_id"`
+	NodeName         string     `json:"node_name,omitempty"`
+	NodeStatus       string     `json:"node_status,omitempty"`
+	NodeExitIP       string     `json:"node_exit_ip,omitempty"` // populated for admin views only; redacted for users
+	ExitCountryCode  string     `json:"exit_country_code,omitempty"`
+	ExitTimezone     string     `json:"exit_timezone,omitempty"`
+	ExitLocale       string     `json:"exit_locale,omitempty"`
+	GranteeUserID    int64      `json:"grantee_user_id"`
+	GranteeEmail     string     `json:"grantee_email,omitempty"`
+	GranteeUsername  string     `json:"grantee_username,omitempty"`
+	GrantedByAdminID *int64     `json:"granted_by_admin_id,omitempty"`
+	ProxyID          *int64     `json:"proxy_id,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	MaxBytes         int64      `json:"max_bytes"`
+	UsedBytes        int64      `json:"used_bytes"`
+	ReservedBytes    int64      `json:"reserved_bytes"`
+	RemainingBytes   int64      `json:"remaining_bytes"` // -1 if unlimited
+	MaxAccounts      int        `json:"max_accounts"`
+	MaxRPM           int        `json:"max_rpm"`
+	MaxConcurrency   int        `json:"max_concurrency"`
+	Status           string     `json:"status"`
+	Notes            string     `json:"notes"`
+	RequestReason    string     `json:"request_reason,omitempty"`
+	ReviewNote       string     `json:"review_note,omitempty"`
+	ReviewedAt       *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// AvailableLandingNode is a strictly redacted landing node summary shown to normal users
+// when applying for landing access (never exposes raw exit IP, public address, or keys).
+type AvailableLandingNode struct {
+	ID                int64  `json:"id"`
+	Name              string `json:"name"`
+	ExitCountryCode   string `json:"exit_country_code"`
+	ExitTimezone      string `json:"exit_timezone"`
+	ExitLocale        string `json:"exit_locale"`
+	Status            string `json:"status"`
+	HasActiveGrant    bool   `json:"has_active_grant"`
+	HasPendingRequest bool   `json:"has_pending_request"`
+}
+
+// ApplyLandingGrantInput carries a normal user's application for a landing node.
+type ApplyLandingGrantInput struct {
+	NodeID        int64  `json:"node_id"`
+	GranteeUserID int64  `json:"-"`
+	RequestReason string `json:"request_reason"`
+	MaxAccounts   int    `json:"max_accounts"`
+	MaxBytes      int64  `json:"max_bytes"`
+}
+
+// ApproveLandingGrantInput carries admin parameters when approving a pending application.
+type ApproveLandingGrantInput struct {
+	GrantID        int64      `json:"-"`
+	AdminID        int64      `json:"-"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	MaxBytes       *int64     `json:"max_bytes,omitempty"`
+	MaxAccounts    *int       `json:"max_accounts,omitempty"`
+	MaxRPM         *int       `json:"max_rpm,omitempty"`
+	MaxConcurrency *int       `json:"max_concurrency,omitempty"`
+	ReviewNote     string     `json:"review_note"`
+	Notes          string     `json:"notes"`
 }
 
 func (g *LandingNodeGrant) computeRemaining() {
@@ -114,6 +161,11 @@ type GrantUsageCommitResult struct {
 // BerthLandingGrantStore abstracts transactional persistence for Admin Landing Grants.
 type BerthLandingGrantStore interface {
 	CreateGrant(ctx context.Context, in CreateLandingGrantInput) (*LandingNodeGrant, error)
+	ApplyForLandingNode(ctx context.Context, in ApplyLandingGrantInput) (*LandingNodeGrant, error)
+	CancelPendingApplication(ctx context.Context, grantID, userID int64) error
+	ApproveGrant(ctx context.Context, in ApproveLandingGrantInput) (*LandingNodeGrant, error)
+	RejectGrant(ctx context.Context, grantID, adminID int64, reviewNote string) (*LandingNodeGrant, error)
+	ListAvailableLandingNodes(ctx context.Context, userID int64) ([]AvailableLandingNode, error)
 	GetGrant(ctx context.Context, grantID int64) (*LandingNodeGrant, error)
 	ListGrants(ctx context.Context, userIDFilter int64) ([]LandingNodeGrant, error)
 	ListRevokedGrantIDs(ctx context.Context) ([]int64, error)
@@ -157,6 +209,65 @@ func (s *BerthLandingGrantService) CreateGrant(ctx context.Context, in CreateLan
 	}
 	in.Notes = strings.TrimSpace(in.Notes)
 	return s.store.CreateGrant(ctx, in)
+}
+
+func (s *BerthLandingGrantService) ListAvailableLandingNodes(ctx context.Context, userID int64) ([]AvailableLandingNode, error) {
+	if userID <= 0 {
+		return nil, ErrLandingGrantForbidden
+	}
+	return s.store.ListAvailableLandingNodes(ctx, userID)
+}
+
+func (s *BerthLandingGrantService) ApplyForLandingNode(ctx context.Context, in ApplyLandingGrantInput) (*LandingNodeGrant, error) {
+	if in.NodeID <= 0 || in.GranteeUserID <= 0 {
+		return nil, fmt.Errorf("%w: node_id is required", ErrLandingGrantInvalid)
+	}
+	if in.MaxBytes < 0 {
+		return nil, fmt.Errorf("%w: max_bytes must be >= 0", ErrLandingGrantInvalid)
+	}
+	if in.MaxAccounts <= 0 {
+		in.MaxAccounts = 1
+	}
+	in.RequestReason = strings.TrimSpace(in.RequestReason)
+	if len(in.RequestReason) > 1000 {
+		in.RequestReason = in.RequestReason[:1000]
+	}
+	return s.store.ApplyForLandingNode(ctx, in)
+}
+
+func (s *BerthLandingGrantService) CancelPendingApplication(ctx context.Context, grantID, userID int64) error {
+	if grantID <= 0 || userID <= 0 {
+		return ErrLandingGrantInvalid
+	}
+	return s.store.CancelPendingApplication(ctx, grantID, userID)
+}
+
+func (s *BerthLandingGrantService) ApproveGrant(ctx context.Context, in ApproveLandingGrantInput) (*LandingNodeGrant, error) {
+	if in.GrantID <= 0 || in.AdminID <= 0 {
+		return nil, ErrLandingGrantInvalid
+	}
+	if in.MaxBytes != nil && *in.MaxBytes < 0 {
+		return nil, fmt.Errorf("%w: max_bytes must be >= 0", ErrLandingGrantInvalid)
+	}
+	if in.MaxAccounts != nil && *in.MaxAccounts < 1 {
+		return nil, fmt.Errorf("%w: max_accounts must be >= 1", ErrLandingGrantInvalid)
+	}
+	if in.MaxRPM != nil && *in.MaxRPM < 0 {
+		return nil, fmt.Errorf("%w: max_rpm must be >= 0", ErrLandingGrantInvalid)
+	}
+	if in.MaxConcurrency != nil && *in.MaxConcurrency < 0 {
+		return nil, fmt.Errorf("%w: max_concurrency must be >= 0", ErrLandingGrantInvalid)
+	}
+	in.ReviewNote = strings.TrimSpace(in.ReviewNote)
+	in.Notes = strings.TrimSpace(in.Notes)
+	return s.store.ApproveGrant(ctx, in)
+}
+
+func (s *BerthLandingGrantService) RejectGrant(ctx context.Context, grantID, adminID int64, reviewNote string) (*LandingNodeGrant, error) {
+	if grantID <= 0 || adminID <= 0 {
+		return nil, ErrLandingGrantInvalid
+	}
+	return s.store.RejectGrant(ctx, grantID, adminID, strings.TrimSpace(reviewNote))
 }
 
 func (s *BerthLandingGrantService) GetGrant(ctx context.Context, grantID int64) (*LandingNodeGrant, error) {
@@ -348,15 +459,19 @@ func (s *sqlLandingGrantStore) CreateGrant(ctx context.Context, in CreateLanding
 	return &grant, nil
 }
 
-func scanLandingGrant(sc interface{ Scan(...any) error }) (*LandingNodeGrant, error) {
+func scanLandingGrant(sc interface{ Scan(...any) error }, includeAdminFields bool) (*LandingNodeGrant, error) {
 	var g LandingNodeGrant
 	var adminID, proxyID sql.NullInt64
-	var exp sql.NullTime
+	var exp, revAt sql.NullTime
+	var nodeExitIP, granteeEmail, granteeUsername sql.NullString
 	err := sc.Scan(
-		&g.ID, &g.NodeID, &g.NodeName, &g.ExitCountryCode, &g.ExitTimezone,
-		&g.GranteeUserID, &adminID, &proxyID,
+		&g.ID, &g.NodeID, &g.NodeName, &g.NodeStatus, &nodeExitIP,
+		&g.ExitCountryCode, &g.ExitTimezone, &g.ExitLocale,
+		&g.GranteeUserID, &granteeEmail, &granteeUsername,
+		&adminID, &proxyID,
 		&exp, &g.MaxBytes, &g.UsedBytes, &g.ReservedBytes,
 		&g.MaxAccounts, &g.MaxRPM, &g.MaxConcurrency, &g.Status, &g.Notes,
+		&g.RequestReason, &g.ReviewNote, &revAt,
 		&g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
@@ -364,6 +479,17 @@ func scanLandingGrant(sc interface{ Scan(...any) error }) (*LandingNodeGrant, er
 			return nil, ErrLandingGrantNotFound
 		}
 		return nil, err
+	}
+	if includeAdminFields {
+		if nodeExitIP.Valid {
+			g.NodeExitIP = nodeExitIP.String
+		}
+		if granteeEmail.Valid {
+			g.GranteeEmail = granteeEmail.String
+		}
+		if granteeUsername.Valid {
+			g.GranteeUsername = granteeUsername.String
+		}
 	}
 	if adminID.Valid {
 		v := adminID.Int64
@@ -377,31 +503,40 @@ func scanLandingGrant(sc interface{ Scan(...any) error }) (*LandingNodeGrant, er
 		t := exp.Time
 		g.ExpiresAt = &t
 	}
+	if revAt.Valid {
+		t := revAt.Time
+		g.ReviewedAt = &t
+	}
 	g.computeRemaining()
 	return &g, nil
 }
 
 const landingGrantSelectSQL = `
-	SELECT g.id, g.node_id, n.name, n.exit_country_code, n.exit_timezone,
-	       g.grantee_user_id, g.granted_by_admin_id, g.proxy_id,
+	SELECT g.id, g.node_id, n.name, n.status, n.exit_ip,
+	       n.exit_country_code, n.exit_timezone, n.exit_locale,
+	       g.grantee_user_id, u.email, u.username,
+	       g.granted_by_admin_id, g.proxy_id,
 	       g.expires_at, g.max_bytes, g.used_bytes, g.reserved_bytes,
 	       g.max_accounts, g.max_rpm, g.max_concurrency, g.status, g.notes,
+	       g.request_reason, g.review_note, g.reviewed_at,
 	       g.created_at, g.updated_at
 	FROM berth_landing_node_grants g
-	JOIN berth_edge_nodes n ON n.id = g.node_id`
+	JOIN berth_edge_nodes n ON n.id = g.node_id
+	LEFT JOIN users u ON u.id = g.grantee_user_id`
 
 func (s *sqlLandingGrantStore) GetGrant(ctx context.Context, grantID int64) (*LandingNodeGrant, error) {
 	row := s.db.QueryRowContext(ctx, landingGrantSelectSQL+` WHERE g.id = $1`, grantID)
-	return scanLandingGrant(row)
+	return scanLandingGrant(row, true)
 }
 
 func (s *sqlLandingGrantStore) ListGrants(ctx context.Context, userIDFilter int64) ([]LandingNodeGrant, error) {
 	var rows *sql.Rows
 	var err error
+	includeAdminFields := userIDFilter <= 0
 	if userIDFilter > 0 {
-		rows, err = s.db.QueryContext(ctx, landingGrantSelectSQL+` WHERE g.grantee_user_id = $1 ORDER BY g.id DESC`, userIDFilter)
+		rows, err = s.db.QueryContext(ctx, landingGrantSelectSQL+` WHERE g.grantee_user_id = $1 ORDER BY CASE WHEN g.status = 'pending' THEN 0 WHEN g.status = 'active' THEN 1 ELSE 2 END, g.id DESC`, userIDFilter)
 	} else {
-		rows, err = s.db.QueryContext(ctx, landingGrantSelectSQL+` ORDER BY g.id DESC`)
+		rows, err = s.db.QueryContext(ctx, landingGrantSelectSQL+` ORDER BY CASE WHEN g.status = 'pending' THEN 0 WHEN g.status = 'active' THEN 1 ELSE 2 END, g.id DESC`)
 	}
 	if err != nil {
 		return nil, err
@@ -410,13 +545,325 @@ func (s *sqlLandingGrantStore) ListGrants(ctx context.Context, userIDFilter int6
 
 	out := make([]LandingNodeGrant, 0, 16)
 	for rows.Next() {
-		g, err := scanLandingGrant(rows)
+		g, err := scanLandingGrant(rows, includeAdminFields)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, *g)
 	}
 	return out, rows.Err()
+}
+
+func (s *sqlLandingGrantStore) ListAvailableLandingNodes(ctx context.Context, userID int64) ([]AvailableLandingNode, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.id, n.name, n.exit_country_code, n.exit_timezone, n.exit_locale, n.status,
+		       EXISTS (
+		           SELECT 1 FROM berth_landing_node_grants g
+		           WHERE g.node_id = n.id AND g.grantee_user_id = $1 AND g.status = 'active'
+		             AND (g.expires_at IS NULL OR g.expires_at > NOW())
+		       ) AS has_active,
+		       EXISTS (
+		           SELECT 1 FROM berth_landing_node_grants g
+		           WHERE g.node_id = n.id AND g.grantee_user_id = $1 AND g.status = 'pending'
+		       ) AS has_pending
+		FROM berth_edge_nodes n
+		WHERE ('landing' = ANY(n.roles) OR 'compat' = ANY(n.roles))
+		  AND n.status <> 'suspended'
+		ORDER BY CASE WHEN n.status = 'active' THEN 0 ELSE 1 END, n.exit_country_code ASC, n.name ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]AvailableLandingNode, 0, 16)
+	for rows.Next() {
+		var item AvailableLandingNode
+		if err := rows.Scan(
+			&item.ID, &item.Name, &item.ExitCountryCode, &item.ExitTimezone,
+			&item.ExitLocale, &item.Status, &item.HasActiveGrant, &item.HasPendingRequest,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqlLandingGrantStore) ApplyForLandingNode(ctx context.Context, in ApplyLandingGrantInput) (*LandingNodeGrant, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var nodeName, status string
+	var roles []string
+	err = tx.QueryRowContext(ctx, `
+		SELECT name, status, roles
+		FROM berth_edge_nodes
+		WHERE id = $1`, in.NodeID).Scan(&nodeName, &status, pq.Array(&roles))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrEdgeZoneNotFound
+		}
+		return nil, err
+	}
+	if status == EdgeNodeStatusSuspended {
+		return nil, fmt.Errorf("%w: landing node %s is suspended", ErrLandingGrantInvalid, nodeName)
+	}
+	hasLanding := false
+	for _, r := range roles {
+		if r == EdgeRoleLanding || r == EdgeRoleCompat {
+			hasLanding = true
+			break
+		}
+	}
+	if !hasLanding {
+		return nil, fmt.Errorf("%w: node %s does not have landing role", ErrLandingGrantInvalid, nodeName)
+	}
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM berth_landing_node_grants
+		WHERE grantee_user_id = $1 AND node_id = $2 AND status = 'pending'`,
+		in.GranteeUserID, in.NodeID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists > 0 {
+		return nil, ErrLandingGrantPendingExists
+	}
+
+	var grantID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO berth_landing_node_grants (
+			node_id, grantee_user_id, granted_by_admin_id, proxy_id,
+			max_bytes, max_accounts, max_rpm, max_concurrency,
+			status, notes, request_reason
+		) VALUES ($1, $2, NULL, NULL, $3, $4, 0, 0, 'pending', '', $5)
+		RETURNING id`,
+		in.NodeID, in.GranteeUserID, in.MaxBytes, in.MaxAccounts, in.RequestReason,
+	).Scan(&grantID)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return nil, ErrLandingGrantPendingExists
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRowContext(ctx, landingGrantSelectSQL+` WHERE g.id = $1`, grantID)
+	created, err := scanLandingGrant(row, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func (s *sqlLandingGrantStore) CancelPendingApplication(ctx context.Context, grantID, userID int64) error {
+	var ownerID int64
+	var status string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT grantee_user_id, status
+		FROM berth_landing_node_grants
+		WHERE id = $1`, grantID).Scan(&ownerID, &status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLandingGrantNotFound
+		}
+		return err
+	}
+	if ownerID != userID {
+		return ErrLandingGrantForbidden
+	}
+	if status != GrantStatusPending {
+		return ErrLandingGrantNotPending
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM berth_landing_node_grants
+		WHERE id = $1 AND grantee_user_id = $2 AND status = 'pending' AND proxy_id IS NULL`,
+		grantID, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrLandingGrantNotPending
+	}
+	return nil
+}
+
+func (s *sqlLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLandingGrantInput) (*LandingNodeGrant, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var nodeID int64
+	if err := tx.QueryRowContext(ctx, `SELECT node_id FROM berth_landing_node_grants WHERE id = $1`, in.GrantID).Scan(&nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrLandingGrantNotFound
+		}
+		return nil, err
+	}
+
+	// Lock hierarchy: berth_edge_nodes -> berth_landing_node_grants.
+	var nodeName, nodeStatus, exitIP, exitCC, exitTZ string
+	var roles []string
+	err = tx.QueryRowContext(ctx, `
+		SELECT name, status, roles, exit_ip, exit_country_code, exit_timezone
+		FROM berth_edge_nodes
+		WHERE id = $1
+		FOR UPDATE`, nodeID).Scan(&nodeName, &nodeStatus, pq.Array(&roles), &exitIP, &exitCC, &exitTZ)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrEdgeZoneNotFound
+		}
+		return nil, err
+	}
+	if nodeStatus == EdgeNodeStatusSuspended {
+		return nil, fmt.Errorf("%w: landing node %s is suspended", ErrLandingGrantInvalid, nodeName)
+	}
+
+	var granteeUserID, curMaxBytes int64
+	var curMaxAccounts, curMaxRPM, curMaxConc int
+	var curStatus, curNotes string
+	err = tx.QueryRowContext(ctx, `
+		SELECT grantee_user_id, max_bytes, max_accounts, max_rpm, max_concurrency, status, notes
+		FROM berth_landing_node_grants
+		WHERE id = $1
+		FOR UPDATE`, in.GrantID).Scan(
+		&granteeUserID, &curMaxBytes, &curMaxAccounts, &curMaxRPM, &curMaxConc, &curStatus, &curNotes,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrLandingGrantNotFound
+		}
+		return nil, err
+	}
+	if curStatus != GrantStatusPending {
+		return nil, ErrLandingGrantNotPending
+	}
+
+	maxBytes := curMaxBytes
+	if in.MaxBytes != nil {
+		maxBytes = *in.MaxBytes
+	}
+	maxAccounts := curMaxAccounts
+	if in.MaxAccounts != nil {
+		maxAccounts = *in.MaxAccounts
+	}
+	if maxAccounts <= 0 {
+		maxAccounts = 1
+	}
+	maxRPM := curMaxRPM
+	if in.MaxRPM != nil {
+		maxRPM = *in.MaxRPM
+	}
+	maxConc := curMaxConc
+	if in.MaxConcurrency != nil {
+		maxConc = *in.MaxConcurrency
+	}
+	notes := curNotes
+	if in.Notes != "" {
+		notes = in.Notes
+	}
+
+	// Materialize redacted, credential-free proxies row for this approved landing grant.
+	proxyName := fmt.Sprintf("edge-landing-%s-u%d", nodeName, granteeUserID)
+	if len(proxyName) > 100 {
+		proxyName = proxyName[:100]
+	}
+	proxyHost := fmt.Sprintf("%s.edge.internal", nodeName)
+	var proxyID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO proxies (
+			name, protocol, host, port, username, password, status,
+			max_accounts, max_rpm, max_concurrency,
+			exit_ip, exit_country_code, exit_timezone, expires_at,
+			edge_node_id, grant_id, source_type
+		) VALUES ($1, 'https', $2, 443, NULL, NULL, 'active', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id`,
+		proxyName, proxyHost, maxAccounts, maxRPM, maxConc,
+		nullIfEmpty(exitIP), nullIfEmpty(exitCC), nullIfEmpty(exitTZ), in.ExpiresAt,
+		nodeID, in.GrantID, ProxySourceTypeEdgeLandingGrant,
+	).Scan(&proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE berth_landing_node_grants
+		SET status = 'active',
+		    granted_by_admin_id = $2,
+		    proxy_id = $3,
+		    expires_at = $4,
+		    max_bytes = $5,
+		    max_accounts = $6,
+		    max_rpm = $7,
+		    max_concurrency = $8,
+		    notes = $9,
+		    review_note = $10,
+		    reviewed_at = NOW(),
+		    updated_at = NOW()
+		WHERE id = $1`,
+		in.GrantID, in.AdminID, proxyID, in.ExpiresAt,
+		maxBytes, maxAccounts, maxRPM, maxConc, notes, in.ReviewNote,
+	); err != nil {
+		return nil, err
+	}
+
+	row := tx.QueryRowContext(ctx, landingGrantSelectSQL+` WHERE g.id = $1`, in.GrantID)
+	approved, err := scanLandingGrant(row, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return approved, nil
+}
+
+func (s *sqlLandingGrantStore) RejectGrant(ctx context.Context, grantID, adminID int64, reviewNote string) (*LandingNodeGrant, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var curStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM berth_landing_node_grants WHERE id = $1 FOR UPDATE`, grantID).Scan(&curStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrLandingGrantNotFound
+		}
+		return nil, err
+	}
+	if curStatus != GrantStatusPending {
+		return nil, ErrLandingGrantNotPending
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE berth_landing_node_grants
+		SET status = 'rejected',
+		    granted_by_admin_id = $2,
+		    review_note = $3,
+		    reviewed_at = NOW(),
+		    updated_at = NOW()
+		WHERE id = $1`, grantID, adminID, reviewNote); err != nil {
+		return nil, err
+	}
+
+	row := tx.QueryRowContext(ctx, landingGrantSelectSQL+` WHERE g.id = $1`, grantID)
+	rejected, err := scanLandingGrant(row, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return rejected, nil
 }
 
 func (s *sqlLandingGrantStore) ListRevokedGrantIDs(ctx context.Context) ([]int64, error) {
@@ -876,6 +1323,189 @@ func (m *MemoryLandingGrantStore) CreateGrant(ctx context.Context, in CreateLand
 	return &cp, nil
 }
 
+func (m *MemoryLandingGrantStore) ListAvailableLandingNodes(ctx context.Context, userID int64) ([]AvailableLandingNode, error) {
+	nodes, err := m.zones.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	out := make([]AvailableLandingNode, 0, len(nodes))
+	for _, n := range nodes {
+		if (!n.HasRole(EdgeRoleLanding) && !n.HasRole(EdgeRoleCompat)) || n.Status == EdgeNodeStatusSuspended {
+			continue
+		}
+		var hasActive, hasPending bool
+		for _, g := range m.grants {
+			if g.NodeID != n.ID || g.GranteeUserID != userID {
+				continue
+			}
+			if g.Status == GrantStatusActive && (g.ExpiresAt == nil || g.ExpiresAt.After(now)) {
+				hasActive = true
+			}
+			if g.Status == GrantStatusPending {
+				hasPending = true
+			}
+		}
+		out = append(out, AvailableLandingNode{
+			ID:                n.ID,
+			Name:              n.Name,
+			ExitCountryCode:   n.ExitCountryCode,
+			ExitTimezone:      n.ExitTimezone,
+			ExitLocale:        n.ExitLocale,
+			Status:            n.Status,
+			HasActiveGrant:    hasActive,
+			HasPendingRequest: hasPending,
+		})
+	}
+	return out, nil
+}
+
+func (m *MemoryLandingGrantStore) ApplyForLandingNode(ctx context.Context, in ApplyLandingGrantInput) (*LandingNodeGrant, error) {
+	node, err := m.zones.GetNode(ctx, in.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	if (!node.HasRole(EdgeRoleLanding) && !node.HasRole(EdgeRoleCompat)) || node.Status == EdgeNodeStatusSuspended {
+		return nil, ErrLandingGrantInvalid
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, g := range m.grants {
+		if g.GranteeUserID == in.GranteeUserID && g.NodeID == in.NodeID && g.Status == GrantStatusPending {
+			return nil, ErrLandingGrantPendingExists
+		}
+	}
+	m.nextGrantID++
+	gid := m.nextGrantID
+	now := time.Now()
+	g := &LandingNodeGrant{
+		ID:              gid,
+		NodeID:          node.ID,
+		NodeName:        node.Name,
+		NodeStatus:      node.Status,
+		ExitCountryCode: node.ExitCountryCode,
+		ExitTimezone:    node.ExitTimezone,
+		ExitLocale:      node.ExitLocale,
+		GranteeUserID:   in.GranteeUserID,
+		MaxBytes:        in.MaxBytes,
+		MaxAccounts:     in.MaxAccounts,
+		Status:          GrantStatusPending,
+		RequestReason:   in.RequestReason,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	g.computeRemaining()
+	m.grants[gid] = g
+	cp := *g
+	return &cp, nil
+}
+
+func (m *MemoryLandingGrantStore) CancelPendingApplication(_ context.Context, grantID, userID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.grants[grantID]
+	if !ok {
+		return ErrLandingGrantNotFound
+	}
+	if g.GranteeUserID != userID {
+		return ErrLandingGrantForbidden
+	}
+	if g.Status != GrantStatusPending {
+		return ErrLandingGrantNotPending
+	}
+	delete(m.grants, grantID)
+	return nil
+}
+
+func (m *MemoryLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLandingGrantInput) (*LandingNodeGrant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.grants[in.GrantID]
+	if !ok {
+		return nil, ErrLandingGrantNotFound
+	}
+	if g.Status != GrantStatusPending {
+		return nil, ErrLandingGrantNotPending
+	}
+	node, err := m.zones.GetNode(ctx, g.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node.Status == EdgeNodeStatusSuspended {
+		return nil, ErrLandingGrantInvalid
+	}
+
+	if in.MaxBytes != nil {
+		g.MaxBytes = *in.MaxBytes
+	}
+	if in.MaxAccounts != nil {
+		g.MaxAccounts = *in.MaxAccounts
+	}
+	if g.MaxAccounts <= 0 {
+		g.MaxAccounts = 1
+	}
+	if in.MaxRPM != nil {
+		g.MaxRPM = *in.MaxRPM
+	}
+	if in.MaxConcurrency != nil {
+		g.MaxConcurrency = *in.MaxConcurrency
+	}
+	if in.Notes != "" {
+		g.Notes = in.Notes
+	}
+	g.ExpiresAt = in.ExpiresAt
+	g.ReviewNote = in.ReviewNote
+	now := time.Now()
+	g.ReviewedAt = &now
+	g.UpdatedAt = now
+	aid := in.AdminID
+	g.GrantedByAdminID = &aid
+
+	m.nextProxyID++
+	pid := m.nextProxyID
+	m.proxies[pid] = &MemoryProxyProjection{
+		ID:             pid,
+		Name:           fmt.Sprintf("edge-landing-%s-u%d", node.Name, g.GranteeUserID),
+		EdgeNodeID:     node.ID,
+		GrantID:        g.ID,
+		SourceType:     ProxySourceTypeEdgeLandingGrant,
+		Status:         "active",
+		MaxAccounts:    g.MaxAccounts,
+		MaxRPM:         g.MaxRPM,
+		MaxConcurrency: g.MaxConcurrency,
+	}
+	g.ProxyID = &pid
+	g.Status = GrantStatusActive
+	g.computeRemaining()
+	cp := *g
+	return &cp, nil
+}
+
+func (m *MemoryLandingGrantStore) RejectGrant(_ context.Context, grantID, adminID int64, reviewNote string) (*LandingNodeGrant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.grants[grantID]
+	if !ok {
+		return nil, ErrLandingGrantNotFound
+	}
+	if g.Status != GrantStatusPending {
+		return nil, ErrLandingGrantNotPending
+	}
+	now := time.Now()
+	aid := adminID
+	g.GrantedByAdminID = &aid
+	g.Status = GrantStatusRejected
+	g.ReviewNote = reviewNote
+	g.ReviewedAt = &now
+	g.UpdatedAt = now
+	g.computeRemaining()
+	cp := *g
+	return &cp, nil
+}
+
 func (m *MemoryLandingGrantStore) GetGrant(_ context.Context, grantID int64) (*LandingNodeGrant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -909,7 +1539,7 @@ func (m *MemoryLandingGrantStore) ListRevokedGrantIDs(_ context.Context) ([]int6
 	defer m.mu.Unlock()
 	out := make([]int64, 0)
 	for _, g := range m.grants {
-		if g.Status != GrantStatusActive {
+		if g.Status == GrantStatusRevoked || g.Status == GrantStatusExpired || g.Status == GrantStatusQuotaExhausted || g.Status == GrantStatusPaused {
 			out = append(out, g.ID)
 		}
 	}

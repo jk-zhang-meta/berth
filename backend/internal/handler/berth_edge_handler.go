@@ -54,7 +54,10 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	userGroup.POST("/ags/leases", h.MintLease)
 	userGroup.POST("/ags/leases/:id/renew", h.RenewLease)
 	userGroup.DELETE("/ags/leases/:id", h.RevokeLease)
+	userGroup.GET("/user/landing-nodes", h.ListAvailableLandingNodes)
 	userGroup.GET("/user/landing-grants", h.ListUserLandingGrants)
+	userGroup.POST("/user/landing-grants/apply", h.ApplyUserLandingGrant)
+	userGroup.DELETE("/user/landing-grants/:id", h.CancelUserLandingGrantApplication)
 
 	// Edge Internal control-plane endpoints
 	edgeGroup := r.Group("/api/v1/internal/edge")
@@ -83,6 +86,8 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	adminGroup.DELETE("/links/:id", h.AdminDeleteLink)
 	adminGroup.GET("/grants", h.AdminListGrants)
 	adminGroup.POST("/grants", h.AdminCreateGrant)
+	adminGroup.POST("/grants/:id/approve", h.AdminApproveGrant)
+	adminGroup.POST("/grants/:id/reject", h.AdminRejectGrant)
 	adminGroup.DELETE("/grants/:id", h.AdminRevokeGrant)
 }
 
@@ -304,6 +309,19 @@ func (h *BerthEdgeHandler) RevokeLease(c *gin.Context) {
 	response.Success(c, gin.H{"lease_id": leaseID, "revoked": true, "rev_seq": revSeq})
 }
 
+func (h *BerthEdgeHandler) ListAvailableLandingNodes(c *gin.Context) {
+	userID, _, _, ok := edgeCallerIdentity(c)
+	if !ok {
+		return
+	}
+	items, err := h.grants.ListAvailableLandingNodes(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"items": items})
+}
+
 func (h *BerthEdgeHandler) ListUserLandingGrants(c *gin.Context) {
 	userID, _, _, ok := edgeCallerIdentity(c)
 	if !ok {
@@ -315,6 +333,41 @@ func (h *BerthEdgeHandler) ListUserLandingGrants(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"items": items})
+}
+
+func (h *BerthEdgeHandler) ApplyUserLandingGrant(c *gin.Context) {
+	userID, _, _, ok := edgeCallerIdentity(c)
+	if !ok {
+		return
+	}
+	var in service.ApplyLandingGrantInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.BadRequest(c, "Invalid landing grant application body")
+		return
+	}
+	in.GranteeUserID = userID
+	created, err := h.grants.ApplyForLandingNode(c.Request.Context(), in)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Created(c, created)
+}
+
+func (h *BerthEdgeHandler) CancelUserLandingGrantApplication(c *gin.Context) {
+	userID, _, _, ok := edgeCallerIdentity(c)
+	if !ok {
+		return
+	}
+	id, ok := parsePathInt64(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.grants.CancelPendingApplication(c.Request.Context(), id, userID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"cancelled": true, "id": id})
 }
 
 // ---------- Edge Internal Control-Plane Handlers ----------
@@ -604,6 +657,58 @@ func (h *BerthEdgeHandler) AdminCreateGrant(c *gin.Context) {
 		return
 	}
 	response.Created(c, created)
+}
+
+func (h *BerthEdgeHandler) AdminApproveGrant(c *gin.Context) {
+	adminID, ok := requireEdgeAdmin(c)
+	if !ok {
+		return
+	}
+	id, ok := parsePathInt64(c, "id")
+	if !ok {
+		return
+	}
+	var in service.ApproveLandingGrantInput
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&in); err != nil {
+			response.BadRequest(c, "Invalid approval body")
+			return
+		}
+	}
+	in.GrantID = id
+	in.AdminID = adminID
+	approved, err := h.grants.ApproveGrant(c.Request.Context(), in)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, approved)
+}
+
+func (h *BerthEdgeHandler) AdminRejectGrant(c *gin.Context) {
+	adminID, ok := requireEdgeAdmin(c)
+	if !ok {
+		return
+	}
+	id, ok := parsePathInt64(c, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		ReviewNote string `json:"review_note"`
+	}
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&body); err != nil {
+			response.BadRequest(c, "Invalid rejection body")
+			return
+		}
+	}
+	rejected, err := h.grants.RejectGrant(c.Request.Context(), id, adminID, body.ReviewNote)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, rejected)
 }
 
 func (h *BerthEdgeHandler) AdminRevokeGrant(c *gin.Context) {

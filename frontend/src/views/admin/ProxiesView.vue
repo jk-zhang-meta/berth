@@ -1,5 +1,6 @@
 <template>
   <AppLayout>
+    <BerthEdgeIpPanel :is-admin="authStore.isAdmin" @grant-changed="loadProxies" />
     <TablePageLayout>
       <template #filters>
         <div class="flex flex-wrap items-center gap-3">
@@ -1059,6 +1060,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
 import Select from '@/components/common/Select.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
+import BerthEdgeIpPanel from '@/components/berth/BerthEdgeIpPanel.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import { useClipboard } from '@/composables/useClipboard'
