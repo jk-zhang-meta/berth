@@ -949,7 +949,7 @@ func (s *sqlEdgeLeaseStore) InsertLease(ctx context.Context, rec WorkSessionLeas
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		rec.LeaseID, nullID(rec.WorkSessionID), rec.UserID, nullID(rec.APIKeyID), nullID(rec.AccountID),
 		rec.CageID, rec.CageEpoch, nullID(rec.GrantID), nullID(rec.LandingNodeID), nullID(rec.IngressNodeID),
-		routeJSON, rec.CohortTimezone, rec.CohortCountryCode, rec.CohortLocale,
+		string(routeJSON), rec.CohortTimezone, rec.CohortCountryCode, rec.CohortLocale,
 		rec.LeaseEpoch, rec.RevSeq, rec.ExpiresAt,
 	)
 	return err

@@ -875,7 +875,7 @@ func (s *sqlZoneStore) CreateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 		RETURNING `+edgeNodeSelectCols,
 		n.Name, n.ZoneID, pq.Array(n.Roles), n.PublicAddr, n.TunnelAddr, n.MgmtEntryAddr, n.ConnectMode,
 		n.ProviderRegion, n.ExitIP, n.ExitCountryCode, n.ExitTimezone, n.ExitLocale, n.ExitASNClass,
-		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, []byte(n.Meta),
+		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, string(n.Meta),
 	)
 	return scanEdgeNode(row)
 }
@@ -887,25 +887,25 @@ func (s *sqlZoneStore) UpdateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 			mgmt_entry_addr = $7, connect_mode = $8, provider_region = $9,
 			exit_ip = $10, exit_country_code = $11, exit_timezone = $12, exit_locale = $13, exit_asn_class = $14,
 			pubkey_ed25519 = $15, agent_cert_fingerprint = $16, status = $17,
-			max_bytes_month = $18, meta = $19, updated_at = NOW()
+			max_bytes_month = $18, meta = $19::jsonb, updated_at = NOW()
 		WHERE id = $1
 		RETURNING `+edgeNodeSelectCols,
 		n.ID, n.Name, n.ZoneID, pq.Array(n.Roles), n.PublicAddr, n.TunnelAddr,
 		n.MgmtEntryAddr, n.ConnectMode, n.ProviderRegion,
 		n.ExitIP, n.ExitCountryCode, n.ExitTimezone, n.ExitLocale, n.ExitASNClass,
-		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, []byte(n.Meta),
+		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, string(n.Meta),
 	)
 	return scanEdgeNode(row)
 }
 
 func (s *sqlZoneStore) RecordHeartbeat(ctx context.Context, nodeID int64, upd EdgeHeartbeatUpdate, at time.Time) (*EdgeNode, error) {
-	metaBytes := []byte(upd.Meta)
-	if len(metaBytes) == 0 {
-		metaBytes = nil
+	var metaParam sql.NullString
+	if trimmed := strings.TrimSpace(string(upd.Meta)); trimmed != "" {
+		metaParam = sql.NullString{String: trimmed, Valid: true}
 	}
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE berth_edge_nodes SET
-			status = CASE WHEN status = 'suspended' THEN status ELSE $2 END,
+			status = CASE WHEN status = 'suspended' OR $2 = '' THEN status ELSE $2 END,
 			exit_ip = CASE WHEN $3 <> '' THEN $3 ELSE exit_ip END,
 			exit_country_code = CASE WHEN $4 <> '' THEN $4 ELSE exit_country_code END,
 			exit_timezone = CASE WHEN $5 <> '' THEN $5 ELSE exit_timezone END,
@@ -917,7 +917,7 @@ func (s *sqlZoneStore) RecordHeartbeat(ctx context.Context, nodeID int64, upd Ed
 		WHERE id = $1
 		RETURNING `+edgeNodeSelectCols,
 		nodeID, upd.Status, upd.ExitIP, upd.ExitCountryCode, upd.ExitTimezone,
-		upd.ExitLocale, upd.ExitASNClass, metaBytes, at,
+		upd.ExitLocale, upd.ExitASNClass, metaParam, at,
 	)
 	return scanEdgeNode(row)
 }
