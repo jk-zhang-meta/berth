@@ -283,12 +283,13 @@ func (g *AdmissionGate) ensureSliceCapacity(ctx context.Context, grantID int64, 
 
 // AdmittedStream represents a live stream fenced by AdmissionGate.
 type AdmittedStream struct {
-	gate        *AdmissionGate
-	id          uint64
-	claims      *edgeproto.SessionLeaseClaims
-	ctx         context.Context
-	cancel      context.CancelCauseFunc
-	releaseOnce sync.Once
+	gate                 *AdmissionGate
+	id                   uint64
+	claims               *edgeproto.SessionLeaseClaims
+	countedGrantInflight bool
+	ctx                  context.Context
+	cancel               context.CancelCauseFunc
+	releaseOnce          sync.Once
 }
 
 // Context returns the stream's cancellable context (cancelled immediately on revocation/stale snapshot).
@@ -360,7 +361,7 @@ func (s *AdmittedStream) Release() {
 		s.cancel(nil)
 		s.gate.mu.Lock()
 		delete(s.gate.activeStreams, s.id)
-		if s.claims.GrantID > 0 {
+		if s.countedGrantInflight && s.claims.GrantID > 0 {
 			if cur := s.gate.grantInflight[s.claims.GrantID]; cur <= 1 {
 				delete(s.gate.grantInflight, s.claims.GrantID)
 			} else {
@@ -416,8 +417,11 @@ func (g *AdmissionGate) Admit(
 		return nil, authErr
 	}
 
-	// Enforce per-grant concurrency & RPM limits at the fenced owner.
-	if claims.GrantID > 0 {
+	// Enforce per-grant concurrency & RPM limits strictly at the fenced Landing owner
+	// (expectedLandingNodeID > 0), NOT on an ingress relay hop forwarding to another landing node.
+	isLandingHop := expectedLandingNodeID > 0
+	countedGrantInflight := false
+	if isLandingHop && claims.GrantID > 0 {
 		lim := g.grantLimits[claims.GrantID]
 		if lim.MaxConcurrency > 0 && g.grantInflight[claims.GrantID] >= lim.MaxConcurrency {
 			g.mu.Unlock()
@@ -435,6 +439,7 @@ func (g *AdmissionGate) Admit(
 			}
 		}
 		g.grantInflight[claims.GrantID]++
+		countedGrantInflight = true
 	}
 
 	streamCtx, cancel := context.WithCancelCause(parentCtx)
@@ -448,16 +453,19 @@ func (g *AdmissionGate) Admit(
 	g.mu.Unlock()
 
 	stream := &AdmittedStream{
-		gate:   g,
-		id:     streamID,
-		claims: claims,
-		ctx:    streamCtx,
-		cancel: cancel,
+		gate:                 g,
+		id:                   streamID,
+		claims:               claims,
+		countedGrantInflight: countedGrantInflight,
+		ctx:                  streamCtx,
+		cancel:               cancel,
 	}
 
-	// On Landing nodes (wal != nil) with a bound grant, verify at least 1 byte is available
-	// (requesting a disjoint slice from Central if needed) before admitting the request!
-	if g.wal != nil && claims.GrantID > 0 {
+	// On the fenced Landing hop (expectedLandingNodeID > 0, wal != nil) with a bound grant,
+	// verify at least 1 byte is available (requesting a disjoint slice from Central if needed)
+	// before admitting the request. Hybrid ingress_relay+landing nodes skip local WAL debiting
+	// when forwarding an ingress stream to a remote landing node.
+	if isLandingHop && g.wal != nil && claims.GrantID > 0 {
 		if g.wal.Remaining(claims.GrantID) <= 0 {
 			if err := g.ensureSliceCapacity(streamCtx, claims.GrantID, 1); err != nil {
 				stream.Release()

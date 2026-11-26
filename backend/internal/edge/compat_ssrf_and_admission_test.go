@@ -186,3 +186,63 @@ func TestAdmissionGate_ConcurrencyRPMAndLiveStreamRevocation(t *testing.T) {
 	require.Equal(t, int32(2), revokedCount.Load())
 	require.Error(t, s2.Context().Err())
 }
+
+func TestAdmissionGateHybridIngressRelaySkipsLocalGrantSliceForRemoteLanding(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	wal, err := edgeproto.OpenGrantWAL(filepath.Join(t.TempDir(), "grant.wal"))
+	require.NoError(t, err)
+	defer func() { _ = wal.Close() }()
+
+	// Simulate Central rejecting grant-slice because hybrid ingress node (node 8)
+	// does NOT own remote landing grant (grant 7 -> node 10).
+	var refillCalls atomic.Int32
+	refiller := func(_ context.Context, _ int64, _ int64) (string, int64, time.Time, error) {
+		refillCalls.Add(1)
+		return "", 0, time.Time{}, edgeproto.ErrGrantSliceExhausted
+	}
+
+	gate := NewAdmissionGate(pub, wal, refiller, 1024, 256)
+	gate.SetGrantLimits(7, GrantLimits{MaxConcurrency: 1})
+	now := time.Now().UTC()
+	gate.SetNowFunc(func() time.Time { return now })
+
+	snap := &edgeproto.RevocationSnapshot{
+		Seq:        1,
+		IssuedAt:   now.Unix(),
+		ValidUntil: now.Add(60 * time.Second).Unix(),
+	}
+	require.NoError(t, edgeproto.SignRevocationSnapshot(priv, "", snap))
+	require.NoError(t, gate.UpdateSnapshot(snap))
+
+	tok, err := edgeproto.SignLease(priv, "", edgeproto.SessionLeaseClaims{
+		JTI:           "jti-hybrid-1",
+		LeaseID:       "lease-hybrid-remote",
+		UserID:        9,
+		AccountID:     11,
+		GrantID:       7,
+		LandingNodeID: 10,
+		RevSeq:        1,
+		IssuedAt:      now.Unix(),
+		ExpiresAt:     now.Add(10 * time.Minute).Unix(),
+	})
+	require.NoError(t, err)
+
+	// Ingress relay admission (expectedLandingNodeID == 0) MUST succeed without touching local GrantWAL or grantInflight.
+	sIngress, err := gate.Admit(context.Background(), tok, 0, nil)
+	require.NoError(t, err)
+	require.Equal(t, int32(0), refillCalls.Load())
+	require.Equal(t, 1, gate.ActiveStreamCount())
+
+	// Second concurrent ingress stream also passes (grant concurrency is owned by Landing node 10, not ingress hop 8).
+	sIngress2, err := gate.Admit(context.Background(), tok, 0, nil)
+	require.NoError(t, err)
+	sIngress2.Release()
+	sIngress.Release()
+
+	// Landing hop admission on node 10 STILL strictly checks GrantWAL and fails closed when slice refiller rejects!
+	_, err = gate.Admit(context.Background(), tok, 10, nil)
+	require.ErrorIs(t, err, edgeproto.ErrGrantSliceExhausted)
+	require.Equal(t, int32(1), refillCalls.Load())
+}

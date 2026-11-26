@@ -404,6 +404,17 @@ func (s *BerthEdgeLeaseService) liveTunnelsSnapshot(override map[int64]bool) map
 	return cp
 }
 
+func normalizePOSIXLocale(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "en_US.UTF-8"
+	}
+	if strings.Contains(trimmed, ".") || strings.Contains(trimmed, "@") || !strings.Contains(trimmed, "_") {
+		return trimmed
+	}
+	return trimmed + ".UTF-8"
+}
+
 func mapAgentToPlatform(agent string) string {
 	switch strings.ToLower(strings.TrimSpace(agent)) {
 	case "codex", "openai":
@@ -569,6 +580,7 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 	if cohortLocale == "" {
 		cohortLocale = landingNode.ExitLocale
 	}
+	cohortLocale = normalizePOSIXLocale(cohortLocale)
 	cageEpoch := in.CageEpoch
 	if cageEpoch <= 0 {
 		cageEpoch = 1
@@ -1014,7 +1026,11 @@ func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64,
 		if err := s.db.QueryRowContext(ctx, `
 			SELECT id FROM accounts
 			WHERE deleted_at IS NULL AND status = 'active' AND schedulable = TRUE
-			  AND ($1 = '' OR LOWER(platform) = LOWER($1))
+			  AND (
+			    $1 = ''
+			    OR LOWER(platform) = LOWER($1)
+			    OR (LOWER($1) IN ('antigravity','gemini') AND LOWER(platform) IN ('antigravity','gemini'))
+			  )
 			  AND (id::text = $2 OR LOWER(name) = LOWER($2))
 			ORDER BY priority ASC, id ASC
 			LIMIT 1`, platform, pref).Scan(&id); err == nil && id > 0 {
@@ -1025,7 +1041,11 @@ func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64,
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id FROM accounts
 		WHERE deleted_at IS NULL AND status = 'active' AND schedulable = TRUE
-		  AND ($1 = '' OR LOWER(platform) = LOWER($1))
+		  AND (
+		    $1 = ''
+		    OR LOWER(platform) = LOWER($1)
+		    OR (LOWER($1) IN ('antigravity','gemini') AND LOWER(platform) IN ('antigravity','gemini'))
+		  )
 		ORDER BY priority ASC, id ASC
 		LIMIT 1`, platform).Scan(&id)
 	if err != nil {
