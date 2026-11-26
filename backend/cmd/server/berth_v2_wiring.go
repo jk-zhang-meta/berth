@@ -136,6 +136,7 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	grantService := service.NewBerthLandingGrantService(deps.db)
 	edgeLeaseService := service.NewBerthEdgeLeaseService(deps.db, zoneService, grantService, pub, priv, keyID)
 	deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)
+	deps.handlers.BerthEdge.SetAccountLookup(deps.adminService)
 
 	return runCleanup, nil
 }

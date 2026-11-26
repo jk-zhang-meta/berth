@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,19 +160,22 @@ func (c *CentralClient) doSignedJSON(ctx context.Context, method, path string, r
 	return resp.StatusCode, respBytes, err
 }
 
-// HeartbeatReport describes the runtime status and running binary identity reported by berth-edge.
+// HeartbeatReport describes the runtime status, running binary identity, and FR-125 peer probes.
 type HeartbeatReport struct {
-	Status       string `json:"status"`
-	AgentVersion string `json:"agent_version,omitempty"`
-	AgentArch    string `json:"agent_arch,omitempty"`
-	AgentSHA256  string `json:"agent_sha256,omitempty"`
+	Status             string             `json:"status"`
+	AgentVersion       string             `json:"agent_version,omitempty"`
+	AgentArch          string             `json:"agent_arch,omitempty"`
+	AgentSHA256        string             `json:"agent_sha256,omitempty"`
+	MeasuredLinks      []MeasuredPeerLink `json:"measured_links"`
+	LiveReverseTunnels []int64            `json:"live_reverse_tunnels"`
 }
 
-// HeartbeatResult carries the fresh revocation snapshot, live node roles, and optional staged release.
+// HeartbeatResult carries the fresh revocation snapshot, live node roles, probe targets, and optional staged release.
 type HeartbeatResult struct {
 	RevocationSnapshot *edgeproto.RevocationSnapshot
 	NodeRoles          []string
 	EdgeRelease        *EdgeReleaseInfo
+	ProbeTargets       []ProbeTarget
 }
 
 // Heartbeat reports node health to Berth Central and returns the fresh signed RevocationSnapshot.
@@ -199,6 +203,7 @@ func (c *CentralClient) HeartbeatFull(ctx context.Context, report HeartbeatRepor
 			} `json:"node"`
 			RevocationSnapshot *edgeproto.RevocationSnapshot `json:"revocation_snapshot"`
 			EdgeRelease        *EdgeReleaseInfo              `json:"edge_release"`
+			ProbeTargets       []ProbeTarget                 `json:"probe_targets"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -210,6 +215,7 @@ func (c *CentralClient) HeartbeatFull(ctx context.Context, report HeartbeatRepor
 	res := &HeartbeatResult{
 		RevocationSnapshot: env.Data.RevocationSnapshot,
 		EdgeRelease:        env.Data.EdgeRelease,
+		ProbeTargets:       env.Data.ProbeTargets,
 	}
 	if env.Data.Node != nil && len(env.Data.Node.Roles) > 0 {
 		res.NodeRoles = append([]string(nil), env.Data.Node.Roles...)
@@ -361,7 +367,57 @@ func (c *CentralClient) CompleteOAuthTask(ctx context.Context, taskID string, st
 	return nil
 }
 
+// ErrUpstreamCredentialForbidden indicates Central rejected credential issuance for this lease/node.
+var ErrUpstreamCredentialForbidden = errors.New("edge: upstream credential forbidden")
+
+// UpstreamCredentialDTO mirrors Berth Central's ephemeral RAM-only upstream credential bundle.
+type UpstreamCredentialDTO struct {
+	AccountID     int64             `json:"account_id"`
+	Platform      string            `json:"platform"`
+	AccountType   string            `json:"account_type"`
+	Headers       map[string]string `json:"headers"`
+	BaseURL       string            `json:"base_url,omitempty"`
+	ExpiresAtUnix int64             `json:"expires_at_unix"`
+}
+
+// FetchUpstreamCredential requests short-lived upstream auth headers from Berth Central
+// strictly for an active SessionLease bound to this Landing node.
+// A 204 No Content response indicates passthrough/test mode with no Central account store.
+func (c *CentralClient) FetchUpstreamCredential(ctx context.Context, leaseID string, accountID int64) (*UpstreamCredentialDTO, error) {
+	code, raw, err := c.doSignedJSON(ctx, http.MethodPost, "/api/v1/internal/edge/account-credential", map[string]any{
+		"lease_id":   leaseID,
+		"account_id": accountID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusNoContent {
+		return nil, nil
+	}
+	if code == http.StatusForbidden || code == http.StatusUnauthorized {
+		return nil, fmt.Errorf("%w: status %d", ErrUpstreamCredentialForbidden, code)
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("edge: fetch upstream credential failed status %d", code)
+	}
+	var env struct {
+		Data *UpstreamCredentialDTO `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, err
+	}
+	if env.Data == nil {
+		return nil, errors.New("edge: empty upstream credential response")
+	}
+	return env.Data, nil
+}
+
 // ---------- Unified Multi-Role EdgeServer ----------
+
+type cachedUpstreamCred struct {
+	cred      *UpstreamCredentialDTO
+	expiresAt time.Time
+}
 
 // EdgeServer runs one or more berth-edge roles (ingress_relay, transit, landing, compat)
 // over a single HTTP/2 + HTTP/1.1 (h2c or TLS) listener, sharing one fenced AdmissionGate.
@@ -376,24 +432,28 @@ type EdgeServer struct {
 	ssrfGuard      *CompatSSRFGuard
 	h2Client       *http.Client
 	failoverLookup func(*edgeproto.SessionLeaseClaims) []FailoverCandidateDTO
+	credFetcher    func(ctx context.Context, leaseID string, accountID int64) (*UpstreamCredentialDTO, error)
 
 	mu      sync.Mutex
 	srv     *http.Server
 	rolesMu sync.RWMutex
 	roles   []string
+	credMu  sync.RWMutex
+	creds   map[string]cachedUpstreamCred
 }
 
 // EdgeServerOptions configures an EdgeServer cleanly for production or E2E tests.
 type EdgeServerOptions struct {
-	Config         *Config
-	CentralPubKey  ed25519.PublicKey
-	CentralClient  *CentralClient
-	GrantWAL       *edgeproto.GrantWAL
-	OutboxWAL      *edgeproto.OutboxWAL
-	ReverseHub     *ReverseTunnelHub
-	Upstream       UpstreamExecutor
-	SSRFGuard      *CompatSSRFGuard
-	FailoverLookup func(*edgeproto.SessionLeaseClaims) []FailoverCandidateDTO
+	Config            *Config
+	CentralPubKey     ed25519.PublicKey
+	CentralClient     *CentralClient
+	GrantWAL          *edgeproto.GrantWAL
+	OutboxWAL         *edgeproto.OutboxWAL
+	ReverseHub        *ReverseTunnelHub
+	Upstream          UpstreamExecutor
+	SSRFGuard         *CompatSSRFGuard
+	FailoverLookup    func(*edgeproto.SessionLeaseClaims) []FailoverCandidateDTO
+	CredentialFetcher func(ctx context.Context, leaseID string, accountID int64) (*UpstreamCredentialDTO, error)
 }
 
 // NewEdgeServer initializes an EdgeServer with single-mux HTTP/2 transport and AdmissionGate.
@@ -436,6 +496,11 @@ func NewEdgeServer(opts EdgeServerOptions) (*EdgeServer, error) {
 		},
 	}
 
+	credFetcher := opts.CredentialFetcher
+	if credFetcher == nil && opts.CentralClient != nil {
+		credFetcher = opts.CentralClient.FetchUpstreamCredential
+	}
+
 	return &EdgeServer{
 		cfg:            opts.Config,
 		central:        opts.CentralClient,
@@ -447,7 +512,9 @@ func NewEdgeServer(opts EdgeServerOptions) (*EdgeServer, error) {
 		ssrfGuard:      guard,
 		h2Client:       &http.Client{Transport: h2Tr},
 		failoverLookup: opts.FailoverLookup,
+		credFetcher:    credFetcher,
 		roles:          append([]string(nil), opts.Config.Roles...),
+		creds:          make(map[string]cachedUpstreamCred),
 	}, nil
 }
 
@@ -588,6 +655,9 @@ func defaultProviderBaseURL(platform, reqPath string) string {
 	case "anthropic", "claude":
 		return "https://api.anthropic.com"
 	case "antigravity", "gemini":
+		if strings.HasPrefix(reqPath, "/v1internal") {
+			return "https://cloudcode-pa.googleapis.com"
+		}
 		return "https://generativelanguage.googleapis.com"
 	case "xai", "grok":
 		return "https://api.x.ai"
@@ -1053,12 +1123,25 @@ func (s *EdgeServer) handleLandingExecute(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	cred, credErr := s.resolveUpstreamCredential(admitted.Context(), claims)
+	if credErr != nil {
+		statusCode := writeCredentialError(w, credErr)
+		s.recordReceipt(claims, ingressBytes, 0, statusCode, 0, time.Since(startTime))
+		return
+	}
+	if cred != nil && cred.BaseURL != "" {
+		upURL = rewriteURLForCredentialBase(upURL, cred.BaseURL)
+	}
+
 	upReq, err := http.NewRequestWithContext(admitted.Context(), upMethod, upURL, bytes.NewReader(reqBuf.Bytes()))
 	if err != nil {
 		http.Error(w, "invalid upstream request", http.StatusBadRequest)
 		return
 	}
 	copyUpstreamHeaders(upReq.Header, r.Header)
+	if cred != nil {
+		applyCredentialHeaders(upReq.Header, cred.Headers)
+	}
 
 	upResp, err := s.upstream.DoHTTP(admitted.Context(), upReq, claims)
 	if err != nil {
@@ -1071,6 +1154,9 @@ func (s *EdgeServer) handleLandingExecute(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer func() { _ = upResp.Body.Close() }()
+	if upResp.StatusCode == http.StatusUnauthorized && cred != nil {
+		s.evictUpstreamCredential(claims.LeaseID, claims.AccountID)
+	}
 
 	// Stream response while pre-debiting egress chunks BEFORE writing back to caller!
 	copyForwardHeaders(w.Header(), upResp.Header)
@@ -1210,10 +1296,26 @@ func (s *EdgeServer) handleTunnelWSBridge(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	cred, credErr := s.resolveUpstreamCredential(admitted.Context(), claims)
+	if credErr != nil {
+		statusCode := writeCredentialError(w, credErr)
+		s.recordReceipt(claims, 0, 0, statusCode, 0, time.Since(startTime))
+		return
+	}
+	if cred != nil && cred.BaseURL != "" {
+		upURL = rewriteURLForCredentialBase(upURL, cred.BaseURL)
+	}
+
 	upHeaders := http.Header{}
 	copyUpstreamHeaders(upHeaders, r.Header)
-	conn, br, _, err := s.upstream.DialWebSocket(admitted.Context(), upURL, upHeaders, claims)
+	if cred != nil {
+		applyCredentialHeaders(upHeaders, cred.Headers)
+	}
+	conn, br, wsResp, err := s.upstream.DialWebSocket(admitted.Context(), upURL, upHeaders, claims)
 	if err != nil {
+		if wsResp != nil && wsResp.StatusCode == http.StatusUnauthorized && cred != nil {
+			s.evictUpstreamCredential(claims.LeaseID, claims.AccountID)
+		}
 		statusCode := http.StatusBadGateway
 		if errors.Is(err, ErrSSRFAuthorityBlocked) || errors.Is(err, ErrSSRFSchemeBlocked) || errors.Is(err, ErrSSRFPrivateIPBlocked) {
 			statusCode = http.StatusForbidden
@@ -1451,6 +1553,175 @@ func copyUpstreamHeaders(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func (s *EdgeServer) resolveUpstreamCredential(ctx context.Context, claims *edgeproto.SessionLeaseClaims) (*UpstreamCredentialDTO, error) {
+	if s.credFetcher == nil || claims == nil || claims.LeaseID == "" || claims.AccountID <= 0 {
+		return nil, nil
+	}
+	cacheKey := fmt.Sprintf("%s:%d", claims.LeaseID, claims.AccountID)
+	now := time.Now()
+
+	s.credMu.RLock()
+	entry, ok := s.creds[cacheKey]
+	s.credMu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.cred, nil
+	}
+
+	cred, err := s.credFetcher(ctx, claims.LeaseID, claims.AccountID)
+	if err != nil || cred == nil {
+		return cred, err
+	}
+
+	exp := now.Add(90 * time.Second)
+	if cred.ExpiresAtUnix > 0 {
+		t := time.Unix(cred.ExpiresAtUnix, 0)
+		if t.Before(exp) {
+			exp = t
+		}
+	}
+	if exp.After(now) {
+		s.credMu.Lock()
+		if s.creds == nil {
+			s.creds = make(map[string]cachedUpstreamCred)
+		}
+		// Opportunistically prune expired RAM-only entries so cache stays tiny.
+		if len(s.creds) > 256 {
+			for k, v := range s.creds {
+				if !now.Before(v.expiresAt) {
+					delete(s.creds, k)
+				}
+			}
+		}
+		s.creds[cacheKey] = cachedUpstreamCred{cred: cred, expiresAt: exp}
+		s.credMu.Unlock()
+	}
+	return cred, nil
+}
+
+func (s *EdgeServer) evictUpstreamCredential(leaseID string, accountID int64) {
+	cacheKey := fmt.Sprintf("%s:%d", leaseID, accountID)
+	s.credMu.Lock()
+	delete(s.creds, cacheKey)
+	s.credMu.Unlock()
+}
+
+func writeCredentialError(w http.ResponseWriter, err error) int {
+	w.Header().Set("Content-Type", "application/json")
+	if errors.Is(err, ErrUpstreamCredentialForbidden) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "upstream_credential_forbidden", "message": err.Error()}})
+		return http.StatusForbidden
+	}
+	w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "upstream_credential_unavailable", "message": err.Error()}})
+	return http.StatusBadGateway
+}
+
+func applyCredentialHeaders(dst http.Header, headers map[string]string) {
+	for k, v := range headers {
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" {
+			continue
+		}
+		if strings.EqualFold(k, "anthropic-beta") {
+			existing := strings.TrimSpace(dst.Get(k))
+			if existing != "" {
+				tokens := strings.Split(existing, ",")
+				seen := make(map[string]struct{}, len(tokens)+2)
+				merged := make([]string, 0, len(tokens)+2)
+				for _, tok := range tokens {
+					t := strings.TrimSpace(tok)
+					if t == "" {
+						continue
+					}
+					if _, dup := seen[t]; !dup {
+						seen[t] = struct{}{}
+						merged = append(merged, t)
+					}
+				}
+				for _, tok := range strings.Split(v, ",") {
+					t := strings.TrimSpace(tok)
+					if t == "" {
+						continue
+					}
+					if _, dup := seen[t]; !dup {
+						seen[t] = struct{}{}
+						merged = append(merged, t)
+					}
+				}
+				dst.Set(k, strings.Join(merged, ","))
+				continue
+			}
+		}
+		dst.Set(k, v)
+	}
+}
+
+func rewriteURLForCredentialBase(rawUpURL, rawBaseURL string) string {
+	rawBaseURL = strings.TrimSpace(rawBaseURL)
+	if rawBaseURL == "" {
+		return rawUpURL
+	}
+	orig, err := url.Parse(rawUpURL)
+	if err != nil || orig.Host == "" {
+		return rawUpURL
+	}
+	base, err := url.Parse(rawBaseURL)
+	if err != nil || base.Host == "" {
+		return rawUpURL
+	}
+
+	scheme := base.Scheme
+	if scheme == "" {
+		scheme = orig.Scheme
+	}
+	// Preserve ws/wss scheme when rewriting WebSocket URLs onto an http/https base URL.
+	switch strings.ToLower(orig.Scheme) {
+	case "wss":
+		scheme = "wss"
+	case "ws":
+		if strings.EqualFold(base.Scheme, "https") {
+			scheme = "wss"
+		} else {
+			scheme = "ws"
+		}
+	}
+
+	basePath := strings.TrimRight(base.Path, "/")
+	origPath := orig.Path
+	if origPath == "" {
+		origPath = "/"
+	}
+	finalPath := origPath
+	if basePath != "" {
+		switch {
+		case origPath == basePath || strings.HasPrefix(origPath, basePath+"/"):
+			finalPath = origPath
+		case strings.HasPrefix(basePath, "/backend-api/codex"):
+			trimmed := strings.TrimPrefix(origPath, "/v1")
+			if trimmed == "" || !strings.HasPrefix(trimmed, "/") {
+				trimmed = "/" + strings.TrimPrefix(trimmed, "/")
+			}
+			finalPath = basePath + trimmed
+		case strings.HasSuffix(basePath, "/v1") && (origPath == "/v1" || strings.HasPrefix(origPath, "/v1/")):
+			finalPath = basePath + strings.TrimPrefix(origPath, "/v1")
+		default:
+			if !strings.HasPrefix(origPath, "/") {
+				origPath = "/" + origPath
+			}
+			finalPath = basePath + origPath
+		}
+	}
+
+	rewritten := url.URL{
+		Scheme:   scheme,
+		Host:     base.Host,
+		Path:     finalPath,
+		RawQuery: orig.RawQuery,
+	}
+	return rewritten.String()
 }
 
 func streamCopyWithFlush(w http.ResponseWriter, src io.Reader) {

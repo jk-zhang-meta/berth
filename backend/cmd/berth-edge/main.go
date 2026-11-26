@@ -185,6 +185,8 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	prober := edge.NewPeerProber(cfg.NodeID, revHub, 20*time.Second)
+
 	// Background revocation snapshot freshness watchdog.
 	wg.Add(1)
 	go func() {
@@ -192,12 +194,21 @@ func main() {
 		srv.Gate().StartFreshnessWatchdog(ctx, 500*time.Millisecond)
 	}()
 
-	// Background heartbeat + dynamic role hot-sync + SHA-256 auto-update + OAuth task loop.
+	// Background FR-125 peer prober (auto-discovers reachable peers & live RTT).
 	if centralClient != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runHeartbeatLoop(ctx, stop, cfg, centralClient, srv, updater, selfSHA256)
+			prober.Run(ctx)
+		}()
+	}
+
+	// Background heartbeat + dynamic role hot-sync + FR-125 peer probes + SHA-256 auto-update + OAuth task loop.
+	if centralClient != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runHeartbeatLoop(ctx, stop, cfg, centralClient, srv, updater, prober, selfSHA256)
 		}()
 	}
 
@@ -279,21 +290,28 @@ func runHeartbeatLoop(
 	client *edge.CentralClient,
 	srv *edge.EdgeServer,
 	updater *edge.SelfUpdater,
+	prober *edge.PeerProber,
 	selfSHA256 string,
 ) {
 	agentVersion := version
 	if commit != "" && commit != "dev" {
 		agentVersion = fmt.Sprintf("%s-%s", version, commit)
 	}
-	report := edge.HeartbeatReport{
-		Status:       "active",
-		AgentVersion: agentVersion,
-		AgentArch:    runtime.GOOS + "/" + runtime.GOARCH,
-		AgentSHA256:  selfSHA256,
-	}
 	tick := func() {
+		measuredLinks, liveRev := prober.Snapshot()
+		report := edge.HeartbeatReport{
+			Status:             "active",
+			AgentVersion:       agentVersion,
+			AgentArch:          runtime.GOOS + "/" + runtime.GOARCH,
+			AgentSHA256:        selfSHA256,
+			MeasuredLinks:      measuredLinks,
+			LiveReverseTunnels: liveRev,
+		}
 		if res, err := client.HeartbeatFull(ctx, report); err == nil {
 			_ = srv.Gate().UpdateSnapshot(res.RevocationSnapshot)
+			if len(res.ProbeTargets) > 0 {
+				prober.UpdateTargets(res.ProbeTargets)
+			}
 			if len(res.NodeRoles) > 0 {
 				prev := srv.Roles()
 				if srv.ApplyRuntimeRoles(res.NodeRoles) {

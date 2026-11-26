@@ -393,14 +393,25 @@ func (s *BerthEdgeLeaseService) liveTunnelsSnapshot(override map[int64]bool) map
 	if override != nil {
 		return override
 	}
+	var zoneSnap map[int64]bool
+	if s.zones != nil {
+		zoneSnap = s.zones.LiveReverseTunnelsSnapshot(time.Now())
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if len(s.liveRevTunnels) == 0 {
+	if len(s.liveRevTunnels) == 0 && zoneSnap == nil {
 		return nil
 	}
-	cp := make(map[int64]bool, len(s.liveRevTunnels))
+	cp := make(map[int64]bool, len(s.liveRevTunnels)+len(zoneSnap))
+	for k, v := range zoneSnap {
+		if v {
+			cp[k] = true
+		}
+	}
 	for k, v := range s.liveRevTunnels {
-		cp[k] = v
+		if v {
+			cp[k] = true
+		}
 	}
 	return cp
 }
@@ -776,6 +787,14 @@ func (s *BerthEdgeLeaseService) RenewLease(ctx context.Context, userID int64, le
 		}
 	}
 	return buildMintedLeaseResponse(*updated, tok, zoneSlug, "renew", ingressNode, landingNode), nil
+}
+
+// GetLeaseRecord returns the persisted lease record by leaseID.
+func (s *BerthEdgeLeaseService) GetLeaseRecord(ctx context.Context, leaseID string) (*WorkSessionLeaseRecord, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(leaseID) == "" {
+		return nil, ErrEdgeLeaseNotFound
+	}
+	return s.store.GetLease(ctx, leaseID)
 }
 
 // RevokeLease revokes leaseID and immediately bumps monotonic rev_seq.

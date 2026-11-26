@@ -45,10 +45,10 @@
           </div>
         </div>
         <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
-          <div class="text-xs text-gray-500 dark:text-gray-400">逻辑分区 / 链路</div>
+          <div class="text-xs text-gray-500 dark:text-gray-400">逻辑分区 / 实时探测拓扑</div>
           <div class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
             {{ zones.length }}
-            <span class="text-sm font-normal text-gray-500 dark:text-gray-400">/ {{ links.length }} 条</span>
+            <span class="text-sm font-normal text-emerald-600 dark:text-emerald-400">/ {{ liveTopology.length }} 条实时链路</span>
           </div>
         </div>
         <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
@@ -89,7 +89,7 @@
                 : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400'"
               @click="activeTab = 'topology'"
             >
-              逻辑分区与转发链路 ({{ zones.length }} / {{ links.length }})
+              逻辑分区与自动拓扑 ({{ zones.length }} / {{ liveTopology.length }})
             </button>
           </div>
           <div v-if="activeTab === 'nodes'" class="flex items-center gap-2 pb-2">
@@ -211,36 +211,116 @@
           </table>
         </div>
 
-        <!-- Zones & Links Tab -->
-        <div v-else class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
-          <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
-            <div class="mb-3 flex items-center justify-between">
-              <div class="text-sm font-semibold text-gray-900 dark:text-white">逻辑分区（Zones）</div>
-              <button type="button" class="btn btn-secondary btn-xs" @click="showZoneModal = true">+ 新增分区</button>
-            </div>
-            <div class="space-y-2">
-              <div
-                v-for="z in zones"
-                :key="z.id"
-                class="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-dark-900/50"
-              >
-                <div>
-                  <span class="font-medium text-gray-900 dark:text-white">{{ z.display_name }}</span>
-                  <span class="ml-2 font-mono text-gray-400">{{ z.slug }}</span>
+        <!-- Zones & Auto-Measured FR-125 Topology Tab -->
+        <div v-else class="space-y-4 p-4">
+          <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <!-- Logical Zones (Admin Policy) -->
+            <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">逻辑分区（Zones）</div>
+                <button type="button" class="btn btn-secondary btn-xs" @click="showZoneModal = true">+ 新增分区</button>
+              </div>
+              <div class="space-y-2">
+                <div
+                  v-for="z in zones"
+                  :key="z.id"
+                  class="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-dark-900/50"
+                >
+                  <div>
+                    <span class="font-medium text-gray-900 dark:text-white">{{ z.display_name }}</span>
+                    <span class="ml-2 font-mono text-gray-400">{{ z.slug }}</span>
+                  </div>
+                  <span class="rounded bg-gray-200/70 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                    {{ zonePolicyLabel(z.default_mgmt_policy) }}
+                  </span>
                 </div>
-                <span class="rounded bg-gray-200/70 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-                  {{ zonePolicyLabel(z.default_mgmt_policy) }}
+              </div>
+            </div>
+
+            <!-- Live FR-125 Auto-Discovered Mesh Topology -->
+            <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700 lg:col-span-2">
+              <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                    实时自动探测拓扑（FR-125 · 无需手工连线）
+                  </div>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    节点每 20 秒互测可达性与真实 RTT 并上报中央；单向专线（IPLC）与反向隧道自动感知，断线 ≤90 秒自动绕行。
+                  </p>
+                </div>
+                <span class="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                  {{ liveTopology.length }} 条实时可达边
                 </span>
+              </div>
+              <div class="max-h-80 overflow-y-auto rounded-lg border border-gray-100 dark:border-dark-700/70">
+                <table class="min-w-full divide-y divide-gray-100 text-xs dark:divide-dark-700/70">
+                  <thead class="bg-gray-50 text-[11px] uppercase text-gray-500 dark:bg-dark-900/60 dark:text-gray-400">
+                    <tr>
+                      <th class="px-3 py-2 text-left">方向（源 → 目标）</th>
+                      <th class="px-3 py-2 text-left">链路类型</th>
+                      <th class="px-3 py-2 text-right">实测 RTT</th>
+                      <th class="px-3 py-2 text-right">综合代价</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-100 dark:divide-dark-700/50">
+                    <tr
+                      v-for="edge in liveTopology"
+                      :key="`${edge.src_node_id}-${edge.dst_node_id}`"
+                      class="hover:bg-gray-50/70 dark:hover:bg-dark-700/30"
+                    >
+                      <td class="px-3 py-1.5 font-medium text-gray-800 dark:text-gray-200">
+                        {{ edge.src_node_name }} → {{ edge.dst_node_name }}
+                      </td>
+                      <td class="px-3 py-1.5">
+                        <span
+                          class="rounded px-1.5 py-0.5 text-[11px]"
+                          :class="edge.link_class === 'reverse_tunnel'
+                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+                            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'"
+                        >
+                          {{ edge.link_class === 'reverse_tunnel' ? '反向隧道在线' : '自动互测直连' }}
+                        </span>
+                      </td>
+                      <td class="px-3 py-1.5 text-right font-mono text-emerald-700 dark:text-emerald-400">
+                        {{ edge.rtt_ms }} ms
+                      </td>
+                      <td class="px-3 py-1.5 text-right font-mono text-gray-600 dark:text-gray-300">
+                        {{ edge.effective_cost }}
+                        <span v-if="edge.weight_bias > 0" class="text-[10px] text-amber-600"> (+{{ edge.weight_bias }})</span>
+                      </td>
+                    </tr>
+                    <tr v-if="liveTopology.length === 0">
+                      <td colspan="4" class="px-3 py-6 text-center text-gray-400">
+                        等待节点心跳上报互测数据（新上线节点约 20 秒内完成首轮全网探测）
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
 
+          <!-- Optional Static Overrides (Collapsed by default; weight bias / disable / cold-start fallback) -->
           <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
-            <div class="mb-3 flex items-center justify-between">
-              <div class="text-sm font-semibold text-gray-900 dark:text-white">转发链路（Links）</div>
-              <button type="button" class="btn btn-secondary btn-xs" @click="openCreateLinkModal">+ 新增链路</button>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                class="flex items-center gap-2 text-left text-xs font-medium text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                @click="showStaticLinks = !showStaticLinks"
+              >
+                <span>{{ showStaticLinks ? '▾' : '▸' }}</span>
+                <span>可选手动链路覆盖（{{ links.length }} 条 · 仅用于加权偏好 / 禁用特定跳 / 冷启动兜底）</span>
+              </button>
+              <button
+                v-if="showStaticLinks"
+                type="button"
+                class="btn btn-secondary btn-xs"
+                @click="openCreateLinkModal"
+              >
+                + 新增手动覆盖
+              </button>
             </div>
-            <div class="max-h-80 space-y-1.5 overflow-y-auto">
+            <div v-if="showStaticLinks" class="mt-3 max-h-60 space-y-1.5 overflow-y-auto">
               <div
                 v-for="l in links"
                 :key="l.id"
@@ -250,7 +330,9 @@
                   {{ nodeName(l.src_node_id) }} {{ l.direction === 'bidirectional' ? '↔' : '→' }} {{ nodeName(l.dst_node_id) }}
                 </span>
                 <div class="flex items-center gap-2">
-                  <span class="font-mono text-gray-500">{{ l.link_class }} · {{ l.rtt_ms }}ms · w={{ l.weight }}</span>
+                  <span class="font-mono text-gray-500">
+                    {{ l.enabled ? `${l.link_class} · w=${l.weight} · fallback ${l.rtt_ms}ms` : '已禁用（黑名单）' }}
+                  </span>
                   <button
                     type="button"
                     class="text-red-500 hover:text-red-700"
@@ -259,6 +341,9 @@
                     删除
                   </button>
                 </div>
+              </div>
+              <div v-if="links.length === 0" class="py-3 text-center text-xs text-gray-400">
+                无手动覆盖，全网完全由实时探测拓扑驱动
               </div>
             </div>
           </div>
@@ -484,6 +569,7 @@ import {
   berthNetworkAPI,
   type BerthEdgeNode,
   type BerthEdgeRelease,
+  type BerthLiveTopologyEdge,
   type BerthNetworkZone,
   type BerthServerLink,
 } from '@/api/berthNetwork'
@@ -494,11 +580,13 @@ const loading = ref(false)
 const submitting = ref(false)
 const activeTab = ref<'nodes' | 'topology'>('nodes')
 const nodeFilter = ref<'all' | 'relay' | 'landing'>('all')
+const showStaticLinks = ref(false)
 const togglingNodeIds = reactive(new Set<number>())
 
 const zones = ref<BerthNetworkZone[]>([])
 const nodes = ref<BerthEdgeNode[]>([])
 const links = ref<BerthServerLink[]>([])
+const liveTopology = ref<BerthLiveTopologyEdge[]>([])
 const releases = ref<BerthEdgeRelease[]>([])
 
 const hasRole = (node: BerthEdgeNode, role: string) => (node.roles || []).includes(role)
@@ -607,15 +695,17 @@ const deriveRoles = (zoneId: number, connectMode: string, publicAddr: string, is
 const loadAll = async () => {
   loading.value = true
   try {
-    const [z, n, l, r] = await Promise.all([
+    const [z, n, l, topo, r] = await Promise.all([
       berthNetworkAPI.listZones(),
       berthNetworkAPI.listNodes(),
       berthNetworkAPI.listLinks(),
+      berthNetworkAPI.listMeasuredTopology().catch(() => []),
       berthNetworkAPI.listEdgeReleases().catch(() => []),
     ])
     zones.value = z
     nodes.value = n
     links.value = l
+    liveTopology.value = topo
     releases.value = r
   } catch (err: any) {
     appStore.showError(err?.message || '加载节点数据失败')

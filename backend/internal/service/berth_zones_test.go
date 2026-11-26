@@ -248,3 +248,103 @@ func TestBerthZoneService_PublicAddrEntryAndEndToEndRTTRouting(t *testing.T) {
 	require.Equal(t, 148, cost2)
 	require.Equal(t, gz.ID, hops2[0].NodeID)
 }
+
+func TestBerthZoneService_FR125AutoMeasuredTopologyAndOverrides(t *testing.T) {
+	ctx := context.Background()
+	svc := NewBerthZoneServiceWithStore(NewMemoryZoneStore(true))
+	zones, err := svc.ListZones(ctx)
+	require.NoError(t, err)
+	cnZoneID := zones[1].ID
+	overseasZoneID := zones[2].ID
+
+	// Zero static berth_server_links configured! Pure FR-125 auto-probed mesh!
+	gz, err := svc.CreateNode(ctx, EdgeNode{Name: "po0-gz", ZoneID: cnZoneID, Roles: []string{EdgeRoleTransit}, PublicAddr: "http://81.71.126.162:19443", TunnelAddr: "172.31.8.41:19443", Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+	po0hk, err := svc.CreateNode(ctx, EdgeNode{Name: "po0-hk", ZoneID: overseasZoneID, Roles: []string{EdgeRoleTransit}, TunnelAddr: "10.42.2.114:19443", Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+	hyHK, err := svc.CreateNode(ctx, EdgeNode{Name: "hyonix-hk", ZoneID: overseasZoneID, Roles: []string{EdgeRoleTransit}, PublicAddr: "http://1.2.3.4:19443", TunnelAddr: "1.2.3.4:19443", Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+	hyLA, err := svc.CreateNode(ctx, EdgeNode{Name: "hyonix-la", ZoneID: overseasZoneID, Roles: []string{EdgeRoleTransit}, PublicAddr: "http://5.6.7.8:19443", TunnelAddr: "5.6.7.8:19443", Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+	houston, err := svc.CreateNode(ctx, EdgeNode{Name: "houston-vm100", ZoneID: overseasZoneID, Roles: []string{EdgeRoleLanding}, ConnectMode: ConnectModeReverseTunnel, Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+
+	now := time.Now()
+	// 1. ProbeTargetsForNode excludes self and reverse_tunnel nodes.
+	targets, err := svc.ProbeTargetsForNode(ctx, gz.ID)
+	require.NoError(t, err)
+	require.Len(t, targets, 3)
+
+	// 2. Report real directional probes (no static links!):
+	//    po0-gz -> po0-hk (7ms IPLC), po0-gz -> hyonix-la (220ms public)
+	//    po0-hk -> hyonix-hk (3ms), po0-hk -> hyonix-la (145ms)
+	//    hyonix-hk -> hyonix-la (140ms)
+	//    hyonix-la -> houston-vm100 (reverse_tunnel, 18ms)
+	_, err = svc.RecordHeartbeat(ctx, gz.ID, EdgeHeartbeatUpdate{
+		Status: EdgeNodeStatusActive,
+		MeasuredLinks: []MeasuredPeerLink{
+			{TargetNodeID: po0hk.ID, Reachable: true, RTTMs: 7, LinkClass: LinkClassDirect, MeasuredAtUnix: now.Unix()},
+			{TargetNodeID: hyLA.ID, Reachable: true, RTTMs: 220, LinkClass: LinkClassDirect, MeasuredAtUnix: now.Unix()},
+		},
+	}, now)
+	require.NoError(t, err)
+	_, err = svc.RecordHeartbeat(ctx, po0hk.ID, EdgeHeartbeatUpdate{
+		Status: EdgeNodeStatusActive,
+		MeasuredLinks: []MeasuredPeerLink{
+			{TargetNodeID: hyHK.ID, Reachable: true, RTTMs: 3, LinkClass: LinkClassDirect, MeasuredAtUnix: now.Unix()},
+			{TargetNodeID: hyLA.ID, Reachable: true, RTTMs: 145, LinkClass: LinkClassDirect, MeasuredAtUnix: now.Unix()},
+		},
+	}, now)
+	require.NoError(t, err)
+	_, err = svc.RecordHeartbeat(ctx, hyHK.ID, EdgeHeartbeatUpdate{
+		Status: EdgeNodeStatusActive,
+		MeasuredLinks: []MeasuredPeerLink{
+			{TargetNodeID: hyLA.ID, Reachable: true, RTTMs: 140, LinkClass: LinkClassDirect, MeasuredAtUnix: now.Unix()},
+		},
+	}, now)
+	require.NoError(t, err)
+	_, err = svc.RecordHeartbeat(ctx, hyLA.ID, EdgeHeartbeatUpdate{
+		Status:             EdgeNodeStatusActive,
+		MeasuredLinks:      []MeasuredPeerLink{{TargetNodeID: houston.ID, Reachable: true, RTTMs: 18, LinkClass: LinkClassReverseTunnel, MeasuredAtUnix: now.Unix()}},
+		LiveReverseTunnels: []int64{houston.ID},
+	}, now)
+	require.NoError(t, err)
+
+	// 3. Pure auto-probed Dijkstra chooses po0-gz -> po0-hk -> hyonix-hk -> hyonix-la -> houston-vm100 (7+3+140+18 = 168ms < 7+145+18 = 170ms < 220+18 = 238ms)!
+	liveRev := svc.LiveReverseTunnelsSnapshot(now)
+	require.True(t, liveRev[houston.ID])
+
+	entry, hops, cost, err := svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, houston.ID, liveRev, nil)
+	require.NoError(t, err)
+	require.Equal(t, gz.ID, entry.ID)
+	require.Equal(t, 168, cost)
+	require.Equal(t, []string{"po0-gz", "po0-hk", "hyonix-hk", "hyonix-la", "houston-vm100"},
+		[]string{hops[0].NodeName, hops[1].NodeName, hops[2].NodeName, hops[3].NodeName, hops[4].NodeName})
+	require.Equal(t, LinkClassReverseTunnel, hops[4].LinkClass)
+
+	// 4. ListMeasuredTopology exposes all 6 live auto-discovered edges.
+	topo, err := svc.ListMeasuredTopology(ctx)
+	require.NoError(t, err)
+	require.Len(t, topo, 6)
+
+	// 5. Optional static disabled link acts as a hard blocklist on measured edge (po0-hk -> hyonix-hk)!
+	_, err = svc.CreateLink(ctx, ServerLink{SrcNodeID: po0hk.ID, DstNodeID: hyHK.ID, Direction: LinkDirectionOneWay, LinkClass: LinkClassDirect, Enabled: false})
+	require.NoError(t, err)
+	_, hops2, cost2, err := svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, houston.ID, liveRev, nil)
+	require.NoError(t, err)
+	require.Equal(t, 170, cost2)
+	require.Equal(t, []string{"po0-gz", "po0-hk", "hyonix-la", "houston-vm100"},
+		[]string{hops2[0].NodeName, hops2[1].NodeName, hops2[2].NodeName, hops2[3].NodeName})
+
+	// 6. When hyonix-la reports houston-vm100 disconnected (empty non-nil LiveReverseTunnels), route is immediately withdrawn!
+	_, err = svc.RecordHeartbeat(ctx, hyLA.ID, EdgeHeartbeatUpdate{
+		Status:             EdgeNodeStatusActive,
+		MeasuredLinks:      []MeasuredPeerLink{},
+		LiveReverseTunnels: []int64{},
+	}, now.Add(time.Second))
+	require.NoError(t, err)
+	liveRevAfter := svc.LiveReverseTunnelsSnapshot(now.Add(time.Second))
+	require.False(t, liveRevAfter[houston.ID])
+	_, _, _, err = svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, houston.ID, liveRevAfter, nil)
+	require.ErrorIs(t, err, ErrNoRouteAvailable)
+}

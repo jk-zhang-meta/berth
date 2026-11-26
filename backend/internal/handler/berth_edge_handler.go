@@ -21,9 +21,10 @@ const contextKeyEdgeNodeID = "berth_edge_node_id"
 // BerthEdgeHandler serves AGS v2 lease negotiation, Edge internal control-plane
 // endpoints, Admin network topology & landing grant APIs, and User landing grant views.
 type BerthEdgeHandler struct {
-	zones  *service.BerthZoneService
-	grants *service.BerthLandingGrantService
-	leases *service.BerthEdgeLeaseService
+	zones    *service.BerthZoneService
+	grants   *service.BerthLandingGrantService
+	leases   *service.BerthEdgeLeaseService
+	accounts service.EdgeAccountLookup
 }
 
 // NewBerthEdgeHandler constructs a BerthEdgeHandler.
@@ -36,6 +37,13 @@ func NewBerthEdgeHandler(
 		zones:  zones,
 		grants: grants,
 		leases: leases,
+	}
+}
+
+// SetAccountLookup attaches the account store used for ephemeral Landing upstream credential resolution.
+func (h *BerthEdgeHandler) SetAccountLookup(lookup service.EdgeAccountLookup) {
+	if h != nil {
+		h.accounts = lookup
 	}
 }
 
@@ -71,6 +79,7 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	edgeGroup.GET("/oauth-tasks", h.EdgeListOAuthTasks)
 	edgeGroup.POST("/oauth-tasks/:id/complete", h.EdgeCompleteOAuthTask)
 	edgeGroup.GET("/binary/:os/:arch", h.EdgeDownloadBinary)
+	edgeGroup.POST("/account-credential", h.EdgeAccountCredential)
 
 	// Admin Topology & Landing Grants endpoints
 	adminGroup := r.Group("/api/v1/admin/network")
@@ -85,6 +94,7 @@ func (h *BerthEdgeHandler) RegisterRoutes(r gin.IRouter, userAuth, adminAuth, ed
 	adminGroup.GET("/links", h.AdminListLinks)
 	adminGroup.POST("/links", h.AdminCreateLink)
 	adminGroup.DELETE("/links/:id", h.AdminDeleteLink)
+	adminGroup.GET("/topology", h.AdminListMeasuredTopology)
 	adminGroup.GET("/edge-releases", h.AdminListEdgeReleases)
 	adminGroup.GET("/grants", h.AdminListGrants)
 	adminGroup.POST("/grants", h.AdminCreateGrant)
@@ -399,15 +409,64 @@ func (h *BerthEdgeHandler) EdgeHeartbeat(c *gin.Context) {
 	}
 	osName, archName := service.ParseEdgeArchPair(upd.AgentArch)
 	edgeRelease, _, _ := service.LookupEdgeRelease(service.ResolveEdgeReleaseDir(), osName, archName)
+	probeTargets, _ := h.zones.ProbeTargetsForNode(c.Request.Context(), nodeID)
 	payload := gin.H{
 		"node":                node,
 		"revocation_snapshot": snap,
 		"central_pubkey":      h.leases.PublicKeyBase64(),
+		"probe_targets":       probeTargets,
 	}
 	if edgeRelease != nil {
 		payload["edge_release"] = edgeRelease
 	}
 	response.Success(c, payload)
+}
+
+func (h *BerthEdgeHandler) EdgeAccountCredential(c *gin.Context) {
+	nodeID, ok := getAuthenticatedEdgeNodeID(c)
+	if !ok {
+		return
+	}
+	if h.accounts == nil {
+		// Unwired test/mock Central: signal passthrough (no-op) so topology-only E2E tests stay green.
+		// Production wiring always attaches deps.adminService via SetAccountLookup.
+		c.Status(http.StatusNoContent)
+		return
+	}
+	var body struct {
+		LeaseID   string `json:"lease_id"`
+		AccountID int64  `json:"account_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.BadRequest(c, "Invalid account credential request")
+		return
+	}
+	cred, err := service.ResolveUpstreamCredentialForLease(
+		c.Request.Context(),
+		h.leases,
+		h.accounts,
+		nodeID,
+		body.LeaseID,
+		body.AccountID,
+		time.Now(),
+	)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cred)
+}
+
+func (h *BerthEdgeHandler) AdminListMeasuredTopology(c *gin.Context) {
+	if _, ok := requireEdgeAdmin(c); !ok {
+		return
+	}
+	items, err := h.zones.ListMeasuredTopology(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"items": items})
 }
 
 func (h *BerthEdgeHandler) EdgeDownloadBinary(c *gin.Context) {

@@ -142,17 +142,52 @@ type ZoneResolutionResult struct {
 }
 
 // EdgeHeartbeatUpdate captures node telemetry reported on heartbeat.
+// EdgeProbeTarget describes an active peer node advertised to berth-edge for FR-125 auto-probing.
+type EdgeProbeTarget struct {
+	NodeID   int64  `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Addr     string `json:"addr"`
+}
+
+// MeasuredPeerLink mirrors berth-edge's directional peer probe report.
+type MeasuredPeerLink struct {
+	TargetNodeID   int64  `json:"target_node_id"`
+	TargetName     string `json:"target_name,omitempty"`
+	Reachable      bool   `json:"reachable"`
+	RTTMs          int    `json:"rtt_ms"`
+	LinkClass      string `json:"link_class"`
+	MeasuredAtUnix int64  `json:"measured_at_unix"`
+}
+
+// LiveTopologyEdge is a directional auto-discovered edge in Central's live FR-125 mesh graph.
+type LiveTopologyEdge struct {
+	SrcNodeID      int64  `json:"src_node_id"`
+	SrcNodeName    string `json:"src_node_name"`
+	DstNodeID      int64  `json:"dst_node_id"`
+	DstNodeName    string `json:"dst_node_name"`
+	LinkClass      string `json:"link_class"`
+	RTTMs          int    `json:"rtt_ms"`
+	WeightBias     int    `json:"weight_bias"`
+	EffectiveCost  int    `json:"effective_cost"`
+	MeasuredAtUnix int64  `json:"measured_at_unix"`
+	Source         string `json:"source"` // measured | reverse_tunnel
+}
+
+const measuredTopologyFreshTTL = 90 * time.Second
+
 type EdgeHeartbeatUpdate struct {
-	Status          string          `json:"status"`
-	ExitIP          string          `json:"exit_ip,omitempty"`
-	ExitCountryCode string          `json:"exit_country_code,omitempty"`
-	ExitTimezone    string          `json:"exit_timezone,omitempty"`
-	ExitLocale      string          `json:"exit_locale,omitempty"`
-	ExitASNClass    string          `json:"exit_asn_class,omitempty"`
-	AgentVersion    string          `json:"agent_version,omitempty"`
-	AgentArch       string          `json:"agent_arch,omitempty"`
-	AgentSHA256     string          `json:"agent_sha256,omitempty"`
-	Meta            json.RawMessage `json:"meta,omitempty"`
+	Status             string             `json:"status"`
+	ExitIP             string             `json:"exit_ip,omitempty"`
+	ExitCountryCode    string             `json:"exit_country_code,omitempty"`
+	ExitTimezone       string             `json:"exit_timezone,omitempty"`
+	ExitLocale         string             `json:"exit_locale,omitempty"`
+	ExitASNClass       string             `json:"exit_asn_class,omitempty"`
+	AgentVersion       string             `json:"agent_version,omitempty"`
+	AgentArch          string             `json:"agent_arch,omitempty"`
+	AgentSHA256        string             `json:"agent_sha256,omitempty"`
+	MeasuredLinks      []MeasuredPeerLink `json:"measured_links,omitempty"`
+	LiveReverseTunnels []int64            `json:"live_reverse_tunnels,omitempty"`
+	Meta               json.RawMessage    `json:"meta,omitempty"`
 }
 
 // BerthZoneStore abstracts persistence for zones, edge nodes, and server links.
@@ -169,20 +204,35 @@ type BerthZoneStore interface {
 	DeleteLink(ctx context.Context, id int64) error
 }
 
-// BerthZoneService manages logical zones, edge nodes, server links, FR-138 zone
-// resolution, and Dijkstra shortest-path routing across 1-way IPLC & reverse tunnels.
+type nodeMeasuredReport struct {
+	reportedAt         time.Time
+	links              []MeasuredPeerLink
+	liveReverseTunnels []int64
+}
+
+// BerthZoneService manages logical zones, edge nodes, FR-125 auto-probed mesh topology,
+// FR-138 zone resolution, and Dijkstra shortest-path routing across direct, IPLC, and reverse tunnels.
 type BerthZoneService struct {
 	store BerthZoneStore
+
+	measuredMu     sync.RWMutex
+	measuredByNode map[int64]nodeMeasuredReport
 }
 
 // NewBerthZoneService creates a PostgreSQL-backed BerthZoneService.
 func NewBerthZoneService(db *sql.DB) *BerthZoneService {
-	return &BerthZoneService{store: &sqlZoneStore{db: db}}
+	return &BerthZoneService{
+		store:          &sqlZoneStore{db: db},
+		measuredByNode: make(map[int64]nodeMeasuredReport),
+	}
 }
 
 // NewBerthZoneServiceWithStore creates a BerthZoneService backed by a custom store.
 func NewBerthZoneServiceWithStore(store BerthZoneStore) *BerthZoneService {
-	return &BerthZoneService{store: store}
+	return &BerthZoneService{
+		store:          store,
+		measuredByNode: make(map[int64]nodeMeasuredReport),
+	}
 }
 
 func normalizeCountryCode(cc string) string {
@@ -341,6 +391,22 @@ func (s *BerthZoneService) RecordHeartbeat(ctx context.Context, nodeID int64, up
 	if at.IsZero() {
 		at = time.Now()
 	}
+	if upd.Status == EdgeNodeStatusOffline || upd.Status == EdgeNodeStatusSuspended {
+		s.measuredMu.Lock()
+		delete(s.measuredByNode, nodeID)
+		s.measuredMu.Unlock()
+	} else if upd.MeasuredLinks != nil || upd.LiveReverseTunnels != nil {
+		s.measuredMu.Lock()
+		if s.measuredByNode == nil {
+			s.measuredByNode = make(map[int64]nodeMeasuredReport)
+		}
+		s.measuredByNode[nodeID] = nodeMeasuredReport{
+			reportedAt:         at,
+			links:              append([]MeasuredPeerLink(nil), upd.MeasuredLinks...),
+			liveReverseTunnels: append([]int64(nil), upd.LiveReverseTunnels...),
+		}
+		s.measuredMu.Unlock()
+	}
 	if upd.AgentVersion != "" || upd.AgentArch != "" || upd.AgentSHA256 != "" {
 		metaMap := map[string]any{}
 		if trimmed := strings.TrimSpace(string(upd.Meta)); trimmed != "" {
@@ -360,6 +426,184 @@ func (s *BerthZoneService) RecordHeartbeat(ctx context.Context, nodeID int64, up
 		}
 	}
 	return s.store.RecordHeartbeat(ctx, nodeID, upd, at)
+}
+
+// ProbeTargetsForNode returns all active direct peer nodes that nodeID should probe under FR-125.
+func (s *BerthZoneService) ProbeTargetsForNode(ctx context.Context, nodeID int64) ([]EdgeProbeTarget, error) {
+	nodes, err := s.store.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EdgeProbeTarget, 0, len(nodes))
+	for _, n := range nodes {
+		if n.ID == nodeID || n.Status != EdgeNodeStatusActive || n.ConnectMode == ConnectModeReverseTunnel {
+			continue
+		}
+		addr := cleanDialAddr(nodeDialAddr(&n))
+		if addr == "" {
+			continue
+		}
+		out = append(out, EdgeProbeTarget{
+			NodeID:   n.ID,
+			NodeName: n.Name,
+			Addr:     addr,
+		})
+	}
+	return out, nil
+}
+
+// LiveReverseTunnelsSnapshot returns the set of landing node IDs currently connected
+// to any active reverse-tunnel hub (based on fresh heartbeats within measuredTopologyFreshTTL).
+func (s *BerthZoneService) LiveReverseTunnelsSnapshot(now time.Time) map[int64]bool {
+	if s == nil {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.measuredMu.RLock()
+	defer s.measuredMu.RUnlock()
+	if len(s.measuredByNode) == 0 {
+		return nil
+	}
+	out := make(map[int64]bool)
+	for _, rep := range s.measuredByNode {
+		if now.Sub(rep.reportedAt) > measuredTopologyFreshTTL {
+			continue
+		}
+		for _, id := range rep.liveReverseTunnels {
+			if id > 0 {
+				out[id] = true
+			}
+		}
+		for _, m := range rep.links {
+			if m.Reachable && m.LinkClass == LinkClassReverseTunnel && m.TargetNodeID > 0 {
+				out[m.TargetNodeID] = true
+			}
+		}
+	}
+	return out
+}
+
+func (s *BerthZoneService) snapshotFreshMeasured(now time.Time) map[int64]nodeMeasuredReport {
+	if s == nil {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.measuredMu.RLock()
+	defer s.measuredMu.RUnlock()
+	if len(s.measuredByNode) == 0 {
+		return nil
+	}
+	cp := make(map[int64]nodeMeasuredReport, len(s.measuredByNode))
+	for nodeID, rep := range s.measuredByNode {
+		if now.Sub(rep.reportedAt) <= measuredTopologyFreshTTL {
+			cp[nodeID] = nodeMeasuredReport{
+				reportedAt:         rep.reportedAt,
+				links:              append([]MeasuredPeerLink(nil), rep.links...),
+				liveReverseTunnels: append([]int64(nil), rep.liveReverseTunnels...),
+			}
+		}
+	}
+	return cp
+}
+
+// ListMeasuredTopology returns all fresh auto-discovered reachable directional edges for UI inspection.
+func (s *BerthZoneService) ListMeasuredTopology(ctx context.Context) ([]LiveTopologyEdge, error) {
+	nodes, err := s.store.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	staticLinks, err := s.store.ListLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodeMap := make(map[int64]*EdgeNode, len(nodes))
+	for i := range nodes {
+		nodeMap[nodes[i].ID] = &nodes[i]
+	}
+	disabledPairs, weightBias := indexStaticOverrides(staticLinks)
+	fresh := s.snapshotFreshMeasured(time.Now())
+
+	out := make([]LiveTopologyEdge, 0, 32)
+	seen := make(map[[2]int64]struct{})
+	for srcID, rep := range fresh {
+		srcNode := nodeMap[srcID]
+		if srcNode == nil || srcNode.Status != EdgeNodeStatusActive {
+			continue
+		}
+		for _, m := range rep.links {
+			if !m.Reachable || m.TargetNodeID <= 0 {
+				continue
+			}
+			dstNode := nodeMap[m.TargetNodeID]
+			if dstNode == nil || dstNode.Status != EdgeNodeStatusActive {
+				continue
+			}
+			pair := [2]int64{srcID, m.TargetNodeID}
+			if disabledPairs[pair] {
+				continue
+			}
+			rtt := m.RTTMs
+			if rtt < 1 {
+				rtt = 1
+			}
+			bias := weightBias[pair]
+			lc := m.LinkClass
+			if lc == "" {
+				lc = LinkClassDirect
+			}
+			srcTag := "measured"
+			if lc == LinkClassReverseTunnel {
+				srcTag = "reverse_tunnel"
+			}
+			seen[pair] = struct{}{}
+			out = append(out, LiveTopologyEdge{
+				SrcNodeID:      srcID,
+				SrcNodeName:    srcNode.Name,
+				DstNodeID:      dstNode.ID,
+				DstNodeName:    dstNode.Name,
+				LinkClass:      lc,
+				RTTMs:          rtt,
+				WeightBias:     bias,
+				EffectiveCost:  rtt + bias,
+				MeasuredAtUnix: m.MeasuredAtUnix,
+				Source:         srcTag,
+			})
+		}
+		for _, dstID := range rep.liveReverseTunnels {
+			pair := [2]int64{srcID, dstID}
+			if _, ok := seen[pair]; ok || disabledPairs[pair] {
+				continue
+			}
+			dstNode := nodeMap[dstID]
+			if dstNode == nil || dstNode.Status != EdgeNodeStatusActive {
+				continue
+			}
+			bias := weightBias[pair]
+			out = append(out, LiveTopologyEdge{
+				SrcNodeID:      srcID,
+				SrcNodeName:    srcNode.Name,
+				DstNodeID:      dstNode.ID,
+				DstNodeName:    dstNode.Name,
+				LinkClass:      LinkClassReverseTunnel,
+				RTTMs:          25,
+				WeightBias:     bias,
+				EffectiveCost:  25 + bias,
+				MeasuredAtUnix: rep.reportedAt.Unix(),
+				Source:         "reverse_tunnel",
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SrcNodeID != out[j].SrcNodeID {
+			return out[i].SrcNodeID < out[j].SrcNodeID
+		}
+		return out[i].EffectiveCost < out[j].EffectiveCost
+	})
+	return out, nil
 }
 
 func (s *BerthZoneService) ListLinks(ctx context.Context) ([]ServerLink, error) {
@@ -542,7 +786,7 @@ func (s *BerthZoneService) FindShortestPath(
 	if err != nil {
 		return nil, 0, err
 	}
-	return solveDijkstraPath(nodes, links, srcNodeID, dstNodeID, liveReverseTunnels)
+	return solveDijkstraPathWithMeasured(nodes, links, s.snapshotFreshMeasured(time.Now()), srcNodeID, dstNodeID, liveReverseTunnels)
 }
 
 type graphEdge struct {
@@ -563,16 +807,55 @@ func nodePrimaryRole(n *EdgeNode) string {
 	return ""
 }
 
+func cleanDialAddr(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	return strings.TrimRight(s, "/")
+}
+
 func nodeDialAddr(n *EdgeNode) string {
 	if n.TunnelAddr != "" {
-		return n.TunnelAddr
+		return cleanDialAddr(n.TunnelAddr)
 	}
-	return n.PublicAddr
+	return cleanDialAddr(n.PublicAddr)
+}
+
+func indexStaticOverrides(links []ServerLink) (disabled map[[2]int64]bool, weightBias map[[2]int64]int) {
+	disabled = make(map[[2]int64]bool)
+	weightBias = make(map[[2]int64]int)
+	for _, l := range links {
+		p := [2]int64{l.SrcNodeID, l.DstNodeID}
+		if !l.Enabled {
+			disabled[p] = true
+			if l.Direction == LinkDirectionBidirectional {
+				disabled[[2]int64{l.DstNodeID, l.SrcNodeID}] = true
+			}
+			continue
+		}
+		if l.Weight > 0 {
+			weightBias[p] = l.Weight
+			if l.Direction == LinkDirectionBidirectional {
+				weightBias[[2]int64{l.DstNodeID, l.SrcNodeID}] = l.Weight
+			}
+		}
+	}
+	return disabled, weightBias
 }
 
 func solveDijkstraPath(
 	nodes []EdgeNode,
 	links []ServerLink,
+	srcNodeID, dstNodeID int64,
+	liveReverseTunnels map[int64]bool,
+) ([]edgeproto.RouteHop, int, error) {
+	return solveDijkstraPathWithMeasured(nodes, links, nil, srcNodeID, dstNodeID, liveReverseTunnels)
+}
+
+func solveDijkstraPathWithMeasured(
+	nodes []EdgeNode,
+	links []ServerLink,
+	measured map[int64]nodeMeasuredReport,
 	srcNodeID, dstNodeID int64,
 	liveReverseTunnels map[int64]bool,
 ) ([]edgeproto.RouteHop, int, error) {
@@ -591,7 +874,7 @@ func solveDijkstraPath(
 		return nil, 0, ErrNoRouteAvailable
 	}
 
-	// Direct same-node path (ingress relay is also the landing node).
+	// Direct same-node path (zone entry IS also the landing node).
 	if srcNodeID == dstNodeID {
 		return []edgeproto.RouteHop{{
 			NodeID:    srcNode.ID,
@@ -602,10 +885,18 @@ func solveDijkstraPath(
 		}}, 0, nil
 	}
 
+	disabledPairs, weightBias := indexStaticOverrides(links)
+
 	adj := make(map[int64][]graphEdge, len(nodes))
+	measuredDirectSeen := make(map[[2]int64]bool)
+	hasMeasuredFrom := make(map[int64]bool)
+
 	addEdge := func(from, to int64, cost int, linkClass string) {
 		toNode, ok := nodeMap[to]
 		if !ok || toNode.Status != EdgeNodeStatusActive {
+			return
+		}
+		if disabledPairs[[2]int64{from, to}] {
 			return
 		}
 		if (linkClass == LinkClassReverseTunnel || toNode.ConnectMode == ConnectModeReverseTunnel) &&
@@ -618,6 +909,40 @@ func solveDijkstraPath(
 		adj[from] = append(adj[from], graphEdge{to: to, cost: cost, linkClass: linkClass})
 	}
 
+	// 1. Primary FR-125 auto-measured edges (real live reachability + real RTT!).
+	for fromID, rep := range measured {
+		fromNode, ok := nodeMap[fromID]
+		if !ok || fromNode.Status != EdgeNodeStatusActive {
+			continue
+		}
+		hasMeasuredFrom[fromID] = true
+		for _, m := range rep.links {
+			if !m.Reachable || m.TargetNodeID <= 0 {
+				continue
+			}
+			pair := [2]int64{fromID, m.TargetNodeID}
+			measuredDirectSeen[pair] = true
+			lc := m.LinkClass
+			if lc == "" {
+				lc = LinkClassDirect
+			}
+			rtt := m.RTTMs
+			if rtt < 1 {
+				rtt = 1
+			}
+			addEdge(fromID, m.TargetNodeID, rtt+weightBias[pair], lc)
+		}
+		for _, revDst := range rep.liveReverseTunnels {
+			pair := [2]int64{fromID, revDst}
+			if measuredDirectSeen[pair] {
+				continue
+			}
+			measuredDirectSeen[pair] = true
+			addEdge(fromID, revDst, 25+weightBias[pair], LinkClassReverseTunnel)
+		}
+	}
+
+	// 2. Static links serve as cold-start fallback for nodes that haven't reported FR-125 probes yet.
 	for _, l := range links {
 		if !l.Enabled {
 			continue
@@ -628,8 +953,10 @@ func solveDijkstraPath(
 			continue
 		}
 		cost := l.Weight + l.RTTMs
-		addEdge(l.SrcNodeID, l.DstNodeID, cost, l.LinkClass)
-		if l.Direction == LinkDirectionBidirectional {
+		if !hasMeasuredFrom[l.SrcNodeID] && !measuredDirectSeen[[2]int64{l.SrcNodeID, l.DstNodeID}] {
+			addEdge(l.SrcNodeID, l.DstNodeID, cost, l.LinkClass)
+		}
+		if l.Direction == LinkDirectionBidirectional && !hasMeasuredFrom[l.DstNodeID] && !measuredDirectSeen[[2]int64{l.DstNodeID, l.SrcNodeID}] {
 			addEdge(l.DstNodeID, l.SrcNodeID, cost, l.LinkClass)
 		}
 	}
@@ -772,13 +1099,15 @@ func (s *BerthZoneService) SelectBestIngressAndRouteWithRTT(
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 
+	freshMeasured := s.snapshotFreshMeasured(time.Now())
+
 	var bestIngress *EdgeNode
 	var bestHops []edgeproto.RouteHop
 	bestCost := math.MaxInt
 
 	for i := range candidates {
 		c := &candidates[i]
-		hops, pathCost, err := solveDijkstraPath(nodes, links, c.ID, landingNodeID, liveReverseTunnels)
+		hops, pathCost, err := solveDijkstraPathWithMeasured(nodes, links, freshMeasured, c.ID, landingNodeID, liveReverseTunnels)
 		if err != nil {
 			continue
 		}

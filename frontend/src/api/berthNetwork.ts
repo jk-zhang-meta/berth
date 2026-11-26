@@ -68,6 +68,19 @@ export interface BerthServerLink {
   enabled: boolean
 }
 
+export interface BerthLiveTopologyEdge {
+  src_node_id: number
+  src_node_name: string
+  dst_node_id: number
+  dst_node_name: string
+  link_class: string
+  rtt_ms: number
+  weight_bias: number
+  effective_cost: number
+  measured_at_unix: number
+  source: 'measured' | 'reverse_tunnel' | string
+}
+
 export interface BerthLandingGrant {
   id: number
   node_id: number
@@ -207,6 +220,10 @@ export const berthNetworkAPI = {
   },
   async deleteLink(linkId: number): Promise<void> {
     await apiClient.delete(`/admin/network/links/${linkId}`)
+  },
+  async listMeasuredTopology(): Promise<BerthLiveTopologyEdge[]> {
+    const { data } = await apiClient.get<{ items: BerthLiveTopologyEdge[] }>('/admin/network/topology')
+    return data?.items ?? []
   },
   async listEdgeReleases(): Promise<BerthEdgeRelease[]> {
     const { data } = await apiClient.get<{ items: BerthEdgeRelease[] }>('/admin/network/edge-releases')

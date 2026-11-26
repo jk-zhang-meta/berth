@@ -326,6 +326,27 @@ func (r *ReverseTunnelRegistry) Unregister(nodeID int64, generation uint64) {
 	}
 }
 
+// OnlineNodeIDs returns a sorted slice of landing node IDs with a live, non-closed reverse tunnel.
+func (r *ReverseTunnelRegistry) OnlineNodeIDs() []int64 {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	out := make([]int64, 0, len(r.tunnels))
+	for id, entry := range r.tunnels {
+		if entry != nil && entry.h2cc != nil && !entry.h2cc.State().Closed {
+			out = append(out, id)
+		}
+	}
+	r.mu.RUnlock()
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
 // RoundTrip dispatches an HTTP/2 request over the live reverse tunnel for nodeID,
 // returning the response on the originating bidirectional H2 stream.
 func (r *ReverseTunnelRegistry) RoundTrip(nodeID int64, req *http.Request) (*http.Response, error) {

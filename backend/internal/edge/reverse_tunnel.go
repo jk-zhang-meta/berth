@@ -105,6 +105,14 @@ func (h *ReverseTunnelHub) acceptOne(conn net.Conn) {
 	<-done
 }
 
+// ConnectedNodeIDs returns the sorted list of landing node IDs currently connected over reverse tunnels.
+func (h *ReverseTunnelHub) ConnectedNodeIDs() []int64 {
+	if h == nil || h.Registry == nil {
+		return nil
+	}
+	return h.Registry.OnlineNodeIDs()
+}
+
 // RoundTrip forwards an HTTP/2 request to landingNodeID over its live reverse tunnel.
 func (h *ReverseTunnelHub) RoundTrip(landingNodeID int64, req *http.Request) (*http.Response, error) {
 	return h.Registry.RoundTrip(landingNodeID, req)
