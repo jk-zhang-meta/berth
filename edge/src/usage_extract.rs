@@ -2,11 +2,97 @@
 //! streams across Anthropic Messages, OpenAI/Codex Responses & Chat Completions,
 //! and Google Gemini / Antigravity Cloud Code responses.
 
+use std::io::Write;
+
 use serde_json::Value;
 
 const MAX_SSE_LINE_BYTES: usize = 256 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 512 * 1024;
 const MAX_REQ_INSPECT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DECOMPRESSED_TAP_BYTES: usize = 16 * 1024 * 1024;
+
+/// Bounded in-memory sink for streaming read-only response decompression.
+/// Fails closed (stops sniffing without affecting data-plane forwarding) if the
+/// decompressed byte budget is exceeded (zip-bomb guard).
+struct BoundedTapSink {
+    buf: Vec<u8>,
+    total: usize,
+    limit: usize,
+}
+
+impl BoundedTapSink {
+    fn new(limit: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            total: 0,
+            limit,
+        }
+    }
+
+    fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
+}
+
+impl Write for BoundedTapSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let next = self.total.saturating_add(data.len());
+        if next > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "decompressed usage tap limit exceeded",
+            ));
+        }
+        self.total = next;
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+enum TapDecoder {
+    Gzip(flate2::write::GzDecoder<BoundedTapSink>),
+    Deflate(flate2::write::ZlibDecoder<BoundedTapSink>),
+    Brotli(Box<brotli::DecompressorWriter<BoundedTapSink>>),
+}
+
+impl TapDecoder {
+    fn feed(&mut self, chunk: &[u8]) -> Result<Vec<u8>, ()> {
+        match self {
+            TapDecoder::Gzip(d) => {
+                if d.write_all(chunk).is_err() || d.flush().is_err() {
+                    return Err(());
+                }
+                Ok(d.get_mut().take_bytes())
+            }
+            TapDecoder::Deflate(d) => {
+                if d.write_all(chunk).is_err() || d.flush().is_err() {
+                    return Err(());
+                }
+                Ok(d.get_mut().take_bytes())
+            }
+            TapDecoder::Brotli(d) => {
+                if d.write_all(chunk).is_err() || d.flush().is_err() {
+                    return Err(());
+                }
+                Ok(d.get_mut().take_bytes())
+            }
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        match self {
+            TapDecoder::Gzip(d) => d.finish().map(|mut s| s.take_bytes()).unwrap_or_default(),
+            TapDecoder::Deflate(d) => d.finish().map(|mut s| s.take_bytes()).unwrap_or_default(),
+            TapDecoder::Brotli(d) => match d.into_inner() {
+                Ok(mut s) | Err(mut s) => s.take_bytes(),
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestMeta {
@@ -73,6 +159,7 @@ pub struct UsageStreamSniffer {
     stream: bool,
     is_sse: bool,
     disabled: bool,
+    decoder: Option<TapDecoder>,
     input_tokens: i32,
     output_tokens: i32,
     cache_creation_tokens: i32,
@@ -86,15 +173,43 @@ pub struct UsageStreamSniffer {
 
 impl UsageStreamSniffer {
     pub fn new_http(meta: RequestMeta, is_sse: bool, content_encoding: Option<&str>) -> Self {
-        let enc_disabled = content_encoding
+        let enc = content_encoding
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .is_some_and(|s| !s.eq_ignore_ascii_case("identity"));
+            .map(|s| s.to_ascii_lowercase());
+        let (disabled, decoder) = match enc.as_deref() {
+            None | Some("identity") => (false, None),
+            Some("gzip") | Some("x-gzip") => (
+                false,
+                Some(TapDecoder::Gzip(flate2::write::GzDecoder::new(
+                    BoundedTapSink::new(MAX_DECOMPRESSED_TAP_BYTES),
+                ))),
+            ),
+            Some("deflate") => (
+                false,
+                Some(TapDecoder::Deflate(flate2::write::ZlibDecoder::new(
+                    BoundedTapSink::new(MAX_DECOMPRESSED_TAP_BYTES),
+                ))),
+            ),
+            Some("br") => (
+                false,
+                Some(TapDecoder::Brotli(Box::new(
+                    brotli::DecompressorWriter::new(
+                        BoundedTapSink::new(MAX_DECOMPRESSED_TAP_BYTES),
+                        4096,
+                    ),
+                ))),
+            ),
+            // Unknown or stacked Content-Encoding (e.g. zstd): gracefully skip sniffing without
+            // disturbing wire forwarding.
+            Some(_) => (true, None),
+        };
         Self {
             model: meta.model,
             stream: meta.stream || is_sse,
             is_sse,
-            disabled: enc_disabled,
+            disabled,
+            decoder,
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_tokens: 0,
@@ -113,6 +228,7 @@ impl UsageStreamSniffer {
             stream: true,
             is_sse: false,
             disabled: false,
+            decoder: None,
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_tokens: 0,
@@ -126,6 +242,27 @@ impl UsageStreamSniffer {
     }
 
     pub fn feed_http_chunk(&mut self, chunk: &[u8]) {
+        if self.disabled || chunk.is_empty() {
+            return;
+        }
+        if let Some(ref mut dec) = self.decoder {
+            match dec.feed(chunk) {
+                Ok(plain) => {
+                    if !plain.is_empty() {
+                        self.feed_plain_chunk(&plain);
+                    }
+                }
+                Err(()) => {
+                    self.disabled = true;
+                    self.decoder = None;
+                }
+            }
+            return;
+        }
+        self.feed_plain_chunk(chunk);
+    }
+
+    fn feed_plain_chunk(&mut self, chunk: &[u8]) {
         if self.disabled || chunk.is_empty() {
             return;
         }
@@ -196,6 +333,12 @@ impl UsageStreamSniffer {
 
     pub fn finish(mut self) -> ExtractedUsage {
         if !self.disabled {
+            if let Some(dec) = self.decoder.take() {
+                let tail = dec.finish();
+                if !tail.is_empty() {
+                    self.feed_plain_chunk(&tail);
+                }
+            }
             if self.is_sse {
                 if !self.drop_until_newline && !self.line_buf.is_empty() {
                     let line = std::mem::take(&mut self.line_buf);
@@ -554,5 +697,43 @@ mod tests {
         assert_eq!(u2.input_tokens, 70);
         assert_eq!(u2.cache_read_tokens, 20);
         assert_eq!(u2.output_tokens, 15);
+    }
+
+    #[test]
+    fn extracts_gzip_and_brotli_compressed_sse_usage() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let anth_sse = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":88,\"cache_read_input_tokens\":500,\"output_tokens\":1}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":19}}\n\n";
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(anth_sse).unwrap();
+        let gz_bytes = gz.finish().unwrap();
+
+        let mut s_gz = UsageStreamSniffer::new_http(RequestMeta::default(), true, Some("gzip"));
+        for chunk in gz_bytes.chunks(17) {
+            s_gz.feed_http_chunk(chunk);
+        }
+        let u_gz = s_gz.finish();
+        assert_eq!(u_gz.model, "claude-opus-4-6");
+        assert_eq!(u_gz.input_tokens, 88);
+        assert_eq!(u_gz.cache_read_tokens, 500);
+        assert_eq!(u_gz.output_tokens, 19);
+
+        let codex_sse = b"data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-6.2-sol\",\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":900},\"output_tokens\":42}}}\n\n";
+        let mut br_out = Vec::new();
+        {
+            let mut br = brotli::CompressorWriter::new(&mut br_out, 4096, 5, 22);
+            br.write_all(codex_sse).unwrap();
+            br.flush().unwrap();
+        }
+        let mut s_br = UsageStreamSniffer::new_http(RequestMeta::default(), true, Some("br"));
+        for chunk in br_out.chunks(13) {
+            s_br.feed_http_chunk(chunk);
+        }
+        let u_br = s_br.finish();
+        assert_eq!(u_br.model, "gpt-6.2-sol");
+        assert_eq!(u_br.input_tokens, 300);
+        assert_eq!(u_br.cache_read_tokens, 900);
+        assert_eq!(u_br.output_tokens, 42);
     }
 }

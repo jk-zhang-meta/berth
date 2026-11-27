@@ -742,7 +742,10 @@ impl AntigravitySseUnwrapper {
                 }
             }
         }
-        out.extend_from_slice(line);
+        out.extend_from_slice(core);
+        if ends_lf {
+            out.push(b'\n');
+        }
     }
 }
 
@@ -1635,8 +1638,12 @@ mod tests {
         let mut unwrapper = AntigravitySseUnwrapper::default();
         let part1 = unwrapper.push_chunk(b"data: {\"response\":{\"cand");
         assert!(part1.is_empty());
-        let part2 = unwrapper.push_chunk(b"idates\":[{\"index\":0}]}}\n\n");
+        let part2 = unwrapper.push_chunk(b"idates\":[{\"index\":0}]}}\r\n\r\ndata: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}]}}]}}\r\n\r\n");
         let out_sse = String::from_utf8(part2).unwrap();
-        assert_eq!(out_sse, "data: {\"candidates\":[{\"index\":0}]}\n\n");
+        assert!(!out_sse.contains('\r'), "SSE must emit pure LF delimiters without mixed CRLF");
+        assert_eq!(
+            out_sse,
+            "data: {\"candidates\":[{\"index\":0}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}]}}]}\n\n"
+        );
     }
 }
