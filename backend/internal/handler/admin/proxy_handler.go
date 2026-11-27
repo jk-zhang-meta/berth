@@ -105,10 +105,7 @@ func (h *ProxyHandler) List(c *gin.Context) {
 	sortBy := c.DefaultQuery("sort_by", "id")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
 	// 标准化和验证 search 参数
-	search = strings.TrimSpace(search)
-	if len(search) > 100 {
-		search = search[:100]
-	}
+	search = service.TruncateUTF8Bytes(strings.TrimSpace(search), 100)
 
 	adminCaller := isAdminCaller(c)
 	ownerFilter, _ := strconv.ParseInt(c.Query("owner_user_id"), 10, 64)
@@ -184,8 +181,13 @@ func (h *ProxyHandler) List(c *gin.Context) {
 		proxies = make([]service.ProxyWithAccountCount, 0, len(filtered))
 		for i := range filtered {
 			p := filtered[i]
+			var acctCount int64
+			if accounts, aErr := h.adminService.GetProxyAccounts(c.Request.Context(), p.ID); aErr == nil {
+				acctCount = int64(len(accounts))
+			}
 			item := service.ProxyWithAccountCount{
 				Proxy:            p,
+				AccountCount:     acctCount,
 				IPAddress:        p.ExitIP,
 				Country:          p.ExitCountry,
 				CountryCode:      p.ExitCountryCode,
@@ -215,6 +217,9 @@ func (h *ProxyHandler) List(c *gin.Context) {
 	for i := range proxies {
 		ids = append(ids, proxies[i].ID)
 		item := *dto.ProxyWithAccountCountFromServiceAdmin(&proxies[i])
+		if service.IsReservedEdgeInternalHost(proxies[i].Host) {
+			item.IsEdgeLanding = true
+		}
 		if !adminCaller {
 			item.Password = ""
 		}
@@ -332,9 +337,12 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 					item.Username = ""
 					item.Password = ""
 					item.IPAddress = ""
+					item.IsEdgeLanding = true
 					if grantInfo.ExpiresAt != nil {
 						item.ExpiresAt = grantInfo.ExpiresAt
 					}
+				} else if service.IsReservedEdgeInternalHost(p.Host) {
+					item.IsEdgeLanding = true
 				}
 				out = append(out, item)
 			}
@@ -369,9 +377,12 @@ func (h *ProxyHandler) GetAll(c *gin.Context) {
 				item.Port = 0
 				item.Username = ""
 				item.Password = ""
+				item.IsEdgeLanding = true
 				if grantInfo.ExpiresAt != nil {
 					item.ExpiresAt = grantInfo.ExpiresAt
 				}
+			} else if service.IsReservedEdgeInternalHost(p.Host) {
+				item.IsEdgeLanding = true
 			}
 			out = append(out, item)
 		}
@@ -448,6 +459,9 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 
 	resp := dto.ProxyFromServiceAdmin(proxy)
 	if resp != nil {
+		if service.IsReservedEdgeInternalHost(proxy.Host) {
+			resp.IsEdgeLanding = true
+		}
 		if !isAdminCaller(c) {
 			resp.Password = ""
 		}

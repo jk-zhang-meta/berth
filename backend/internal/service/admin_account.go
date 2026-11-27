@@ -689,6 +689,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := s.accountRepo.Create(ctx, account); err != nil {
 		return nil, err
 	}
+	s.ensureAccountCage(ctx, account)
 
 	// 绑定分组
 	if len(groupIDs) > 0 {
@@ -736,6 +737,16 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if input.Status != "" && input.Status != StatusActive {
+		if err := s.checkAccountRentalModificationAllowed(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	var prevProxyID *int64
+	if account.ProxyID != nil {
+		v := *account.ProxyID
+		prevProxyID = &v
 	}
 	if PrivateAccountOwnerFromContext(ctx) > 0 && !account.IsCredentialShadow() {
 		if input.ProxyID != nil && *input.ProxyID <= 0 {
@@ -899,6 +910,25 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		} {
 			if v, ok := account.Extra[key]; ok {
 				normalizedExtra[key] = v
+			}
+		}
+		if PrivateAccountOwnerFromContext(ctx) > 0 {
+			for _, key := range []string{
+				"window_cost_limit",
+				"window_cost_sticky_reserve",
+				"max_sessions",
+				"session_idle_timeout_minutes",
+				"base_rpm",
+				"rpm_strategy",
+				"rpm_sticky_buffer",
+				"user_msg_queue_mode",
+				"quota_limit",
+				"quota_daily_limit",
+				"quota_weekly_limit",
+			} {
+				if v, ok := account.Extra[key]; ok {
+					normalizedExtra[key] = v
+				}
 			}
 		}
 		normalizedExtra = prepareCodexFingerprintExtraForUpdate(account, normalizedExtra)
@@ -1114,9 +1144,15 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
 	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
 	if input.ProxyID != nil && !account.IsCredentialShadow() {
+		if err := s.rebindAccountCage(ctx, id, account.Platform, prevProxyID, account.ProxyID, "admin_proxy_rebind"); err != nil {
+			return nil, err
+		}
 		if err := s.propagateProxyToShadows(ctx, id, account.ProxyID); err != nil {
 			return nil, err
 		}
+	}
+	if len(input.Credentials) > 0 && !account.IsCredentialShadow() {
+		s.bumpAccountCageCredentialVersion(ctx, id)
 	}
 
 	// 绑定分组
@@ -1274,6 +1310,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
+	if (input.Status != "" && input.Status != StatusActive) || (input.Schedulable != nil && !*input.Schedulable) {
+		for _, accountID := range input.AccountIDs {
+			if err := s.checkAccountRentalModificationAllowed(ctx, accountID); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
 	if needMixedChannelCheck {
@@ -1403,16 +1447,30 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		return nil, err
 	}
 
-	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
+	// 将 proxy 变更传播到每个目标账号的 spark 影子账号，并同步重建/推进 AccountCage epoch
 	if repoUpdates.ProxyID != nil {
 		var effectiveProxyID *int64
 		if *repoUpdates.ProxyID != 0 {
 			effectiveProxyID = repoUpdates.ProxyID
 		}
 		for _, accountID := range input.AccountIDs {
+			var prevProxyID *int64
+			platform := ""
+			if prevAcc := targetsByID[accountID]; prevAcc != nil {
+				prevProxyID = prevAcc.ProxyID
+				platform = prevAcc.Platform
+			}
+			if err := s.rebindAccountCage(ctx, accountID, platform, prevProxyID, effectiveProxyID, "bulk_proxy_rebind"); err != nil {
+				return nil, err
+			}
 			if err := s.propagateProxyToShadows(ctx, accountID, effectiveProxyID); err != nil {
 				return nil, err
 			}
+		}
+	}
+	if len(repoUpdates.Credentials) > 0 {
+		for _, accountID := range input.AccountIDs {
+			s.bumpAccountCageCredentialVersion(ctx, accountID)
 		}
 	}
 
@@ -1515,6 +1573,9 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 }
 
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
+	if err := s.checkAccountRentalModificationAllowed(ctx, id); err != nil {
+		return err
+	}
 	// 级联删除 spark 影子账号（先删影子，再删母账号）
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, id)
 	if err != nil {
@@ -1573,6 +1634,11 @@ func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorM
 }
 
 func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error) {
+	if !schedulable {
+		if err := s.checkAccountRentalModificationAllowed(ctx, id); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
@@ -1969,11 +2035,10 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "privacy_proxy_failed_closed: account_id=%d err=%v", account.ID, err)
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
@@ -2003,11 +2068,10 @@ func (s *adminServiceImpl) ForceOpenAIPrivacy(ctx context.Context, account *Acco
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "privacy_proxy_failed_closed: account_id=%d err=%v", account.ID, err)
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
@@ -2046,11 +2110,10 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "privacy_proxy_failed_closed: account_id=%d err=%v", account.ID, err)
+		return ""
 	}
 
 	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
@@ -2079,11 +2142,10 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveRequiredProxyURL(ctx, s.proxyRepo, account.ProxyID, account.Proxy)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "privacy_proxy_failed_closed: account_id=%d err=%v", account.ID, err)
+		return ""
 	}
 
 	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)

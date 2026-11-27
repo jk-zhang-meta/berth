@@ -353,6 +353,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		}
 		if p.APIKey.MarketplaceUsage != nil {
 			cmd.MarketplaceOperationID = p.APIKey.MarketplaceUsage.OperationID
+			p.APIKey.MarketplaceUsage.MarkBillingEnqueued()
 		}
 	} else {
 		if p.APIKey.MarketplaceUsage != nil {

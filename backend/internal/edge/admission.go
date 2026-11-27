@@ -16,6 +16,7 @@ var (
 	ErrGrantConcurrencyLimit = errors.New("edge: landing grant concurrency limit exceeded")
 	ErrGrantRPMLimit         = errors.New("edge: landing grant RPM limit exceeded")
 	ErrLandingNodeMismatch   = errors.New("edge: lease landing_node_id does not match this node")
+	ErrMissingLandingGrant   = errors.New("edge: tenant landing lease requires a positive grant_id")
 	ErrStreamRevoked         = errors.New("edge: active stream terminated by revocation or snapshot expiry")
 )
 
@@ -420,6 +421,10 @@ func (g *AdmissionGate) Admit(
 	// Enforce per-grant concurrency & RPM limits strictly at the fenced Landing owner
 	// (expectedLandingNodeID > 0), NOT on an ingress relay hop forwarding to another landing node.
 	isLandingHop := expectedLandingNodeID > 0
+	if isLandingHop && g.wal != nil && claims.UserID > 0 && claims.GrantID <= 0 {
+		g.mu.Unlock()
+		return nil, ErrMissingLandingGrant
+	}
 	countedGrantInflight := false
 	if isLandingHop && claims.GrantID > 0 {
 		lim := g.grantLimits[claims.GrantID]

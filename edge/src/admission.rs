@@ -23,6 +23,8 @@ pub enum AdmissionError {
     GrantRpmLimit,
     #[error("edge: lease landing_node_id ({lease}) does not match self ({self_id})")]
     LandingNodeMismatch { lease: i64, self_id: i64 },
+    #[error("edge: tenant landing lease requires a positive grant_id")]
+    MissingLandingGrant,
     #[error("edge: active stream terminated: {0}")]
     StreamRevoked(String),
     #[error(transparent)]
@@ -42,7 +44,8 @@ impl AdmissionError {
             | Self::Proto(ProtoError::GrantRevoked)
             | Self::Proto(ProtoError::ApiKeyRevoked)
             | Self::Proto(ProtoError::CageEpochStale)
-            | Self::LandingNodeMismatch { .. } => (403, "lease_revoked"),
+            | Self::LandingNodeMismatch { .. }
+            | Self::MissingLandingGrant => (403, "lease_revoked"),
             Self::Proto(ProtoError::RevocationSnapshotMissing)
             | Self::Proto(ProtoError::RevocationSnapshotStale)
             | Self::Proto(ProtoError::RevocationSnapshotBehind) => (503, "revocation_snapshot_stale"),
@@ -168,6 +171,13 @@ impl AdmissionGate {
             .unwrap_or_else(|e| e.into_inner())
             .grant_limits
             .insert(grant_id, limits);
+    }
+
+    pub fn replace_grant_limits(&self, limits: HashMap<i64, GrantLimits>) {
+        self.state
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .grant_limits = limits;
     }
 
     pub fn active_stream_count(&self) -> usize {
@@ -356,6 +366,9 @@ impl AdmissionGate {
         auth_res?;
 
         let is_landing = expected_landing_node_id > 0;
+        if is_landing && self.wal.is_some() && claims.user_id > 0 && claims.grant_id <= 0 {
+            return Err(AdmissionError::MissingLandingGrant);
+        }
         let mut counted_inflight = false;
         if is_landing && claims.grant_id > 0 {
             let lim = st

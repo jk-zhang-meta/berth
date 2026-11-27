@@ -1001,6 +1001,7 @@ export interface Proxy {
   fallback_mode: 'none' | 'proxy' | 'direct'
   backup_proxy_id?: number | null
   is_rental?: boolean
+  is_edge_landing?: boolean
   rental_order_id?: number | null
   expiry_warn_days: number
   created_at: string

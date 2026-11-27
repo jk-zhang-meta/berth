@@ -372,9 +372,9 @@ func TestSQLZoneStoreUpdateNode_SyncsLandingProxiesAndPreservesCustomNames(t *te
 	store := &sqlZoneStore{db: db}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT name FROM berth_edge_nodes WHERE id = \$1 FOR UPDATE`).
+	mock.ExpectQuery(`SELECT name, meta FROM berth_edge_nodes WHERE id = \$1 FOR UPDATE`).
 		WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("houston(host)"))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "meta"}).AddRow("houston(host)", []byte(`{"agent_version":"0.2.25"}`)))
 	mock.ExpectQuery(`UPDATE berth_edge_nodes SET`).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "zone_id", "roles", "public_addr", "tunnel_addr", "mgmt_entry_addr",
@@ -386,9 +386,9 @@ func TestSQLZoneStoreUpdateNode_SyncsLandingProxiesAndPreservesCustomNames(t *te
 			int64(9), "Houston (母机)", int64(3), pq.Array([]string{EdgeRoleLanding}), "", "", "",
 			ConnectModeReverseTunnel, "us-houston", "68.77.201.111", "US", "America/Chicago",
 			"en_US.UTF-8", "residential", "", "", EdgeNodeStatusActive, int64(0), int64(0), int64(0),
-			now, []byte(`{}`), now, now,
+			now, []byte(`{"agent_version":"0.2.25"}`), now, now,
 		))
-	mock.ExpectQuery(`SELECT p\.id, p\.name, p\.host, COALESCE\(g\.grantee_user_id, 0\)`).
+	mock.ExpectQuery(`SELECT p\.id, p\.name, p\.host, COALESCE\(g\.grantee_user_id, 0\)[\s\S]*FOR UPDATE OF p`).
 		WithArgs(int64(9), ProxySourceTypeEdgeLandingGrant).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "host", "grantee_user_id"}).
 			AddRow(int64(56), "edge-landing-houston(host)-u1", "houston(host).edge.internal", int64(1)).

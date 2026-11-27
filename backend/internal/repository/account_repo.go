@@ -1954,6 +1954,9 @@ func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID int64, priority int) error {
+	if _, err := r.validateAndNormalizeAccountGroups(ctx, accountID, []int64{groupID}, false); err != nil {
+		return err
+	}
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return err
@@ -1987,6 +1990,9 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 }
 
 func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, groupID int64) error {
+	if err := r.rejectRemovingOwnPrivateGroup(ctx, accountID, groupID); err != nil {
+		return err
+	}
 	_, err := r.client.AccountGroup.Delete().
 		Where(
 			dbaccountgroup.AccountIDEQ(accountID),
@@ -2026,6 +2032,11 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	}
 	if adminaccess.RestrictedFromContext(ctx) != nil {
 		return r.scopedAdminBindGroups(ctx, accountID, groupIDs)
+	}
+	var err error
+	groupIDs, err = r.validateAndNormalizeAccountGroups(ctx, accountID, groupIDs, true)
+	if err != nil {
+		return err
 	}
 	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
 	if err != nil {

@@ -110,19 +110,93 @@ func ValidateHTTPSURL(raw string, opts ValidationOptions) (string, error) {
 func ValidateResolvedIP(host string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_, err := ResolveAndValidatePublicIPs(ctx, host)
+	return err
+}
 
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		return fmt.Errorf("dns resolution failed: %w", err)
+// IsBlockedIP reports whether ip is loopback, private, link-local, unspecified,
+// multicast, or CGNAT (100.64.0.0/10), which must never be reached by tenant-controlled
+// outbound URLs or proxy first-hop dials.
+func IsBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
 	}
-
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("resolved ip %s is not allowed", ip.String())
+	if ip4 := ip.To4(); ip4 != nil {
+		// Carrier-Grade NAT 100.64.0.0/10 (RFC 6598, including Tailscale 100.64/10).
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
+		// 0.0.0.0/8 "this network"
+		if ip4[0] == 0 {
+			return true
 		}
 	}
-	return nil
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+}
+
+// ResolveAndValidatePublicIPs resolves host once and verifies EVERY returned IP is public.
+func ResolveAndValidatePublicIPs(ctx context.Context, host string) ([]net.IP, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(host))
+	if trimmed == "" {
+		return nil, errors.New("host is required")
+	}
+	if trimmed == "localhost" || strings.HasSuffix(trimmed, ".localhost") {
+		return nil, fmt.Errorf("host %s is not allowed", trimmed)
+	}
+	if ip := net.ParseIP(trimmed); ip != nil {
+		if IsBlockedIP(ip) {
+			return nil, fmt.Errorf("resolved ip %s is not allowed", ip.String())
+		}
+		return []net.IP{ip}, nil
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("dns resolution failed: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("dns resolution returned no addresses for %s", trimmed)
+	}
+	for _, ip := range ips {
+		if IsBlockedIP(ip) {
+			return nil, fmt.Errorf("resolved ip %s is not allowed", ip.String())
+		}
+	}
+	return ips, nil
+}
+
+// NewSafeDialContext wraps base.DialContext so hostname resolution happens ONCE at
+// dial time, every returned IP is verified non-private when allowPrivate is false,
+// and TCP connect pins the exact validated IP literal (eliminating DNS rebinding TOCTOU).
+func NewSafeDialContext(base *net.Dialer, allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if base == nil {
+		base = &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	}
+	if allowPrivate {
+		return base.DialContext
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := ResolveAndValidatePublicIPs(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, dialErr := base.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("failed to dial validated address for %s", host)
+	}
 }
 
 func normalizeAllowlist(values []string) []string {

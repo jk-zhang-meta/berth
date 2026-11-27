@@ -975,6 +975,13 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 	s.compileAPIKeyIPRules(apiKey)
+	if fields.Status && apiKey.Status != StatusActive {
+		if leaseSvc := getDefaultEdgeLeaseService(); leaseSvc != nil {
+			revCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			_, _ = leaseSvc.RevokeAPIKey(revCtx, apiKey.ID)
+			cancel()
+		}
+	}
 
 	// Invalidate Redis rate limit cache so reset takes effect immediately
 	if resetRateLimit && s.rateLimitCacheInvalid != nil {
@@ -1005,6 +1012,11 @@ func (s *APIKeyService) Delete(ctx context.Context, id int64, userID int64) erro
 	// 注意:不清零创建相关计数,否则"删除后反复新建"即可绕过创建限流。
 	s.InvalidateAuthCacheByKey(ctx, key)
 	s.lastUsedTouchL1.Delete(id)
+	if leaseSvc := getDefaultEdgeLeaseService(); leaseSvc != nil {
+		revCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		_, _ = leaseSvc.RevokeAPIKey(revCtx, id)
+		cancel()
+	}
 
 	return nil
 }

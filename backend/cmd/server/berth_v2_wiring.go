@@ -101,12 +101,14 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	concurrencyAdvisor := service.NewBerthConcurrencyAdvisor(deps.db)
 	managedAdmin, ok := deps.adminService.(interface {
 		SetConcurrencyAdvisor(*service.BerthConcurrencyAdvisor)
+		SetAccountCageService(*service.BerthAccountCageService)
 	})
 	if !ok {
 		runCleanup()
-		return nil, errors.New("berth-v2 wiring failed: adminService does not implement SetConcurrencyAdvisor")
+		return nil, errors.New("berth-v2 wiring failed: adminService does not implement SetConcurrencyAdvisor/SetAccountCageService")
 	}
 	managedAdmin.SetConcurrencyAdvisor(concurrencyAdvisor)
+	managedAdmin.SetAccountCageService(cageService)
 	deps.cnProviderHandler.SetStewards(deps.stewardStore)
 	deps.handlers.BerthConcurrency = handler.NewBerthConcurrencyHandler(concurrencyAdvisor, deps.stewardStore)
 
@@ -136,6 +138,12 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	zoneService := service.NewBerthZoneService(deps.db)
 	grantService := service.NewBerthLandingGrantService(deps.db)
 	edgeLeaseService := service.NewBerthEdgeLeaseService(deps.db, zoneService, grantService, pub, priv, keyID)
+	cageService.SetEdgeLeaseService(edgeLeaseService)
+	if backfilled, bfErr := cageService.BackfillMissingCages(ctx); bfErr != nil {
+		log.Printf("Warning: berth-v2 account cage backfill failed: %v", bfErr)
+	} else if backfilled > 0 {
+		log.Printf("Berth-v2: backfilled %d missing account_cages", backfilled)
+	}
 	edgeLeaseService.SetEdgeUsageTelemetry(deps.db, deps.billingService, admin.InvalidateAccountTodayStatsCache)
 	service.RegisterDefaultEdgeLeaseService(edgeLeaseService)
 	deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)

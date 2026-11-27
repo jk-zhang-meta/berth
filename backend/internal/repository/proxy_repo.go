@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -813,7 +815,7 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 	}
 
 	var totalChanged int64
-	allChangedAccountIDs := make([]int64, 0)
+	var sweepErrs []error
 
 	for _, p := range all {
 		if p.Status != service.StatusActive || !p.IsExpired(now) {
@@ -828,22 +830,16 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 
 		changedAccountIDs, sweepErr := r.sweepOneExpiredProxy(ctx, p, now, target, change)
 		if sweepErr != nil {
-			return totalChanged, sweepErr
+			// Isolate per-proxy errors so one failing proxy never aborts sweeping
+			// the remaining expired proxies (K-6).
+			logger.LegacyPrintf("repository.proxy", "[ProxyExpiry] sweep proxy %d failed: %v", p.ID, sweepErr)
+			sweepErrs = append(sweepErrs, fmt.Errorf("sweep expired proxy %d: %w", p.ID, sweepErr))
+			continue
 		}
 		totalChanged += int64(len(changedAccountIDs))
-		allChangedAccountIDs = append(allChangedAccountIDs, changedAccountIDs...)
 	}
 
-	changedAccountIDs := sortedUniqueAccountIDs(allChangedAccountIDs)
-	if len(changedAccountIDs) > 0 {
-		// 各代理的改投事务已经提交；这里仅汇总真实被 UPDATE 命中的账号，
-		// 避免代理到期时用全量重建刷新所有调度分桶。
-		payload := map[string]any{"account_ids": changedAccountIDs}
-		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
-			logger.LegacyPrintf("repository.proxy", "[SchedulerOutbox] enqueue proxy expiry account changes failed: err=%v", err)
-		}
-	}
-	return totalChanged, nil
+	return totalChanged, errors.Join(sweepErrs...)
 }
 
 func sortedUniqueAccountIDs(accountIDs []int64) []int64 {
@@ -998,6 +994,13 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
+	}
+	if len(accountIDs) > 0 {
+		// Enqueue scheduler outbox atomically inside the same proxy-expiry transaction (K-6).
+		payload := map[string]any{"account_ids": sortedUniqueAccountIDs(accountIDs)}
+		if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+			return nil, fmt.Errorf("enqueue proxy expiry outbox: %w", err)
+		}
 	}
 	return accountIDs, nil
 }

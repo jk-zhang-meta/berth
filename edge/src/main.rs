@@ -316,9 +316,9 @@ async fn main() -> Result<()> {
                                 if !res.probe_targets.is_empty() {
                                     prober_c.update_targets(res.probe_targets);
                                 }
-                                if !res.peer_public_keys.is_empty() {
+                                if let Some(raw_keys) = res.peer_public_keys {
                                     let mut parsed = HashMap::new();
-                                    for (id, raw) in res.peer_public_keys {
+                                    for (id, raw) in raw_keys {
                                         if let Ok(pk) = parse_ed25519_public_key(&raw) {
                                             parsed.insert(id, pk);
                                         }
@@ -329,6 +329,19 @@ async fn main() -> Result<()> {
                                     if let Some(ref c) = client_c {
                                         c.update_peer_keys(parsed);
                                     }
+                                }
+                                if let Some(raw_limits) = res.grant_limits {
+                                    let mut map = HashMap::new();
+                                    for gl in raw_limits {
+                                        map.insert(
+                                            gl.grant_id,
+                                            berth_edge::admission::GrantLimits {
+                                                max_concurrency: gl.max_concurrency,
+                                                max_rpm: gl.max_rpm,
+                                            },
+                                        );
+                                    }
+                                    srv_c.gate().replace_grant_limits(map);
                                 }
                                 if !res.node_roles.is_empty() {
                                     let prev = srv_c.roles();

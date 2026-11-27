@@ -514,7 +514,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 	}
 
 	if account != nil && h.stewards != nil {
-		_ = h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c))
+		if claimErr := h.stewards.ClaimAccount(c.Request.Context(), account.ID, getAdminIDFromContext(c)); claimErr != nil {
+			if isAccountUser(c) {
+				_ = h.adminService.DeleteAccount(c.Request.Context(), account.ID)
+				response.ErrorFrom(c, claimErr)
+				return
+			}
+			slog.Warn("openai_oauth_claim_account_failed", "account_id", account.ID, "error", claimErr)
+		}
 	}
 
 	response.Success(c, dto.AccountFromService(account))
@@ -666,7 +673,14 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 	}
 
 	if shadow != nil && h.stewards != nil {
-		_ = h.stewards.ClaimAccount(c.Request.Context(), shadow.ID, getAdminIDFromContext(c))
+		if claimErr := h.stewards.ClaimAccount(c.Request.Context(), shadow.ID, getAdminIDFromContext(c)); claimErr != nil {
+			if isAccountUser(c) {
+				_ = h.adminService.DeleteAccount(c.Request.Context(), shadow.ID)
+				response.ErrorFrom(c, claimErr)
+				return
+			}
+			slog.Warn("openai_shadow_claim_account_failed", "account_id", shadow.ID, "error", claimErr)
+		}
 	}
 
 	response.Success(c, dto.AccountFromServiceShallow(shadow))

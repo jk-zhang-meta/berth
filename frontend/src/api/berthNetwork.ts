@@ -206,7 +206,7 @@ export const berthNetworkAPI = {
     const { data } = await apiClient.post<BerthEdgeNode>('/admin/network/nodes', payload)
     return data
   },
-  async updateNode(nodeId: number, payload: UpsertEdgeNodePayload): Promise<BerthEdgeNode> {
+  async updateNode(nodeId: number, payload: Partial<UpsertEdgeNodePayload>): Promise<BerthEdgeNode> {
     const { data } = await apiClient.put<BerthEdgeNode>(`/admin/network/nodes/${nodeId}`, payload)
     return data
   },

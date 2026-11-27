@@ -89,7 +89,7 @@ func (s *MarketplaceService) GroupAccess(ctx context.Context, userID, groupID in
  JOIN users u ON u.id=$1 WHERE m.group_id=$2 AND g.deleted_at IS NULL AND g.status='active' AND a.deleted_at IS NULL
  AND u.deleted_at IS NULL AND u.status='active' AND (
  u.role='admin' OR (m.owner_user_id=u.id AND EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id=a.id AND st.user_id=u.id)) OR
- EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd))))`, userID, groupID).Scan(&managed, &allowed)
+ EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.terminating_at IS NULL AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd))))`, userID, groupID).Scan(&managed, &allowed)
 	return
 }
 
@@ -98,7 +98,7 @@ func (s *MarketplaceService) AccessibleGroupIDs(ctx context.Context, userID int6
  JOIN accounts a ON a.id=m.account_id JOIN users u ON u.id=$1
  WHERE g.deleted_at IS NULL AND g.status='active' AND a.deleted_at IS NULL AND u.deleted_at IS NULL AND u.status='active'
  AND (u.role='admin' OR (m.owner_user_id=u.id AND EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id=a.id AND st.user_id=u.id)) OR
- EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd)))
+ EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=m.group_id AND o.buyer_id=u.id AND o.status='active' AND o.terminating_at IS NULL AND o.starts_at<=clock_timestamp() AND (o.expires_at IS NULL OR o.expires_at>clock_timestamp()) AND (o.quota_limit_usd IS NULL OR o.quota_used_usd<o.quota_limit_usd)))
  ORDER BY m.group_id`, userID)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (s *MarketplaceService) AccessibleGroupIDs(ctx context.Context, userID int6
 func (s *MarketplaceService) CanUseRentalProxy(ctx context.Context, userID, proxyID int64) (bool, error) {
 	var allowed bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM berth_marketplace_orders o JOIN proxies p ON p.id=o.rental_proxy_id
- WHERE o.buyer_id=$1 AND o.rental_proxy_id=$2 AND o.resource_type='proxy' AND o.status='active' AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
+ WHERE o.buyer_id=$1 AND o.rental_proxy_id=$2 AND o.resource_type='proxy' AND o.status='active' AND o.terminating_at IS NULL AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
  AND p.deleted_at IS NULL AND p.status='active' AND p.expires_at>clock_timestamp())`, userID, proxyID).Scan(&allowed)
 	return allowed, err
 }
@@ -127,7 +127,7 @@ func (s *MarketplaceService) CanUseRentalProxy(ctx context.Context, userID, prox
 func (s *MarketplaceService) CheckRentalProxy(ctx context.Context, proxyID int64) (rental, allowed bool, err error) {
 	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM berth_marketplace_orders WHERE rental_proxy_id=$1),
  EXISTS(SELECT 1 FROM berth_marketplace_orders o JOIN proxies p ON p.id=o.rental_proxy_id
- WHERE o.rental_proxy_id=$1 AND o.status='active' AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
+ WHERE o.rental_proxy_id=$1 AND o.status='active' AND o.terminating_at IS NULL AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
  AND p.status='active' AND p.deleted_at IS NULL AND p.expires_at>clock_timestamp())`, proxyID).Scan(&rental, &allowed)
 	return
 }
@@ -135,7 +135,7 @@ func (s *MarketplaceService) CheckRentalProxy(ctx context.Context, proxyID int64
 func (s *MarketplaceService) CheckAccountProxy(ctx context.Context, accountID int64) (rental, allowed bool, err error) {
 	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a JOIN berth_marketplace_orders o ON o.rental_proxy_id=a.proxy_id WHERE a.id=$1),
  EXISTS(SELECT 1 FROM accounts a JOIN berth_marketplace_orders o ON o.rental_proxy_id=a.proxy_id JOIN proxies p ON p.id=a.proxy_id
- WHERE a.id=$1 AND a.deleted_at IS NULL AND o.status='active' AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
+ WHERE a.id=$1 AND a.deleted_at IS NULL AND o.status='active' AND o.terminating_at IS NULL AND o.starts_at<=clock_timestamp() AND o.expires_at>clock_timestamp()
  AND p.status='active' AND p.deleted_at IS NULL AND p.expires_at>clock_timestamp())`, accountID).Scan(&rental, &allowed)
 	return
 }
@@ -149,6 +149,7 @@ func (s *MarketplaceService) ResourceOptions(ctx context.Context, userID int64, 
  UNION ALL SELECT 'proxy',p.id,p.name,'' FROM proxies p LEFT JOIN proxy_stewards st ON st.proxy_id=p.id
  WHERE p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>clock_timestamp()) AND ($2 OR st.user_id=$1)
  AND NULLIF(p.exit_ip,'') IS NOT NULL AND NULLIF(p.exit_timezone,'') IS NOT NULL AND p.exit_checked_at IS NOT NULL
+ AND COALESCE(p.source_type,'')<>'edge_landing_grant' AND LOWER(p.host) NOT LIKE '%.edge.internal'
  AND NOT EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.rental_proxy_id=p.id)
  ORDER BY 1,2 LIMIT 500`, userID, isAdmin)
 	if err != nil {

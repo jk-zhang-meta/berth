@@ -459,6 +459,15 @@ func (s *adminServiceImpl) deleteUserWithAPIKeys(ctx context.Context, userID int
 		logger.LegacyPrintf("service.admin", "delete user failed: user_id=%d err=%v", userID, err)
 		return err
 	}
+	if leaseSvc := getDefaultEdgeLeaseService(); leaseSvc != nil {
+		for _, key := range apiKeys {
+			if key.ID > 0 {
+				revCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				_, _ = leaseSvc.RevokeAPIKey(revCtx, key.ID)
+				cancel()
+			}
+		}
+	}
 	return nil
 }
 

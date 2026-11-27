@@ -1299,7 +1299,13 @@ func (h *AccountHandler) Duplicate(c *gin.Context) {
 				c.Header("X-Idempotency-Recovered", "true")
 				res := h.buildAccountResponseWithRuntime(c.Request.Context(), recovered)
 				if h.stewards != nil && res.ID > 0 {
-					_ = h.stewards.ClaimAccount(c.Request.Context(), res.ID, ownerID)
+					if claimErr := h.stewards.ClaimAccount(c.Request.Context(), res.ID, ownerID); claimErr != nil {
+						slog.Warn("account_duplicate_recover_claim_failed", "account_id", res.ID, "owner_id", ownerID, "error", claimErr)
+						if !adminCaller {
+							response.ErrorFrom(c, claimErr)
+							return
+						}
+					}
 				}
 				response.Success(c, res)
 				return

@@ -433,11 +433,17 @@
         </div>
         <div>
           <label class="input-label">归属 / 授权用户 *</label>
-          <select v-model.number="directForm.grantee_user_id" class="input">
+          <select v-model.number="directForm.grantee_user_id" class="input" :disabled="usersLoadFailed || users.length === 0">
+            <option v-if="users.length === 0" :value="0">
+              {{ usersLoadFailed ? '用户列表加载失败，请点击刷新重试' : '暂无可选用户' }}
+            </option>
             <option v-for="u in users" :key="u.id" :value="u.id">
               {{ u.email }}{{ u.role === 'admin' ? '（管理员本人）' : '' }} (#{{ u.id }})
             </option>
           </select>
+          <p v-if="usersLoadFailed" class="mt-1 text-xs text-red-600 dark:text-red-400">
+            加载用户列表失败；为避免误授权给错误账号，请刷新后再创建。
+          </p>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -469,7 +475,12 @@
       <template #footer>
         <div class="flex justify-end gap-2">
           <button type="button" class="btn btn-secondary" @click="showDirectGrantModal = false">取消</button>
-          <button type="button" class="btn btn-primary" :disabled="submitting" @click="submitDirectGrant">
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="submitting || usersLoadFailed || !directForm.node_id || !directForm.grantee_user_id"
+            @click="submitDirectGrant"
+          >
             {{ submitting ? '创建中...' : '生成落地代理' }}
           </button>
         </div>
@@ -506,6 +517,7 @@ const adminTab = ref<'landings' | 'grants'>('landings')
 const allNodes = ref<BerthEdgeNode[]>([])
 const adminGrants = ref<BerthLandingGrant[]>([])
 const users = ref<BerthSimpleUser[]>([])
+const usersLoadFailed = ref(false)
 
 const availableNodes = ref<BerthAvailableLandingNode[]>([])
 const userGrants = ref<BerthLandingGrant[]>([])
@@ -564,10 +576,14 @@ const loadAll = async () => {
   loading.value = true
   try {
     if (props.isAdmin) {
+      usersLoadFailed.value = false
       const [n, g, u] = await Promise.all([
         berthNetworkAPI.listNodes(),
         berthNetworkAPI.listAdminGrants(),
-        berthNetworkAPI.listUsers().catch(() => []),
+        berthNetworkAPI.listUsers().catch(() => {
+          usersLoadFailed.value = true
+          return [] as BerthSimpleUser[]
+        }),
       ])
       allNodes.value = n
       adminGrants.value = g
@@ -681,7 +697,7 @@ const openRejectModal = (g: BerthLandingGrant) => {
 const openDirectGrantModal = (preselectedNode?: BerthEdgeNode) => {
   directForm.node_id = preselectedNode?.id ?? landingNodes.value[0]?.id ?? 0
   const adminUser = users.value.find((u) => u.role === 'admin')
-  directForm.grantee_user_id = adminUser?.id ?? users.value[0]?.id ?? 1
+  directForm.grantee_user_id = adminUser?.id ?? users.value[0]?.id ?? 0
   directForm.max_gb = 0
   directForm.max_accounts = 5
   directForm.max_rpm = 0

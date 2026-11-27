@@ -91,6 +91,8 @@ type CageGate struct {
 	activeConns    map[*gateConn]struct{}
 	onEvict        GateEvictionFunc
 	nowFn          func() time.Time
+	leaseTimer     *time.Timer
+	leaseTimerGen  uint64
 }
 
 // GateOption configures a CageGate.
@@ -211,6 +213,7 @@ func (g *CageGate) BeginChecking(extraProbeAddrs ...string) (int64, error) {
 // enters GateChecking so the new exit can be verified before opening.
 func (g *CageGate) ReanchorAndCheck(reason string, extraProbeAddrs ...string) int64 {
 	g.mu.Lock()
+	g.stopLeaseTimerLocked()
 	for _, a := range extraProbeAddrs {
 		if norm := normalizeGateTarget(a); norm != "" {
 			g.probeAllowlist[norm] = struct{}{}
@@ -223,6 +226,41 @@ func (g *CageGate) ReanchorAndCheck(reason string, extraProbeAddrs ...string) in
 
 	g.revokeDetached(conns, newEpoch, reason, evict)
 	return newEpoch
+}
+
+func (g *CageGate) stopLeaseTimerLocked() {
+	g.leaseTimerGen++
+	if g.leaseTimer != nil {
+		g.leaseTimer.Stop()
+		g.leaseTimer = nil
+	}
+}
+
+func (g *CageGate) armLeaseTimerLocked(lease time.Duration) {
+	g.stopLeaseTimerLocked()
+	// Only arm real wall-clock timer when using default wall clock so deterministic
+	// fake-clock tests stay fully deterministic without background timer races.
+	if g.nowFn != nil && lease > 0 {
+		gen := g.leaseTimerGen
+		exp := g.leaseExpiresAt
+		g.leaseTimer = time.AfterFunc(lease, func() {
+			g.mu.Lock()
+			if g.leaseTimerGen != gen || g.state != GateOpen || g.leaseExpiresAt.IsZero() {
+				g.mu.Unlock()
+				return
+			}
+			if !g.now().After(exp) && g.now().Before(exp) {
+				g.mu.Unlock()
+				return
+			}
+			g.state = GateClosed
+			g.leaseExpiresAt = time.Time{}
+			g.leaseTimer = nil
+			conns, newEpoch, evict := g.bumpEpochLocked("lease_expired")
+			g.mu.Unlock()
+			g.revokeDetached(conns, newEpoch, "lease_expired", evict)
+		})
+	}
 }
 
 // Open transitions the gate to GateOpen with the requested lease (defaults to 90s).
@@ -239,6 +277,7 @@ func (g *CageGate) Open(lease time.Duration) (int64, error) {
 	g.state = GateOpen
 	g.leaseExpiresAt = g.now().Add(lease)
 	g.lastReason = ""
+	g.armLeaseTimerLocked(lease)
 	return g.epoch, nil
 }
 
@@ -256,6 +295,7 @@ func (g *CageGate) RenewLease(lease time.Duration) error {
 		return ErrCageClosed
 	}
 	g.leaseExpiresAt = g.now().Add(lease)
+	g.armLeaseTimerLocked(lease)
 	return nil
 }
 
@@ -263,6 +303,7 @@ func (g *CageGate) RenewLease(lease time.Duration) error {
 // sockets, and invokes the eviction callback.
 func (g *CageGate) CloseGate(reason string) int64 {
 	g.mu.Lock()
+	g.stopLeaseTimerLocked()
 	g.state = GateClosed
 	g.leaseExpiresAt = time.Time{}
 	conns, newEpoch, evict := g.bumpEpochLocked(reason)
@@ -276,6 +317,7 @@ func (g *CageGate) CloseGate(reason string) int64 {
 // sockets, and invokes the eviction callback.
 func (g *CageGate) Quarantine(reason string) int64 {
 	g.mu.Lock()
+	g.stopLeaseTimerLocked()
 	g.state = GateQuarantined
 	g.leaseExpiresAt = time.Time{}
 	conns, newEpoch, evict := g.bumpEpochLocked(reason)

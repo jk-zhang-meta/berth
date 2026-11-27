@@ -70,6 +70,30 @@ func ResolveUpstreamCredentialForLease(
 		return nil, fmt.Errorf("%w: node/account mismatch for lease %s", ErrEdgeCredentialForbidden, leaseID)
 	}
 
+	// Re-verify live account landing pin and cage state so credentials are never
+	// delivered to an old node after proxy rebind, grant revocation, or quarantine.
+	if leases.store != nil {
+		if authVerifier, ok := leases.store.(edgeLandingOAuthAuthVerifier); ok {
+			if aErr := authVerifier.VerifyAccountEdgeLandingAuthorization(ctx, accountID, callingNodeID); aErr != nil {
+				return nil, fmt.Errorf("%w: %v", ErrEdgeCredentialForbidden, aErr)
+			}
+		}
+		if cageResolver, ok := leases.store.(edgeLeaseAccountCageResolver); ok {
+			_, dbEpoch, gateState, _, _, _, found, cErr := cageResolver.ResolveAccountCageState(ctx, accountID)
+			if cErr != nil {
+				return nil, fmt.Errorf("%w: cage lookup failed: %v", ErrEdgeCredentialUnavailable, cErr)
+			}
+			if found {
+				if gateState == CageGateStateQuarantined || gateState == CageGateStateClosed {
+					return nil, fmt.Errorf("%w: account cage is %s", ErrEdgeCredentialForbidden, gateState)
+				}
+				if lease.CageEpoch > 0 && dbEpoch > lease.CageEpoch {
+					return nil, fmt.Errorf("%w: lease cage epoch %d is stale (current %d)", ErrEdgeCredentialForbidden, lease.CageEpoch, dbEpoch)
+				}
+			}
+		}
+	}
+
 	acc, err := lookup.GetAccount(ctx, accountID)
 	if err != nil || acc == nil {
 		if err != nil {

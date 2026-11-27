@@ -114,6 +114,7 @@ type MarketplaceOrder struct {
 	RentalProxyID           *int64     `json:"rental_proxy_id"`
 	StartsAt                time.Time  `json:"starts_at"`
 	ExpiresAt               *time.Time `json:"ends_at,omitempty"`
+	TerminatingAt           *time.Time `json:"terminating_at,omitempty"`
 	Status                  string     `json:"status"`
 	CompletionReason        *string    `json:"completion_reason,omitempty"`
 	SellerEarnedCents       int64      `json:"seller_earned_cents"`
@@ -385,7 +386,11 @@ func (s *MarketplaceService) Publish(ctx context.Context, userID int64, isAdmin 
 			if groupErr != nil {
 				return groupErr
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE groups SET rate_multiplier=$1,updated_at=clock_timestamp() WHERE id=$2", *input.UsageRateMultiplier, groupID); err != nil {
+			// Preserve pricing for active orders: each order snapshots usage_rate_multiplier
+			// at checkout (R-4), and only update shared groups.rate_multiplier when no active
+			// rental order is currently bound to this group.
+			if _, err = tx.ExecContext(ctx, `UPDATE groups SET rate_multiplier=$1,updated_at=clock_timestamp()
+ WHERE id=$2 AND NOT EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.group_id=$2 AND o.status='active')`, *input.UsageRateMultiplier, groupID); err != nil {
 				return err
 			}
 			if _, err = tx.ExecContext(ctx, "INSERT INTO scheduler_outbox(event_type,group_id) VALUES('group_changed',$1)", groupID); err != nil {
@@ -458,6 +463,7 @@ func marketplaceLockResource(ctx context.Context, tx *sql.Tx, kind string, id in
 		query = `SELECT COALESCE((SELECT user_id FROM proxy_stewards WHERE proxy_id=p.id),0) FROM proxies p
  WHERE p.id=$1 AND p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>clock_timestamp())
  AND NULLIF(p.exit_ip,'') IS NOT NULL AND NULLIF(p.exit_timezone,'') IS NOT NULL AND p.exit_checked_at IS NOT NULL
+ AND COALESCE(p.source_type,'')<>'edge_landing_grant' AND LOWER(p.host) NOT LIKE '%.edge.internal'
  AND NOT EXISTS(SELECT 1 FROM berth_marketplace_orders o WHERE o.rental_proxy_id=p.id) FOR UPDATE OF p`
 	default:
 		return 0, ErrMarketplaceInvalid
@@ -688,10 +694,10 @@ func (s *MarketplaceService) Checkout(ctx context.Context, userID, listingID int
 				return ErrMarketplaceInvalid
 			}
 			var id int64
-			// Inherit max_accounts, max_rpm, max_concurrency so rented proxy clones
-			// cannot oversubscribe the seller's landing IP.
-			err = tx.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port,username,password,status,expires_at,fallback_mode,backup_proxy_id,expiry_warn_days,exit_ip,exit_country,exit_country_code,exit_region,exit_city,exit_timezone,exit_utc_offset_seconds,exit_asn,exit_isp,exit_checked_at,max_accounts,max_rpm,max_concurrency)
- SELECT 'Berth rental proxy',protocol,host,port,username,password,'active',LEAST(COALESCE(expires_at,$2),$2),'none',NULL,0,exit_ip,exit_country,exit_country_code,exit_region,exit_city,exit_timezone,exit_utc_offset_seconds,exit_asn,exit_isp,exit_checked_at,max_accounts,max_rpm,max_concurrency FROM proxies WHERE id=$1 RETURNING id`, resourceID, *endPtr).Scan(&id)
+			// Inherit max_accounts, max_rpm, max_concurrency and link source_proxy_id
+			// so rented proxy clones aggregate physical proxy capacity (R-7).
+			err = tx.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port,username,password,status,expires_at,fallback_mode,backup_proxy_id,expiry_warn_days,exit_ip,exit_country,exit_country_code,exit_region,exit_city,exit_timezone,exit_utc_offset_seconds,exit_asn,exit_isp,exit_checked_at,max_accounts,max_rpm,max_concurrency,source_proxy_id,source_type)
+ SELECT 'Berth rental proxy',protocol,host,port,username,password,'active',LEAST(COALESCE(expires_at,$2),$2),'none',NULL,0,exit_ip,exit_country,exit_country_code,exit_region,exit_city,exit_timezone,exit_utc_offset_seconds,exit_asn,exit_isp,exit_checked_at,max_accounts,max_rpm,max_concurrency,id,'marketplace_rental' FROM proxies WHERE id=$1 RETURNING id`, resourceID, *endPtr).Scan(&id)
 			if err != nil {
 				return err
 			}
@@ -711,11 +717,15 @@ func (s *MarketplaceService) Checkout(ctx context.Context, userID, listingID int
 			endArg = *endPtr
 		}
 
+		orderRateMult := listing.UsageRateMultiplier
+		if orderRateMult <= 0 {
+			orderRateMult = 1.0
+		}
 		var id int64
-		err = tx.QueryRowContext(ctx, `INSERT INTO berth_marketplace_orders(listing_id,buyer_id,seller_id,idempotency_key,title,resource_type,resource_id,rental_mode,duration_hours,quota_limit_usd,price_cents,group_id,rental_proxy_id,starts_at,expires_at,rent_commission_bps)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,(SELECT rent_commission_bps FROM berth_marketplace_settings WHERE id=1)) RETURNING id`,
+		err = tx.QueryRowContext(ctx, `INSERT INTO berth_marketplace_orders(listing_id,buyer_id,seller_id,idempotency_key,title,resource_type,resource_id,rental_mode,duration_hours,quota_limit_usd,price_cents,group_id,rental_proxy_id,starts_at,expires_at,rent_commission_bps,usage_rate_multiplier)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,(SELECT rent_commission_bps FROM berth_marketplace_settings WHERE id=1),$16) RETURNING id`,
 			listing.ID, userID, listing.SellerID, key, listing.Title, kind, resourceID,
-			listing.RentalMode, durationArg, quotaArg, listing.PriceCents, groupID, proxyID, now, endArg).Scan(&id)
+			listing.RentalMode, durationArg, quotaArg, listing.PriceCents, groupID, proxyID, now, endArg, orderRateMult).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -840,7 +850,8 @@ func (s *MarketplaceService) settleOrder(ctx context.Context, orderID, userID in
 		}
 		var quotaUsedStr string
 		var quotaLimitStr sql.NullString
-		if err = tx.QueryRowContext(ctx, "SELECT quota_used_usd::text,quota_limit_usd::text FROM berth_marketplace_orders WHERE id=$1", order.ID).Scan(&quotaUsedStr, &quotaLimitStr); err != nil {
+		var terminatingAt sql.NullTime
+		if err = tx.QueryRowContext(ctx, "SELECT quota_used_usd::text,quota_limit_usd::text,terminating_at FROM berth_marketplace_orders WHERE id=$1", order.ID).Scan(&quotaUsedStr, &quotaLimitStr, &terminatingAt); err != nil {
 			return err
 		}
 		quotaUsedDec, err := decimal.NewFromString(quotaUsedStr)
@@ -857,7 +868,60 @@ func (s *MarketplaceService) settleOrder(ctx context.Context, orderID, userID in
 
 		timeExpired := order.ExpiresAt != nil && !now.Before(*order.ExpiresAt)
 		quotaExhausted := quotaLimitDec.IsPositive() && quotaUsedDec.GreaterThanOrEqual(quotaLimitDec)
-		if dueOnly && !timeExpired && !quotaExhausted {
+		if dueOnly && !timeExpired && !quotaExhausted && !terminatingAt.Valid {
+			settledOrder = order
+			return nil
+		}
+
+		// Two-phase termination (R-3): if unexpired pre-dispatch quota reservations
+		// are still in flight, enter terminating state immediately (blocking all new
+		// admissions and revoking Edge leases) and defer escrow payout/refund until
+		// in-flight requests finish settling or their reservations expire.
+		var inFlightReservations int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM berth_marketplace_quota_reservations
+ WHERE order_id=$1 AND status='reserved' AND expires_at>$2`, order.ID, now).Scan(&inFlightReservations); err != nil {
+			return err
+		}
+
+		status := "terminated"
+		var completionReason string
+		switch {
+		case quotaExhausted:
+			status = "completed"
+			completionReason = MarketplaceCompletionQuotaExhausted
+		case timeExpired:
+			status = "completed"
+			completionReason = MarketplaceCompletionTimeExpired
+		case order.CompletionReason != nil && strings.TrimSpace(*order.CompletionReason) != "":
+			completionReason = strings.TrimSpace(*order.CompletionReason)
+		case userID == order.BuyerID:
+			completionReason = MarketplaceCompletionBuyerTerminated
+		case userID == order.SellerID:
+			completionReason = MarketplaceCompletionSellerTerminated
+		default:
+			completionReason = MarketplaceCompletionAdminTerminated
+		}
+
+		if inFlightReservations > 0 {
+			if order.RentalProxyID != nil {
+				if _, err = tx.ExecContext(ctx, "UPDATE proxies SET status='expired',expires_at=LEAST(COALESCE(expires_at,$2),$2),updated_at=clock_timestamp() WHERE id=$1", *order.RentalProxyID, now); err != nil {
+					return err
+				}
+			}
+			effectiveTermAt := now
+			if terminatingAt.Valid {
+				effectiveTermAt = terminatingAt.Time
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_orders
+ SET terminating_at=COALESCE(terminating_at,$2),completion_reason=COALESCE(completion_reason,$3)
+ WHERE id=$1`, order.ID, now, completionReason); err != nil {
+				return err
+			}
+			if err = tx.Commit(); err != nil {
+				return err
+			}
+			order.TerminatingAt = &effectiveTermAt
+			order.CompletionReason = &completionReason
 			settledOrder = order
 			return nil
 		}
@@ -872,22 +936,6 @@ func (s *MarketplaceService) settleOrder(ctx context.Context, orderID, userID in
 			quotaUsedDec,
 			quotaLimitDec,
 		)
-		status := "terminated"
-		var completionReason string
-		switch {
-		case quotaExhausted:
-			status = "completed"
-			completionReason = MarketplaceCompletionQuotaExhausted
-		case timeExpired:
-			status = "completed"
-			completionReason = MarketplaceCompletionTimeExpired
-		case userID == order.BuyerID:
-			completionReason = MarketplaceCompletionBuyerTerminated
-		case userID == order.SellerID:
-			completionReason = MarketplaceCompletionSellerTerminated
-		default:
-			completionReason = MarketplaceCompletionAdminTerminated
-		}
 
 		if _, err = tx.ExecContext(ctx, "UPDATE users SET balance=balance+$1::numeric/100,updated_at=clock_timestamp() WHERE id=$2", earned, order.SellerID); err != nil {
 			return err
@@ -908,7 +956,7 @@ func (s *MarketplaceService) settleOrder(ctx context.Context, orderID, userID in
 				return err
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_quota_reservations SET status='released',updated_at=clock_timestamp() WHERE order_id=$1 AND status='reserved'`, order.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_quota_reservations SET status='expired',updated_at=clock_timestamp() WHERE order_id=$1 AND status='reserved'`, order.ID); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_orders SET status=$2,completion_reason=$3,seller_earned_cents=$4,refund_cents=$5,settled_at=$6,platform_commission_cents=$7,quota_reserved_usd=0 WHERE id=$1`,
@@ -932,6 +980,12 @@ func (s *MarketplaceService) settleOrder(ctx context.Context, orderID, userID in
 	if err != nil {
 		return nil, err
 	}
+	if settledOrder != nil && settledOrder.GroupID != nil && *settledOrder.GroupID > 0 &&
+		(settledOrder.Status != "active" || settledOrder.TerminatingAt != nil) {
+		revCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		_, _ = RevokeActiveEdgeLeasesForUserGroup(revCtx, settledOrder.BuyerID, *settledOrder.GroupID)
+		cancel()
+	}
 	if shouldNotify && settledOrder != nil {
 		s.notifyBalances(ctx, settledOrder.BuyerID, settledOrder.SellerID)
 	}
@@ -952,9 +1006,10 @@ func (s *MarketplaceService) notifyBalances(ctx context.Context, ids ...int64) {
 func (s *MarketplaceService) SettleDue(ctx context.Context) (int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM berth_marketplace_orders
  WHERE status='active'
-   AND ((expires_at IS NOT NULL AND expires_at<=clock_timestamp())
+   AND (terminating_at IS NOT NULL
+     OR (expires_at IS NOT NULL AND expires_at<=clock_timestamp())
      OR (quota_limit_usd IS NOT NULL AND quota_used_usd>=quota_limit_usd))
- ORDER BY COALESCE(expires_at,starts_at),id LIMIT 100`)
+ ORDER BY COALESCE(terminating_at,expires_at,starts_at),id LIMIT 100`)
 	if err != nil {
 		return 0, err
 	}

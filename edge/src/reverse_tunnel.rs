@@ -318,12 +318,32 @@ impl ReverseTunnelHub {
     }
 
     pub fn update_peer_keys(&self, updates: HashMap<i64, VerifyingKey>) {
-        if updates.is_empty() {
-            return;
+        let mut revoked_nodes = Vec::new();
+        {
+            let mut map = self.peer_keys.write().unwrap_or_else(|e| e.into_inner());
+            for (&id, old_pk) in map.iter() {
+                match updates.get(&id) {
+                    None => revoked_nodes.push(id),
+                    Some(new_pk) if new_pk.as_bytes() != old_pk.as_bytes() => {
+                        revoked_nodes.push(id);
+                    }
+                    _ => {}
+                }
+            }
+            *map = updates;
         }
-        let mut map = self.peer_keys.write().unwrap_or_else(|e| e.into_inner());
-        for (id, pk) in updates {
-            map.insert(id, pk);
+        // Immediately terminate active reverse tunnels for suspended/revoked or rekeyed peers (S-4).
+        let mut tunnels = self.tunnels.write().unwrap_or_else(|e| e.into_inner());
+        let peer_keys = self.peer_keys.read().unwrap_or_else(|e| e.into_inner());
+        let active_ids: Vec<i64> = tunnels.keys().copied().collect();
+        for id in active_ids {
+            if revoked_nodes.contains(&id) || !peer_keys.contains_key(&id) {
+                if let Some(entry) = tunnels.remove(&id) {
+                    entry.closed.store(true, Ordering::Release);
+                    entry.close_notify.notify_waiters();
+                    warn!("reverse_tunnel closed revoked/suspended peer node_id={id}");
+                }
+            }
         }
     }
 
@@ -623,13 +643,8 @@ impl ReverseTunnelClient {
     }
 
     pub fn update_peer_keys(&self, updates: HashMap<i64, VerifyingKey>) {
-        if updates.is_empty() {
-            return;
-        }
         let mut map = self.peer_keys.write().unwrap_or_else(|e| e.into_inner());
-        for (id, pk) in updates {
-            map.insert(id, pk);
-        }
+        *map = updates;
     }
 
     pub fn is_connected(&self) -> bool {

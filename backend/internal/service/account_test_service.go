@@ -600,10 +600,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Context(), req.Header)
 
-	// Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	// Get proxy URL (fail-closed if account has a bound proxy that is missing or inactive).
+	proxyURL, proxyErr := resolveRequiredProxyURL(ctx, nil, account.ProxyID, account.Proxy)
+	if proxyErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Proxy unavailable: %s", proxyErr.Error()))
 	}
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
@@ -954,10 +954,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	credentialAccount.ApplyHeaderOverrides(req.Context(), req.Header)
 
-	// Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	// Get proxy URL (fail-closed if account has a bound proxy that is missing or inactive).
+	proxyURL, proxyErr := resolveRequiredProxyURL(ctx, nil, account.ProxyID, account.Proxy)
+	if proxyErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Proxy unavailable: %s", proxyErr.Error()))
 	}
 
 	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)

@@ -248,6 +248,42 @@ func AccountCohort(acc *Account) CageCohort {
 	}.Normalized()
 }
 
+// stickyAccountMatchesCohort enforces strict Cage Cohort boundaries on sticky-session
+// fast paths BEFORE returning a sticky hit or extending sticky TTL (C-5).
+func stickyAccountMatchesCohort(ctx context.Context, acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	var target CageCohort
+	var strict, allowHandover bool
+	if req := CageCohortRequestFromContext(ctx); req != nil {
+		target = req.Target
+		strict = req.StrictMode
+		allowHandover = req.AllowHandover
+	} else if pref := WorkSessionPrefFromContext(ctx); pref != nil && pref.CohortTimezone != "" {
+		target = CageCohort{
+			Timezone:    pref.CohortTimezone,
+			CountryCode: pref.CohortCountryCode,
+			ASNClass:    pref.CohortASNClass,
+		}.Normalized()
+		strict = pref.CageStrictMode
+	}
+	if !strict || allowHandover || !target.IsSet() {
+		return true
+	}
+	c := AccountCohort(acc)
+	if !c.IsSet() {
+		return false
+	}
+	if !strings.EqualFold(c.Timezone, target.Timezone) {
+		return false
+	}
+	if target.CountryCode != "" && !strings.EqualFold(c.CountryCode, target.CountryCode) {
+		return false
+	}
+	return true
+}
+
 // FilterCandidatesByCohort applies the 4-level Cage Cohort failover ladder:
 //   - Level 2A: exact exit_timezone + exact exit_country_code + exact asn_class
 //   - Level 2B: exact exit_timezone + exact exit_country_code (any asn_class)

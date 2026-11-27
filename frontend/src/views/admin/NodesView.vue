@@ -460,7 +460,14 @@
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label class="input-label">月流量上限 (GB, 0=不限)</label>
-            <input v-model.number="nodeForm.max_gb_month" type="number" min="0" class="input" />
+            <input
+              v-model.number="nodeForm.max_gb_month"
+              type="number"
+              min="0"
+              class="input"
+              @input="maxGbDirty = true"
+              @change="maxGbDirty = true"
+            />
           </div>
           <div>
             <label class="input-label">状态</label>
@@ -675,24 +682,37 @@ const formatTime = (iso: string): string => {
   }
 }
 
-const deriveRoles = (zoneId: number, connectMode: string, publicAddr: string, isRelay: boolean, isLanding: boolean): string[] => {
-  const roles: string[] = []
+const deriveRoles = (
+  zoneId: number,
+  connectMode: string,
+  publicAddr: string,
+  isRelay: boolean,
+  isLanding: boolean,
+  existingRoles: string[] = [],
+): string[] => {
+  const roles = new Set<string>()
+  // Preserve specialized roles (compat / mgmt_entry) that are not directly toggled in the simplified modal.
+  for (const r of existingRoles) {
+    if (r === 'compat' || r === 'mgmt_entry') {
+      roles.add(r)
+    }
+  }
   if (connectMode !== 'reverse_tunnel' && isRelay) {
-    roles.push('transit')
+    roles.add('transit')
     if (publicAddr.trim() !== '') {
-      roles.push('ingress_relay')
+      roles.add('ingress_relay')
       if (findZone(zoneId)?.default_mgmt_policy === 'entry_required') {
-        roles.push('mgmt_entry')
+        roles.add('mgmt_entry')
       }
     }
   }
   if (isLanding) {
-    roles.push('landing')
+    roles.add('landing')
   }
-  if (roles.length === 0) {
-    roles.push('transit')
+  if (roles.size === 0) {
+    roles.add('transit')
   }
-  return roles
+  return Array.from(roles)
 }
 
 const loadAll = async () => {
@@ -719,27 +739,20 @@ const loadAll = async () => {
 
 const toggleLandingRole = async (node: BerthEdgeNode) => {
   const currentlyLanding = hasRole(node, 'landing')
-  const zoneId = node.zone_id || zones.value[0]?.id || 1
-  const nextRoles = deriveRoles(zoneId, node.connect_mode || 'direct', node.public_addr || '', isRelayNode(node), !currentlyLanding)
+  const nextRolesSet = new Set<string>(node.roles || [])
+  if (currentlyLanding) {
+    nextRolesSet.delete('landing')
+  } else {
+    nextRolesSet.add('landing')
+  }
+  if (nextRolesSet.size === 0) {
+    nextRolesSet.add('transit')
+  }
+  const nextRoles = Array.from(nextRolesSet)
   togglingNodeIds.add(node.id)
   try {
     await berthNetworkAPI.updateNode(node.id, {
-      name: node.name,
-      zone_id: zoneId,
       roles: nextRoles,
-      public_addr: node.public_addr || '',
-      tunnel_addr: node.tunnel_addr || '',
-      mgmt_entry_addr: node.mgmt_entry_addr || '',
-      connect_mode: node.connect_mode || 'direct',
-      provider_region: node.provider_region || '',
-      exit_ip: node.exit_ip || '',
-      exit_country_code: node.exit_country_code || '',
-      exit_timezone: node.exit_timezone || '',
-      exit_locale: node.exit_locale || '',
-      exit_asn_class: node.exit_asn_class || '',
-      pubkey_ed25519: node.pubkey_ed25519 || '',
-      status: node.status,
-      max_bytes_month: node.max_bytes_month,
     })
     appStore.showSuccess(
       currentlyLanding
@@ -757,6 +770,8 @@ const toggleLandingRole = async (node: BerthEdgeNode) => {
 // Create / Edit Node Modal
 const showNodeModal = ref(false)
 const editingNodeId = ref<number | null>(null)
+const editingNodeOriginal = ref<BerthEdgeNode | null>(null)
+const maxGbDirty = ref(false)
 const nodeForm = reactive({
   name: '',
   zone_id: 1,
@@ -777,6 +792,8 @@ const nodeForm = reactive({
 
 const openCreateNodeModal = () => {
   editingNodeId.value = null
+  editingNodeOriginal.value = null
+  maxGbDirty.value = false
   nodeForm.name = ''
   nodeForm.zone_id = zones.value.find((z) => z.slug === 'overseas')?.id || zones.value[0]?.id || 1
   nodeForm.connect_mode = 'direct'
@@ -797,6 +814,8 @@ const openCreateNodeModal = () => {
 
 const openEditNodeModal = (node: BerthEdgeNode) => {
   editingNodeId.value = node.id
+  editingNodeOriginal.value = node
+  maxGbDirty.value = false
   nodeForm.name = node.name
   nodeForm.zone_id = node.zone_id || zones.value[0]?.id || 1
   nodeForm.connect_mode = node.connect_mode || 'direct'
@@ -822,10 +841,17 @@ const submitNode = async () => {
   }
   const publicAddr = nodeForm.connect_mode === 'reverse_tunnel' ? '' : nodeForm.public_addr.trim()
   const tunnelAddr = nodeForm.connect_mode === 'reverse_tunnel' ? '' : nodeForm.tunnel_addr.trim()
-  const roles = deriveRoles(nodeForm.zone_id, nodeForm.connect_mode, publicAddr, nodeForm.is_relay, nodeForm.is_landing)
+  const roles = deriveRoles(
+    nodeForm.zone_id,
+    nodeForm.connect_mode,
+    publicAddr,
+    nodeForm.is_relay,
+    nodeForm.is_landing,
+    editingNodeOriginal.value?.roles || [],
+  )
   submitting.value = true
   try {
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: nodeForm.name.trim(),
       zone_id: nodeForm.zone_id,
       roles,
@@ -839,13 +865,15 @@ const submitNode = async () => {
       exit_locale: nodeForm.exit_locale.trim(),
       pubkey_ed25519: nodeForm.pubkey_ed25519.trim(),
       status: nodeForm.status,
-      max_bytes_month: nodeForm.max_gb_month > 0 ? Math.round(nodeForm.max_gb_month * 1024 * 1024 * 1024) : 0,
+    }
+    if (!editingNodeId.value || maxGbDirty.value) {
+      payload.max_bytes_month = nodeForm.max_gb_month > 0 ? Math.round(nodeForm.max_gb_month * 1024 * 1024 * 1024) : 0
     }
     if (editingNodeId.value) {
       await berthNetworkAPI.updateNode(editingNodeId.value, payload)
       appStore.showSuccess('节点已更新（配置将在 ≤15 秒内心跳热同步）')
     } else {
-      await berthNetworkAPI.createNode(payload)
+      await berthNetworkAPI.createNode(payload as any)
       appStore.showSuccess('服务器节点已创建')
     }
     showNodeModal.value = false

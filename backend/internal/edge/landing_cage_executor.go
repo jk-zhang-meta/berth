@@ -158,11 +158,17 @@ func (e *LandingCageExecutor) getOrCreateEntry(accountID, cageEpoch int64, prese
 
 	var evicted []*landingTransportEntry
 	e.mu.Lock()
-	if prevEpoch, seen := e.accountEpoch[accountID]; seen && cageEpoch > prevEpoch {
-		// Monotonic CageEpoch bump: atomically wipe old transports AND TLS PSK tickets!
-		evicted = e.evictAccountLocked(accountID)
+	if prevEpoch, seen := e.accountEpoch[accountID]; seen && accountID > 0 && cageEpoch > 0 {
+		if cageEpoch < prevEpoch {
+			e.mu.Unlock()
+			return nil, fmt.Errorf("landing cage: stale cage_epoch %d < current %d for account %d", cageEpoch, prevEpoch, accountID)
+		}
+		if cageEpoch > prevEpoch {
+			// Monotonic CageEpoch bump: atomically wipe old transports AND TLS PSK tickets!
+			evicted = e.evictAccountLocked(accountID)
+		}
 	}
-	if cageEpoch > e.accountEpoch[accountID] {
+	if accountID > 0 && cageEpoch > e.accountEpoch[accountID] {
 		e.accountEpoch[accountID] = cageEpoch
 	}
 	if existing, ok := e.entries[key]; ok {
@@ -307,7 +313,7 @@ func (e *LandingCageExecutor) DoHTTP(ctx context.Context, req *http.Request, lea
 
 	outReq := req.Clone(ctx)
 	outReq.RequestURI = ""
-	if outReq.Header.Get("Accept-Language") == "" && locale != "" {
+	if locale != "" && (accountID > 0 || outReq.Header.Get("Accept-Language") == "") {
 		outReq.Header.Set("Accept-Language", AcceptLanguageForLocale(locale))
 	}
 

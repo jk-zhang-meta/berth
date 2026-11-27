@@ -35,12 +35,9 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 	} else {
 		protocol := c.Query("protocol")
 		status := c.Query("status")
-		search := strings.TrimSpace(c.Query("search"))
+		search := service.TruncateUTF8Bytes(strings.TrimSpace(c.Query("search")), 100)
 		sortBy := c.DefaultQuery("sort_by", "id")
 		sortOrder := c.DefaultQuery("sort_order", "desc")
-		if len(search) > 100 {
-			search = search[:100]
-		}
 
 		proxies, err = h.listProxiesFiltered(ctx, protocol, status, search, sortBy, sortOrder)
 		if err != nil {
@@ -146,12 +143,24 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 			key = buildProxyKey(item.Protocol, item.Host, item.Port, item.Username, item.Password)
 		}
 
+		diagKey := fmt.Sprintf("%s://%s:%d#%d", strings.TrimSpace(item.Protocol), strings.TrimSpace(item.Host), item.Port, i+1)
+		if service.IsReservedEdgeInternalHost(item.Host) {
+			result.ProxyFailed++
+			result.Errors = append(result.Errors, DataImportError{
+				Kind:     "proxy",
+				Name:     item.Name,
+				ProxyKey: diagKey,
+				Message:  service.ErrReservedEdgeInternalHost.Error(),
+			})
+			continue
+		}
+
 		if err := validateDataProxy(item); err != nil {
 			result.ProxyFailed++
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:     "proxy",
 				Name:     item.Name,
-				ProxyKey: key,
+				ProxyKey: diagKey,
 				Message:  err.Error(),
 			})
 			continue
@@ -204,7 +213,7 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 					result.Errors = append(result.Errors, DataImportError{
 						Kind:     "proxy",
 						Name:     item.Name,
-						ProxyKey: key,
+						ProxyKey: diagKey,
 						Message:  "update status failed: " + err.Error(),
 					})
 				}
@@ -232,7 +241,7 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 				result.Errors = append(result.Errors, DataImportError{
 					Kind:     "proxy",
 					Name:     item.Name,
-					ProxyKey: key,
+					ProxyKey: diagKey,
 					Message:  fmt.Sprintf("backup_proxy_name %q not found, fallback_mode downgraded to none", item.BackupProxyName),
 				})
 			}
@@ -258,7 +267,7 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:     "proxy",
 				Name:     item.Name,
-				ProxyKey: key,
+				ProxyKey: diagKey,
 				Message:  err.Error(),
 			})
 			continue

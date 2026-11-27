@@ -180,6 +180,21 @@ func stripAdminExtraKeys(extra map[string]any) {
 			delete(extra, k)
 		}
 	}
+	for _, k := range []string{
+		"window_cost_limit",
+		"window_cost_sticky_reserve",
+		"max_sessions",
+		"session_idle_timeout_minutes",
+		"base_rpm",
+		"rpm_strategy",
+		"rpm_sticky_buffer",
+		"user_msg_queue_mode",
+		"quota_limit",
+		"quota_daily_limit",
+		"quota_weekly_limit",
+	} {
+		delete(extra, k)
+	}
 }
 
 func accountCreatePolicy(c *gin.Context, input *service.CreateAccountInput) *service.CreateAccountInput {

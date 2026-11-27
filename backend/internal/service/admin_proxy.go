@@ -58,6 +58,9 @@ func (s *adminServiceImpl) GetProxiesByIDs(ctx context.Context, ids []int64) ([]
 }
 
 func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error) {
+	if IsReservedEdgeInternalHost(input.Host) {
+		return nil, ErrReservedEdgeInternalHost
+	}
 	if !isJSONTimeInRange(input.ExpiresAt) {
 		return nil, infraerrors.BadRequest("PROXY_EXPIRY_INVALID", "proxy expiry year must be between 0 and 9999")
 	}
@@ -120,6 +123,11 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		count, countErr := s.proxyRepo.CountAccountsByProxyID(ctx, id)
 		if countErr != nil {
 			return nil, countErr
+		}
+		if s.marketplace != nil {
+			if famCount, _, famErr := s.marketplace.PhysicalProxyFamilyCapacity(ctx, id); famErr == nil && famCount > count {
+				count = famCount
+			}
 		}
 		if count > int64(*input.MaxAccounts) {
 			return nil, infraerrors.BadRequest("PROXY_ACCOUNT_CAPACITY_TOO_LOW",
@@ -189,7 +197,10 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		proxy.MaxConcurrency = *input.MaxConcurrency
 	}
 
-	edgeLandingManaged := s.enforceEdgeLandingProxyTransport(ctx, proxy, origProtocol, origHost, origPort)
+	edgeLandingManaged, err := s.enforceEdgeLandingProxyTransport(ctx, proxy, origProtocol, origHost, origPort)
+	if err != nil {
+		return nil, err
+	}
 
 	var exitInfo *ProxyExitInfo
 	var latencyMs int64
@@ -210,6 +221,9 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 }
 
 func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
+	if err := s.checkManagedProxyDeletable(ctx, id); err != nil {
+		return err
+	}
 	count, err := s.proxyRepo.CountAccountsByProxyID(ctx, id)
 	if err != nil {
 		return err
@@ -227,6 +241,13 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 	}
 
 	for _, id := range ids {
+		if err := s.checkManagedProxyDeletable(ctx, id); err != nil {
+			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
+				ID:     id,
+				Reason: err.Error(),
+			})
+			continue
+		}
 		count, err := s.proxyRepo.CountAccountsByProxyID(ctx, id)
 		if err != nil {
 			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
@@ -298,14 +319,31 @@ func (s *adminServiceImpl) validateVerifiedProxyBindingCapacity(ctx context.Cont
 			}
 		}
 	}
-	if proxy.MaxAccounts > 0 && additional > 0 {
-		count, err := s.proxyRepo.CountAccountsByProxyID(ctx, *proxyID)
-		if err != nil {
-			return err
+	if additional > 0 {
+		effectiveMax := proxy.MaxAccounts
+		var count int64
+		if s.marketplace != nil {
+			famCount, rootMax, famErr := s.marketplace.PhysicalProxyFamilyCapacity(ctx, *proxyID)
+			if famErr != nil {
+				return famErr
+			}
+			count = famCount
+			if rootMax > 0 && (effectiveMax <= 0 || rootMax < effectiveMax) {
+				effectiveMax = rootMax
+			}
 		}
-		if count+additional > int64(proxy.MaxAccounts) {
-			return infraerrors.BadRequest("PROXY_ACCOUNT_CAPACITY_EXCEEDED",
-				fmt.Sprintf("proxy account capacity exceeded: %d current + %d new > %d max", count, additional, proxy.MaxAccounts))
+		if effectiveMax > 0 {
+			if s.marketplace == nil {
+				var err error
+				count, err = s.proxyRepo.CountAccountsByProxyID(ctx, *proxyID)
+				if err != nil {
+					return err
+				}
+			}
+			if count+additional > int64(effectiveMax) {
+				return infraerrors.BadRequest("PROXY_ACCOUNT_CAPACITY_EXCEEDED",
+					fmt.Sprintf("proxy account capacity exceeded: %d current + %d new > %d max", count, additional, effectiveMax))
+			}
 		}
 	}
 	return nil
@@ -324,12 +362,13 @@ func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestR
 		return nil, err
 	}
 
+	origProto, origHost, origPort := proxy.Protocol, proxy.Host, proxy.Port
 	exitInfo, latencyMs, checkedAt, err := s.probeVerifiedProxyExit(ctx, proxy)
 	if err != nil {
 		s.saveProxyLatency(ctx, id, &ProxyLatencyInfo{Success: false, Message: err.Error(), UpdatedAt: time.Now()})
 		return &ProxyTestResult{Success: false, Message: err.Error()}, nil
 	}
-	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
+	if err := s.persistProxyExitProfile(ctx, proxy, origProto, origHost, origPort); err != nil {
 		return nil, err
 	}
 	s.saveVerifiedProxyProbe(ctx, id, exitInfo, latencyMs, checkedAt)
@@ -455,6 +494,7 @@ func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*Pr
 		Items:     make([]ProxyQualityCheckItem, 0, len(proxyQualityTargets)+1),
 	}
 
+	origProto, origHost, origPort := proxy.Protocol, proxy.Host, proxy.Port
 	proxyURL := proxy.URL()
 	if s.proxyProber == nil {
 		result.Items = append(result.Items, ProxyQualityCheckItem{
@@ -494,7 +534,7 @@ func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*Pr
 		s.saveProxyQualitySnapshot(ctx, id, result, nil)
 		return result, nil
 	}
-	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
+	if err := s.persistProxyExitProfile(ctx, proxy, origProto, origHost, origPort); err != nil {
 		return nil, err
 	}
 	s.saveVerifiedProxyProbe(ctx, id, exitInfo, latencyMs, checkedAt)

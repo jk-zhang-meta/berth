@@ -352,20 +352,18 @@ var (
 		return 1
 	`)
 
-	// startupCleanupSlotScript 清理单个槽位 key 中非当前进程前缀的成员，避免 Redis Cluster CROSSSLOT。
-	// KEYS[1] 是有序集合键，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
-	// 返回 {清除数量, 剩余成员数}，Go 侧据剩余数决定索引 member 去留，无需再回读槽位。
+	// startupCleanupSlotScript 清理单个槽位 key 中已过期的成员（score <= now - slotTTL），
+	// 严禁按进程前缀删除其它存活副本的未过期活跃槽位（K-2 多副本安全）。
+	// KEYS[1] 是有序集合键，ARGV[1] 保留兼容（不再按前缀误删），ARGV[2] 是槽位 TTL（秒）。
+	// 返回 {清除数量, 剩余成员数}，Go 侧据剩余数决定索引 member 与等待键去留。
 	startupCleanupSlotScript = redis.NewScript(`
+		redis.replicate_commands()
 		local key = KEYS[1]
-		local activePrefix = ARGV[1]
 		local slotTTL = tonumber(ARGV[2])
-		local removed = 0
-		local members = redis.call('ZRANGE', key, 0, -1)
-		for _, member in ipairs(members) do
-			if string.sub(member, 1, string.len(activePrefix)) ~= activePrefix then
-				removed = removed + redis.call('ZREM', key, member)
-			end
-		end
+		local timeResult = redis.call('TIME')
+		local now = tonumber(timeResult[1])
+		local expireBefore = now - slotTTL
+		local removed = redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 		local remaining = redis.call('ZCARD', key)
 		if remaining == 0 then
 			redis.call('DEL', key)
@@ -1336,16 +1334,17 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 		if err != nil {
 			return fmt.Errorf("cleanup stale process slots %s: %w", spec.slotKey(id), err)
 		}
-		// 等待计数属于已死进程，直接删除；剩余槽位（当前进程前缀）决定索引 member 去留。
-		if err := c.rdb.Del(ctx, spec.waitKey(id)).Err(); err != nil {
-			return fmt.Errorf("delete stale wait key %s: %w", spec.waitKey(id), err)
-		}
 		if remaining > 0 {
+			// Active non-expired slots still exist (potentially owned by sibling replicas);
+			// NEVER wipe live wait counters while slots remain active (K-2).
 			refreshed = append(refreshed, redis.Z{
 				Score:  float64(now + int64(c.slotTTLSeconds)),
 				Member: member,
 			})
 		} else {
+			if err := c.rdb.Del(ctx, spec.waitKey(id)).Err(); err != nil {
+				return fmt.Errorf("delete stale wait key %s: %w", spec.waitKey(id), err)
+			}
 			staleMembers = append(staleMembers, member)
 		}
 	}

@@ -47,7 +47,8 @@ func TestMarketplaceUsageSnapshotIsRequestLocalAndRefreshes(t *testing.T) {
 	second, err := svc.GetByKey(ctx, "same-cached-key")
 	require.NoError(t, err)
 	require.Equal(t, 5000, second.MarketplaceUsage.CommissionBPS)
-	require.Equal(t, 4.0, second.Group.RateMultiplier)
+	// Active order preserves its checkout usage_rate_multiplier (R-4) even after seller raises listing rate to 4.0.
+	require.Equal(t, 2.5, second.Group.RateMultiplier)
 	require.Equal(t, original, *first.MarketplaceUsage)
 	require.Equal(t, 2.5, first.Group.RateMultiplier)
 	require.Equal(t, 99.0, cache.entry.Snapshot.Group.RateMultiplier)
@@ -57,7 +58,7 @@ func TestMarketplaceUsageSnapshotIsRequestLocalAndRefreshes(t *testing.T) {
 	require.NotSame(t, first, refreshed)
 	require.NotSame(t, first.MarketplaceUsage, refreshed.MarketplaceUsage)
 	require.Equal(t, 5000, refreshed.MarketplaceUsage.CommissionBPS)
-	require.Equal(t, 4.0, refreshed.Group.RateMultiplier)
+	require.Equal(t, 2.5, refreshed.Group.RateMultiplier)
 	require.Equal(t, original, *first.MarketplaceUsage)
 	require.Equal(t, 2.5, first.Group.RateMultiplier)
 	_, err = market.Terminate(ctx, 2, false, rental.ID)

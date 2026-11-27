@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jk-zhang-meta/berth/internal/pkg/proxyutil"
 )
@@ -58,6 +59,18 @@ func EdgeInternalProxyHost(nodeID int64) string {
 	return fmt.Sprintf("node-%d%s", nodeID, edgeInternalHostSuffix)
 }
 
+// IsReservedEdgeInternalHost reports whether host targets Berth's reserved
+// internal virtual landing namespace (`edge.internal` or `*.edge.internal`).
+// User-supplied external proxy creation/updates MUST reject reserved hosts.
+func IsReservedEdgeInternalHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return false
+	}
+	return h == strings.TrimPrefix(edgeInternalHostSuffix, ".") || strings.HasSuffix(h, edgeInternalHostSuffix)
+}
+
 // ParseEdgeInternalNodeID parses a canonical `node-<id>` selector into a positive node ID.
 func ParseEdgeInternalNodeID(selector string) (int64, bool) {
 	s := strings.ToLower(strings.TrimSpace(selector))
@@ -71,19 +84,30 @@ func ParseEdgeInternalNodeID(selector string) (int64, bool) {
 	return id, true
 }
 
-func truncateRunes(s string, maxRunes int) string {
-	if maxRunes <= 0 {
+// TruncateUTF8Bytes truncates s so its UTF-8 byte length is <= maxBytes without
+// splitting a multi-byte rune. This aligns SQL inserts with Ent's byte-length MaxLen checks.
+func TruncateUTF8Bytes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
+	if len(s) <= maxBytes {
 		return s
 	}
-	return string(runes[:maxRunes])
+	n := maxBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func formatEdgeLandingProxyName(nodeName string, userID int64) string {
-	return truncateRunes(fmt.Sprintf("edge-landing-%s-u%d", strings.TrimSpace(nodeName), userID), 100)
+	const prefix = "edge-landing-"
+	suffix := fmt.Sprintf("-u%d", userID)
+	budget := 100 - len(prefix) - len(suffix)
+	if budget < 0 {
+		return TruncateUTF8Bytes(prefix+suffix, 100)
+	}
+	return prefix + TruncateUTF8Bytes(strings.TrimSpace(nodeName), budget) + suffix
 }
 
 func findEdgeLandingNode(nodes []EdgeNode, selector string) *EdgeNode {
@@ -239,6 +263,16 @@ func (s *BerthEdgeLeaseService) ExecuteOAuthTaskSyncForAccount(ctx context.Conte
 	}
 	if targetNode.Status != EdgeNodeStatusActive && targetNode.Status != EdgeNodeStatusDraining {
 		return nil, fmt.Errorf("edge landing node %q is %s (must be active)", nodeName, targetNode.Status)
+	}
+	if !targetNode.HasRole(EdgeRoleLanding) && !targetNode.HasRole(EdgeRoleCompat) {
+		return nil, fmt.Errorf("edge landing node %q does not have landing role", nodeName)
+	}
+	if accountID > 0 {
+		if authVerifier, ok := s.store.(edgeLandingOAuthAuthVerifier); ok {
+			if err := authVerifier.VerifyAccountEdgeLandingAuthorization(ctx, accountID, targetNode.ID); err != nil {
+				return nil, fmt.Errorf("edge landing OAuth authorization denied for account %d on node %d: %w", accountID, targetNode.ID, err)
+			}
+		}
 	}
 
 	var bodyBytes []byte
@@ -434,6 +468,30 @@ func ProbeEdgeLandingNode(ctx context.Context, nodeName string) (*ProxyExitInfo,
 		CountryCode: strings.ToUpper(strings.TrimSpace(n.ExitCountryCode)),
 		Timezone:    strings.TrimSpace(n.ExitTimezone),
 		ASN:         strings.TrimSpace(n.ExitASNClass),
-		ISP:         "Berth Edge Landing (" + n.Name + ")",
+		ISP:         TruncateUTF8Bytes("Berth Edge Landing ("+n.Name+")", 255),
 	}, latencyMs, nil
+}
+
+// CancelPendingOAuthTasksForNode cancels all queued (not yet completed) OAuth tasks
+// targeting nodeID (used when a landing grant or node authorization is revoked).
+func (s *BerthEdgeLeaseService) CancelPendingOAuthTasksForNode(nodeID int64, reason string) int {
+	if s == nil || nodeID <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	var ids []string
+	for _, t := range s.oauthTasksByNode[nodeID] {
+		if t.Status == "pending" || t.Status == "claimed" {
+			ids = append(ids, t.TaskID)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		s.CancelOAuthTask(nodeID, id, reason)
+	}
+	return len(ids)
+}
+
+type edgeLandingOAuthAuthVerifier interface {
+	VerifyAccountEdgeLandingAuthorization(ctx context.Context, accountID, targetNodeID int64) error
 }

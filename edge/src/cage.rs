@@ -34,7 +34,7 @@ fn has_secret_headers(headers: &HeaderMap) -> bool {
     headers.keys().any(|k| {
         matches!(
             k.as_str().to_ascii_lowercase().as_str(),
-            "authorization" | "cookie" | "x-api-key" | "proxy-authorization"
+            "authorization" | "cookie" | "x-api-key" | "x-goog-api-key" | "proxy-authorization"
         )
     })
 }
@@ -101,10 +101,10 @@ impl LandingCageExecutor {
         st.tls_configs.retain(|k, _| k.account_id != account_id);
     }
 
-    fn tls_config_for(&self, account_id: i64, cage_epoch: i64) -> Arc<ClientConfig> {
-        // Never share TLS session tickets across unassociated / OAuth signup calls (account_id <= 0).
-        if account_id <= 0 {
-            return build_no_resumption_tls_config();
+    fn tls_config_for(&self, account_id: i64, cage_epoch: i64) -> Result<Arc<ClientConfig>, UpstreamError> {
+        // Never share TLS session tickets across unassociated / OAuth signup calls (account_id <= 0 or cage_epoch <= 0).
+        if account_id <= 0 || cage_epoch <= 0 {
+            return Ok(build_no_resumption_tls_config());
         }
         let key = AccountCageKey {
             account_id,
@@ -112,6 +112,11 @@ impl LandingCageExecutor {
         };
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&prev) = st.account_epoch.get(&account_id) {
+            if cage_epoch < prev {
+                return Err(UpstreamError::Http(format!(
+                    "stale cage_epoch {cage_epoch} < current {prev} for account {account_id}"
+                )));
+            }
             if cage_epoch > prev {
                 st.tls_configs.retain(|k, _| k.account_id != account_id);
             }
@@ -121,7 +126,7 @@ impl LandingCageExecutor {
             *cur = cage_epoch;
         }
         if let Some(cfg) = st.tls_configs.get(&key) {
-            return Arc::clone(cfg);
+            return Ok(Arc::clone(cfg));
         }
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let mut cfg = ClientConfig::builder_with_provider(provider)
@@ -136,7 +141,7 @@ impl LandingCageExecutor {
         cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
         let arc = Arc::new(cfg);
         st.tls_configs.insert(key, Arc::clone(&arc));
-        arc
+        Ok(arc)
     }
 
     /// Executes an SSRF-guarded HTTP/SSE request with strict HTTPS enforcement and optional
@@ -209,7 +214,8 @@ impl LandingCageExecutor {
                 format!("{host}:{port}")
             };
             req_builder = req_builder.header(http::header::HOST, host_header);
-            if !headers.contains_key(http::header::ACCEPT_LANGUAGE) && !locale.is_empty() {
+            let enforce_accept_lang = account_id > 0 && !locale.is_empty();
+            if enforce_accept_lang || (!headers.contains_key(http::header::ACCEPT_LANGUAGE) && !locale.is_empty()) {
                 if let Ok(val) = HeaderValue::from_str(&accept_language_for_locale(locale)) {
                     req_builder = req_builder.header(http::header::ACCEPT_LANGUAGE, val);
                 }
@@ -219,7 +225,8 @@ impl LandingCageExecutor {
                 if matches!(
                     lk.as_str(),
                     "host" | "connection" | "transfer-encoding" | "content-length" | "upgrade"
-                ) {
+                ) || (enforce_accept_lang && lk == "accept-language")
+                {
                     continue;
                 }
                 req_builder = req_builder.header(k.clone(), v.clone());
@@ -229,7 +236,7 @@ impl LandingCageExecutor {
                 .map_err(|e| UpstreamError::Http(format!("build upstream req: {e}")))?;
 
             let resp = if is_https {
-                let tls_cfg = self.tls_config_for(account_id, cage_epoch);
+                let tls_cfg = self.tls_config_for(account_id, cage_epoch)?;
                 let tls_stream = self.guard.dial_validated_tls(&host, port, tls_cfg).await?;
                 send_http1_over_io(tls_stream, req).await?
             } else {
@@ -349,12 +356,12 @@ impl LandingCageExecutor {
         let parsed = Url::parse(target_url)
             .map_err(|e| UpstreamError::Http(format!("invalid ws url: {e}")))?;
         let is_tls = parsed.scheme().eq_ignore_ascii_case("wss");
-        let (account_id, cage_epoch) = match lease {
-            Some(l) => (l.account_id, l.cage_epoch),
-            None => (0, 0),
+        let (account_id, cage_epoch, locale) = match lease {
+            Some(l) => (l.account_id, l.cage_epoch, l.cohort_locale.as_str()),
+            None => (0, 0, ""),
         };
         let stream: BoxedWsIo = if is_tls {
-            let tls_cfg = self.tls_config_for(account_id, cage_epoch);
+            let tls_cfg = self.tls_config_for(account_id, cage_epoch)?;
             let tls = self.guard.dial_validated_tls(&host, port, tls_cfg).await?;
             Box::new(tls)
         } else {
@@ -385,12 +392,20 @@ impl LandingCageExecutor {
         let mut req = format!(
             "GET {path} HTTP/1.1\r\nHost: {host_hdr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {sec_key}\r\nSec-WebSocket-Version: 13\r\n"
         );
+        let enforce_accept_lang = account_id > 0 && !locale.is_empty();
+        if enforce_accept_lang {
+            req.push_str(&format!(
+                "Accept-Language: {}\r\n",
+                accept_language_for_locale(locale)
+            ));
+        }
         for (k, v) in headers {
             let lk = k.as_str().to_ascii_lowercase();
             if lk == "host"
                 || lk == "upgrade"
                 || lk == "connection"
                 || lk.starts_with("sec-websocket-")
+                || (enforce_accept_lang && lk == "accept-language")
             {
                 continue;
             }
@@ -535,15 +550,27 @@ pub fn apply_credential_headers(dst: &mut HeaderMap, headers: &HashMap<String, S
 }
 
 pub fn rewrite_url_for_credential_base(raw_up_url: &str, raw_base_url: &str) -> String {
+    rewrite_url_for_credential_base_strict(raw_up_url, raw_base_url)
+        .unwrap_or_else(|_| raw_up_url.to_string())
+}
+
+/// Fail-closed URL rewrite against Central's authoritative credential base_url (S-5).
+/// Returns an error if `raw_base_url` is non-empty yet malformed or lacks a host so
+/// credentials are NEVER sent to a caller-supplied fallback origin.
+pub fn rewrite_url_for_credential_base_strict(
+    raw_up_url: &str,
+    raw_base_url: &str,
+) -> Result<String, UpstreamError> {
     let raw_base = raw_base_url.trim();
     if raw_base.is_empty() {
-        return raw_up_url.to_string();
+        return Ok(raw_up_url.to_string());
     }
-    let (Ok(orig), Ok(base)) = (Url::parse(raw_up_url), Url::parse(raw_base)) else {
-        return raw_up_url.to_string();
-    };
-    let Some(base_host) = base.host_str() else {
-        return raw_up_url.to_string();
+    let orig = Url::parse(raw_up_url)
+        .map_err(|e| UpstreamError::Http(format!("invalid upstream target url: {e}")))?;
+    let base = Url::parse(raw_base)
+        .map_err(|e| UpstreamError::Http(format!("invalid credential base_url: {e}")))?;
+    let Some(base_host) = base.host_str().filter(|h| !h.is_empty()) else {
+        return Err(UpstreamError::Http("credential base_url missing host".into()));
     };
     let mut scheme = if base.scheme().is_empty() {
         orig.scheme().to_string()
@@ -596,10 +623,10 @@ pub fn rewrite_url_for_credential_base(raw_up_url: &str, raw_base_url: &str) -> 
         Some(p) => format!("{base_host}:{p}"),
         None => base_host.to_string(),
     };
-    match orig.query() {
+    Ok(match orig.query() {
         Some(q) => format!("{scheme}://{host_port}{final_path}?{q}"),
         None => format!("{scheme}://{host_port}{final_path}"),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -620,5 +647,19 @@ mod tests {
             ),
             "https://chatgpt.com/backend-api/codex/responses?stream=1"
         );
+        // S-5: strict rewrite fails closed on malformed base_url and treats x-goog-api-key as secret.
+        assert!(
+            rewrite_url_for_credential_base_strict("https://api.openai.com/v1/responses", "://bad-url")
+                .is_err()
+        );
+        let mut h = HeaderMap::new();
+        h.insert("x-goog-api-key", HeaderValue::from_static("AIza-secret"));
+        assert!(has_secret_headers(&h));
+
+        // C-9: LandingCageExecutor rejects stale cage_epoch regression.
+        let exec = LandingCageExecutor::new(Arc::new(CompatSsrfGuard::new(&[], &[])));
+        assert!(exec.tls_config_for(23, 3).is_ok());
+        assert!(exec.tls_config_for(23, 2).is_err());
+        assert!(exec.tls_config_for(23, 4).is_ok());
     }
 }

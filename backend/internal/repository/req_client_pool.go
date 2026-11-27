@@ -47,6 +47,12 @@ func getSharedReqClient(opts reqClientOptions) (*req.Client, error) {
 	}
 
 	client := req.C().SetTimeout(opts.Timeout)
+	// Prevent cross-account TLS session ticket/PSK correlation across shared OAuth
+	// refresh HTTP clients (C-10).
+	if tlsCfg := client.GetTLSClientConfig(); tlsCfg != nil {
+		tlsCfg.SessionTicketsDisabled = true
+		tlsCfg.ClientSessionCache = nil
+	}
 	if opts.ForceHTTP2 {
 		client = client.EnableForceHTTP2()
 	}

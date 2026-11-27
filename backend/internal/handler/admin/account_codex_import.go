@@ -418,10 +418,27 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			continue
 		}
 		if account != nil {
-			index.Add(*account)
 			if h.stewards != nil {
-				_ = h.stewards.ClaimAccount(ctx, account.ID, callerID)
+				if claimErr := h.stewards.ClaimAccount(ctx, account.ID, callerID); claimErr != nil {
+					if caller.restricted {
+						_ = h.adminService.DeleteAccount(ctx, account.ID)
+						result.Failed++
+						result.Items = append(result.Items, CodexSessionImportItem{
+							Index:   entry.Index,
+							Name:    accountName,
+							Action:  "failed",
+							Message: claimErr.Error(),
+						})
+						result.Errors = append(result.Errors, CodexSessionImportMessage{
+							Index:   entry.Index,
+							Name:    accountName,
+							Message: claimErr.Error(),
+						})
+						continue
+					}
+				}
 			}
+			index.Add(*account)
 		}
 		result.Created++
 		accountID := int64(0)

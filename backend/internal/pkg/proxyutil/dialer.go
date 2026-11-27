@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jk-zhang-meta/berth/internal/util/urlvalidator"
 	"golang.org/x/net/proxy"
 )
 
@@ -52,7 +53,26 @@ var socks5ForwardDialer = &net.Dialer{
 //
 // 返回：
 //   - error: 代理配置错误（协议不支持或 dialer 创建失败）
+type safeContextDialer struct {
+	dialFn func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+func (d safeContextDialer) Dial(network, addr string) (net.Conn, error) {
+	return d.dialFn(context.Background(), network, addr)
+}
+
+func (d safeContextDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return d.dialFn(ctx, network, addr)
+}
+
 func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error {
+	return ConfigureTransportProxyWithPolicy(transport, proxyURL, true)
+}
+
+// ConfigureTransportProxyWithPolicy configures transport for proxyURL and, when
+// allowPrivateProxy is false, pins a DNS-rebinding-safe dialer on the first-hop
+// proxy TCP connect so user-supplied proxy hostnames cannot reach loopback/RFC1918/IMDS/Tailscale IPs.
+func ConfigureTransportProxyWithPolicy(transport *http.Transport, proxyURL *url.URL, allowPrivateProxy bool) error {
 	if proxyURL == nil {
 		return nil
 	}
@@ -61,10 +81,17 @@ func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error
 	switch scheme {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(proxyURL)
+		if !allowPrivateProxy {
+			transport.DialContext = urlvalidator.NewSafeDialContext(socks5ForwardDialer, false)
+		}
 		return nil
 
 	case "socks5", "socks5h":
-		dialer, err := proxy.FromURL(proxyURL, socks5ForwardDialer)
+		var forward proxy.Dialer = socks5ForwardDialer
+		if !allowPrivateProxy {
+			forward = safeContextDialer{dialFn: urlvalidator.NewSafeDialContext(socks5ForwardDialer, false)}
+		}
+		dialer, err := proxy.FromURL(proxyURL, forward)
 		if err != nil {
 			return fmt.Errorf("create socks5 dialer: %w", err)
 		}

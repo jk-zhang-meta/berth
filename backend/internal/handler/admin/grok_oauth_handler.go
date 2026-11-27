@@ -523,7 +523,13 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, userID
 		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(err)}}
 	}
 	if account != nil && h.stewards != nil && userID > 0 {
-		_ = h.stewards.ClaimAccount(ctx, account.ID, userID)
+		if claimErr := h.stewards.ClaimAccount(ctx, account.ID, userID); claimErr != nil {
+			if req.skipDefaultGroupBind {
+				_ = h.adminService.DeleteAccount(ctx, account.ID)
+				return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(claimErr)}}
+			}
+			slog.Warn("grok_sso_claim_account_failed", "account_id", account.ID, "error", claimErr)
+		}
 	}
 	h.scheduleGrokImportProbe(account)
 	return grokSSOImportWorkerResult{

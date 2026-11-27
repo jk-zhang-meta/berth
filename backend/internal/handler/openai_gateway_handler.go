@@ -3111,7 +3111,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		var turnPricing openAIWSTurnPricing
 		var rentalTurnKey atomic.Pointer[service.APIKey]
 		rentalTurnKey.Store(apiKey)
+		var rentalQuotaMu sync.Mutex
+		var rentalQuotaRelease func()
+		releaseRentalTurnQuota := func() {
+			rentalQuotaMu.Lock()
+			fn := rentalQuotaRelease
+			rentalQuotaRelease = nil
+			rentalQuotaMu.Unlock()
+			if fn != nil {
+				fn()
+			}
+		}
+		defer releaseRentalTurnQuota()
 		checkRentalTurn := func() error {
+			releaseRentalTurnQuota()
 			freshKey, err := h.apiKeyService.RefreshMarketplaceKey(ctx, apiKey)
 			if err != nil {
 				status := coderws.StatusPolicyViolation
@@ -3120,6 +3133,17 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				return service.NewOpenAIWSClientCloseError(status, "rental access is not available for this group", fmt.Errorf("%w: %w", errOpenAIWSRentalAccess, err))
 			}
+			rel, qErr := h.apiKeyService.ReserveMarketplaceQuota(ctx, freshKey)
+			if qErr != nil {
+				status := coderws.StatusPolicyViolation
+				if !errors.Is(qErr, service.ErrMarketplaceQuotaInsufficient) && !errors.Is(qErr, service.ErrMarketplaceUnavailable) {
+					status = coderws.StatusInternalError
+				}
+				return service.NewOpenAIWSClientCloseError(status, "insufficient rental quota for this turn", fmt.Errorf("%w: %w", errOpenAIWSRentalAccess, qErr))
+			}
+			rentalQuotaMu.Lock()
+			rentalQuotaRelease = rel
+			rentalQuotaMu.Unlock()
 			rentalTurnKey.Store(freshKey)
 			return nil
 		}

@@ -484,6 +484,7 @@ func CheckExitDrift(anchor *AccountCageExitAnchor, observed *ProxyExitInfo, drif
 type BerthAccountCageService struct {
 	db            *sql.DB
 	transportPool *cage.CageTransportPool
+	edgeLeaseSvc  *BerthEdgeLeaseService
 	gates         sync.Map // key: cageID (int64) -> *cage.CageGate
 }
 
@@ -492,6 +493,14 @@ func NewBerthAccountCageService(db *sql.DB, transportPool *cage.CageTransportPoo
 	return &BerthAccountCageService{
 		db:            db,
 		transportPool: transportPool,
+	}
+}
+
+// SetEdgeLeaseService connects the Edge lease hub so cage epoch bumps and proxy
+// rebinds propagate into signed RevocationSnapshots immediately.
+func (s *BerthAccountCageService) SetEdgeLeaseService(svc *BerthEdgeLeaseService) {
+	if s != nil {
+		s.edgeLeaseSvc = svc
 	}
 }
 
@@ -935,16 +944,29 @@ func (s *BerthAccountCageService) VerifyExitAndCheckDrift(
 
 	drifted, reason = CheckExitDrift(anchor, observed, accountCage.DriftPolicy)
 	if drifted {
-		_, execErr := s.db.ExecContext(ctx, `
+		var newEpoch int64
+		execErr := s.db.QueryRowContext(ctx, `
 			UPDATE account_cages
 			   SET gate_state = 'quarantined',
 			       gate_epoch = gate_epoch + 1,
 			       lease_expires_at = NULL,
 			       last_error = $2
 			 WHERE id = $1 AND deleted_at IS NULL
-		`, cageID, reason)
+			 RETURNING gate_epoch
+		`, cageID, reason).Scan(&newEpoch)
 		// Always quarantine the live gate immediately even if DB write hits a transient error (fail-closed!).
 		s.LiveGate(cageID).Quarantine(reason)
+		if execErr == nil && newEpoch > 0 {
+			_, _ = s.db.ExecContext(ctx, `
+				INSERT INTO berth_edge_cage_min_epochs (cage_id, min_epoch, updated_at)
+				VALUES ($1, $2, NOW())
+				ON CONFLICT (cage_id) DO UPDATE
+				SET min_epoch = GREATEST(berth_edge_cage_min_epochs.min_epoch, EXCLUDED.min_epoch),
+				    updated_at = NOW()`, cageID, newEpoch)
+			if s.edgeLeaseSvc != nil {
+				_, _ = s.edgeLeaseSvc.BumpCageMinEpoch(ctx, cageID, newEpoch)
+			}
+		}
 		if execErr != nil {
 			return true, reason, fmt.Errorf("quarantine drifted cage: %w", execErr)
 		}
@@ -1012,6 +1034,365 @@ func resolveRequiredProxyURL(ctx context.Context, proxyRepo ProxyRepository, pro
 		return "", fmt.Errorf("%w: proxy %d is not active (status=%s)", cage.ErrProxyUnavailable, *proxyID, proxy.Status)
 	}
 	return proxy.URL(), nil
+}
+
+func (s *BerthAccountCageService) loadProxyExitProfile(ctx context.Context, proxyID int64) (*ProxyExitInfo, error) {
+	if s == nil || s.db == nil || proxyID <= 0 {
+		return nil, nil
+	}
+	var ip, country, cc, region, city, tz, asn, isp sql.NullString
+	var checkedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT exit_ip, exit_country, exit_country_code, exit_region, exit_city,
+		       exit_timezone, exit_asn, exit_isp, exit_checked_at
+		FROM proxies
+		WHERE id = $1 AND deleted_at IS NULL`, proxyID).Scan(
+		&ip, &country, &cc, &region, &city, &tz, &asn, &isp, &checkedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ProxyExitInfo{
+		IP:          strings.TrimSpace(ip.String),
+		Country:     strings.TrimSpace(country.String),
+		CountryCode: strings.ToUpper(strings.TrimSpace(cc.String)),
+		Region:      strings.TrimSpace(region.String),
+		City:        strings.TrimSpace(city.String),
+		Timezone:    strings.TrimSpace(tz.String),
+		ASN:         strings.TrimSpace(asn.String),
+		ISP:         strings.TrimSpace(isp.String),
+	}, nil
+}
+
+// EnsureCageForAccount idempotently creates an AccountCage for accountID when bound to
+// proxyID > 0, and anchors/opens the gate immediately if the proxy already has a verified IPv4 exit.
+func (s *BerthAccountCageService) EnsureCageForAccount(ctx context.Context, accountID int64, platform string, proxyID int64) (*AccountCage, error) {
+	if s == nil || s.db == nil || accountID <= 0 || proxyID <= 0 {
+		return nil, nil
+	}
+	existing, err := s.GetActiveCageByAccountID(ctx, accountID)
+	if err == nil && existing != nil {
+		return existing, nil
+	}
+	if err != nil && !errors.Is(err, ErrCageNotFound) {
+		return nil, err
+	}
+
+	exitInfo, err := s.loadProxyExitProfile(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	in := ProvisionCageInput{
+		AccountID: accountID,
+		Platform:  platform,
+		ProxyID:   proxyID,
+	}
+	if exitInfo != nil {
+		in.ExitCountryCode = exitInfo.CountryCode
+		in.ExitTimezone = exitInfo.Timezone
+	}
+	created, err := s.ProvisionCage(ctx, in)
+	if err != nil {
+		// Handle concurrent creation cleanly.
+		if again, aErr := s.GetActiveCageByAccountID(ctx, accountID); aErr == nil && again != nil {
+			return again, nil
+		}
+		return nil, err
+	}
+	if exitInfo != nil && exitInfo.IP != "" {
+		if addr, pErr := netip.ParseAddr(exitInfo.IP); pErr == nil && addr.Unmap().Is4() {
+			if _, aErr := s.AnchorFirstUseExit(ctx, created.ID, proxyID, exitInfo, "proxy_exit_profile"); aErr == nil {
+				if reloaded, rErr := s.GetActiveCageByID(ctx, created.ID); rErr == nil && reloaded != nil {
+					return reloaded, nil
+				}
+			}
+		}
+	}
+	return created, nil
+}
+
+// RebindAccountProxy atomically updates account_cages.proxy_id, increments gate_epoch,
+// persists berth_edge_cage_min_epochs, revokes old Edge leases for the account, and
+// re-anchors (or closes when unbound) the cage gate so no stale TLS/lease survives a proxy swap.
+func (s *BerthAccountCageService) RebindAccountProxy(
+	ctx context.Context,
+	accountID int64,
+	platform string,
+	newProxyID *int64,
+	reason string,
+) error {
+	if s == nil || s.db == nil || accountID <= 0 {
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "proxy_rebind"
+	}
+	existing, err := s.GetActiveCageByAccountID(ctx, accountID)
+	if errors.Is(err, ErrCageNotFound) {
+		if newProxyID != nil && *newProxyID > 0 {
+			_, err = s.EnsureCageForAccount(ctx, accountID, platform, *newProxyID)
+			return err
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	targetProxyID := int64(0)
+	if newProxyID != nil && *newProxyID > 0 {
+		targetProxyID = *newProxyID
+	}
+	if targetProxyID > 0 && existing.ProxyID == targetProxyID {
+		return nil
+	}
+
+	var exitInfo *ProxyExitInfo
+	if targetProxyID > 0 {
+		exitInfo, err = s.loadProxyExitProfile(ctx, targetProxyID)
+		if err != nil {
+			return err
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var newEpoch int64
+	reopened := false
+	if targetProxyID <= 0 {
+		if err := tx.QueryRowContext(ctx, `
+			UPDATE account_cages
+			   SET gate_state = 'closed',
+			       gate_epoch = gate_epoch + 1,
+			       lease_expires_at = NULL,
+			       last_error = $2,
+			       updated_at = NOW()
+			 WHERE id = $1 AND deleted_at IS NULL
+			 RETURNING gate_epoch`, existing.ID, reason).Scan(&newEpoch); err != nil {
+			return err
+		}
+	} else {
+		geo := DeriveGeoIdentity("", "")
+		if exitInfo != nil {
+			geo = DeriveGeoIdentity(exitInfo.CountryCode, exitInfo.Timezone)
+		}
+		if err := tx.QueryRowContext(ctx, `
+			UPDATE account_cages
+			   SET proxy_id = $2,
+			       timezone = $3,
+			       locale = $4,
+			       accept_language = $5,
+			       oai_language = $6,
+			       gate_state = 'closed',
+			       gate_epoch = gate_epoch + 1,
+			       lease_expires_at = NULL,
+			       last_error = $7,
+			       updated_at = NOW()
+			 WHERE id = $1 AND deleted_at IS NULL
+			 RETURNING gate_epoch`,
+			existing.ID, targetProxyID, geo.Timezone, geo.Locale, geo.AcceptLanguage, geo.OAILanguage, reason,
+		).Scan(&newEpoch); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE account_cage_exit_anchors
+			   SET is_active = FALSE
+			 WHERE cage_id = $1 AND is_active = TRUE`, existing.ID); err != nil {
+			return err
+		}
+		if exitInfo != nil && exitInfo.IP != "" {
+			if addr, pErr := netip.ParseAddr(exitInfo.IP); pErr == nil && addr.Unmap().Is4() {
+				ipv4 := addr.Unmap().String()
+				cc := strings.ToUpper(strings.TrimSpace(exitInfo.CountryCode))
+				if cc == "" {
+					cc = "US"
+				}
+				var nextAnchorVer int
+				if err := tx.QueryRowContext(ctx, `
+					SELECT COALESCE(MAX(anchor_version), 0) + 1
+					FROM account_cage_exit_anchors
+					WHERE cage_id = $1`, existing.ID).Scan(&nextAnchorVer); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO account_cage_exit_anchors (
+						cage_id, anchor_version, is_active, proxy_id,
+						exit_ip, exit_country_code, exit_region, exit_city, exit_timezone,
+						exit_asn, exit_isp, probe_source, reason, anchored_by
+					) VALUES (
+						$1, $2, TRUE, $3,
+						$4::inet, $5, $6, $7, $8,
+						$9, $10, 'proxy_rebind', $11, 'system'
+					)`,
+					existing.ID, nextAnchorVer, targetProxyID,
+					ipv4, cc, exitInfo.Region, exitInfo.City, geo.Timezone,
+					exitInfo.ASN, exitInfo.ISP, reason,
+				); err != nil {
+					return err
+				}
+				leaseUntil := time.Now().UTC().Add(cage.DefaultGateLease)
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE account_cages
+					   SET gate_state = 'open',
+					       lease_expires_at = $2,
+					       last_verified_at = NOW(),
+					       last_error = NULL,
+					       locked_at = COALESCE(locked_at, NOW()),
+					       updated_at = NOW()
+					 WHERE id = $1 AND deleted_at IS NULL`, existing.ID, leaseUntil); err != nil {
+					return err
+				}
+				reopened = true
+			}
+		}
+	}
+
+	if newEpoch > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO berth_edge_cage_min_epochs (cage_id, min_epoch, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (cage_id) DO UPDATE
+			SET min_epoch = GREATEST(berth_edge_cage_min_epochs.min_epoch, EXCLUDED.min_epoch),
+			    updated_at = NOW()`, existing.ID, newEpoch); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE berth_work_session_leases
+		   SET revoked_at = COALESCE(revoked_at, NOW())
+		 WHERE account_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE berth_edge_revocation_state
+		   SET rev_seq = rev_seq + 1, updated_at = NOW()
+		 WHERE id = 1`); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Evict in-process transport pool and update Edge revocation snapshot state immediately.
+	s.LiveGate(existing.ID).Quarantine(reason)
+	if reopened {
+		_, _ = s.LiveGate(existing.ID).Open(cage.DefaultGateLease)
+	}
+	if s.edgeLeaseSvc != nil && newEpoch > 0 {
+		s.edgeLeaseSvc.recordLocalCageMinEpoch(existing.ID, newEpoch)
+	}
+	return nil
+}
+
+// BumpCredentialVersionForAccount increments account_cages.credential_version on
+// manual credential edits / reauthorization so OAuth Refresh WAL entries and CAS
+// checks align with the newly persisted credentials.
+func (s *BerthAccountCageService) BumpCredentialVersionForAccount(ctx context.Context, accountID int64) error {
+	if s == nil || s.db == nil || accountID <= 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE account_cages
+		   SET credential_version = credential_version + 1,
+		       updated_at = NOW()
+		 WHERE account_id = $1 AND deleted_at IS NULL`, accountID)
+	return err
+}
+
+// BackfillMissingCages idempotently provisions AccountCages for active accounts
+// bound to a proxy that do not yet have an active account_cages row.
+func (s *BerthAccountCageService) BackfillMissingCages(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.platform, a.proxy_id
+		FROM accounts a
+		WHERE a.deleted_at IS NULL
+		  AND a.proxy_id IS NOT NULL
+		  AND a.parent_account_id IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM account_cages c
+		    WHERE c.account_id = a.id AND c.deleted_at IS NULL
+		  )
+		ORDER BY a.id ASC`)
+	if err != nil {
+		return 0, err
+	}
+	type missingRow struct {
+		accountID int64
+		platform  string
+		proxyID   int64
+	}
+	var pending []missingRow
+	for rows.Next() {
+		var r missingRow
+		if err := rows.Scan(&r.accountID, &r.platform, &r.proxyID); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, item := range pending {
+		if c, cErr := s.EnsureCageForAccount(ctx, item.accountID, item.platform, item.proxyID); cErr == nil && c != nil {
+			created++
+		}
+	}
+	return created, nil
+}
+
+// Thin adminServiceImpl hooks keeping upstream admin_account.go edits minimal.
+func (s *adminServiceImpl) SetAccountCageService(cageSvc *BerthAccountCageService) {
+	if s != nil {
+		s.accountCage = cageSvc
+	}
+}
+
+func (s *adminServiceImpl) ensureAccountCage(ctx context.Context, account *Account) {
+	if s == nil || s.accountCage == nil || account == nil || account.IsCredentialShadow() || account.ProxyID == nil || *account.ProxyID <= 0 {
+		return
+	}
+	_, _ = s.accountCage.EnsureCageForAccount(ctx, account.ID, account.Platform, *account.ProxyID)
+}
+
+func (s *adminServiceImpl) rebindAccountCage(ctx context.Context, accountID int64, platform string, prevProxyID, newProxyID *int64, reason string) error {
+	if s == nil || s.accountCage == nil || accountID <= 0 {
+		return nil
+	}
+	prevID := int64(0)
+	if prevProxyID != nil {
+		prevID = *prevProxyID
+	}
+	newID := int64(0)
+	if newProxyID != nil {
+		newID = *newProxyID
+	}
+	if prevID == newID {
+		return nil
+	}
+	return s.accountCage.RebindAccountProxy(ctx, accountID, platform, newProxyID, reason)
+}
+
+func (s *adminServiceImpl) bumpAccountCageCredentialVersion(ctx context.Context, accountID int64) {
+	if s == nil || s.accountCage == nil || accountID <= 0 {
+		return
+	}
+	_ = s.accountCage.BumpCredentialVersionForAccount(ctx, accountID)
 }
 
 // waitForRefreshedTokenWithJitter polls tokenCache with exponential jitter

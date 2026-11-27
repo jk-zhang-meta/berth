@@ -365,7 +365,8 @@ func (h *ConcurrencyHelper) WithProxySlot(ctx context.Context, account *service.
 		maxConcurrency = account.Proxy.MaxConcurrency
 		maxRPM = account.Proxy.MaxRPM
 	}
-	result, err := h.concurrencyService.AcquireProxyCapacity(ctx, *account.ProxyID, maxConcurrency, maxRPM)
+	effectiveProxyID, maxConcurrency, maxRPM := service.EffectiveProxyCapacity(ctx, *account.ProxyID, maxConcurrency, maxRPM)
+	result, err := h.concurrencyService.AcquireProxyCapacity(ctx, effectiveProxyID, maxConcurrency, maxRPM)
 	if err != nil {
 		if releaseFunc != nil {
 			releaseFunc()

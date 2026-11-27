@@ -26,7 +26,9 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use tracing::{info, warn};
 
 use crate::admission::{AdmissionError, AdmissionGate, AdmittedStream};
-use crate::cage::{LandingCageExecutor, apply_credential_headers, rewrite_url_for_credential_base};
+use crate::cage::{
+    LandingCageExecutor, apply_credential_headers, rewrite_url_for_credential_base_strict,
+};
 use crate::central::{CentralClient, CredentialError, UpstreamCredentialDto};
 use crate::config::{
     Config, ROLE_COMPAT, ROLE_INGRESS_RELAY, ROLE_LANDING, ROLE_TRANSIT, normalize_listen_addr,
@@ -672,7 +674,13 @@ impl EdgeServer {
                     return text_response(403, "upstream credential missing authoritative base_url");
                 }
                 if !c.base_url.is_empty() {
-                    up_url = rewrite_url_for_credential_base(&up_url, &c.base_url);
+                    match rewrite_url_for_credential_base_strict(&up_url, &c.base_url) {
+                        Ok(rewritten) => up_url = rewritten,
+                        Err(e) => {
+                            self.record_receipt(&claims, 0, 0, 403, 0, start.elapsed());
+                            return text_response(403, format!("invalid upstream credential base_url: {e}"));
+                        }
+                    }
                 }
             }
             let mut up_headers = HeaderMap::new();
@@ -1141,7 +1149,13 @@ impl EdgeServer {
                 return text_response(403, "upstream credential missing authoritative base_url");
             }
             if !c.base_url.is_empty() {
-                up_url = rewrite_url_for_credential_base(&up_url, &c.base_url);
+                match rewrite_url_for_credential_base_strict(&up_url, &c.base_url) {
+                    Ok(rewritten) => up_url = rewritten,
+                    Err(e) => {
+                        self.record_receipt(&claims, ingress_bytes, 0, 403, 0, start.elapsed());
+                        return text_response(403, format!("invalid upstream credential base_url: {e}"));
+                    }
+                }
             }
         }
 
@@ -1469,7 +1483,13 @@ impl EdgeServer {
                 return text_response(403, "upstream credential missing authoritative base_url");
             }
             if !c.base_url.is_empty() {
-                up_url = rewrite_url_for_credential_base(&up_url, &c.base_url);
+                match rewrite_url_for_credential_base_strict(&up_url, &c.base_url) {
+                    Ok(rewritten) => up_url = rewritten,
+                    Err(e) => {
+                        self.record_receipt(&claims, 0, 0, 403, 0, start.elapsed());
+                        return text_response(403, format!("invalid upstream credential base_url: {e}"));
+                    }
+                }
             }
         }
         let mut up_headers = HeaderMap::new();

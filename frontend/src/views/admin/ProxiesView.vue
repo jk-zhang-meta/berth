@@ -805,7 +805,12 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.status') }}</label>
-          <Select v-model="editForm.status" :options="editStatusOptions" />
+          <Select
+            v-model="editForm.status"
+            :options="editStatusOptions"
+            @update:model-value="editStatusDirty = true"
+            @change="editStatusDirty = true"
+          />
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.expiresAt') }}</label>
@@ -828,7 +833,14 @@
             class="input mb-2"
             :placeholder="t('admin.proxies.expiryDaysPlaceholder')"
           />
-          <input v-model="editForm.expires_at" type="date" max="9999-12-31" class="input" />
+          <input
+            v-model="editForm.expires_at"
+            type="date"
+            max="9999-12-31"
+            class="input"
+            @input="editExpiresDirty = true"
+            @change="editExpiresDirty = true"
+          />
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.fallbackMode') }}</label>
@@ -1161,6 +1173,8 @@ const createPasswordVisible = ref(false)
 const showEditModal = ref(false)
 const editPasswordVisible = ref(false)
 const editPasswordDirty = ref(false)
+const editStatusDirty = ref(false)
+const editExpiresDirty = ref(false)
 const showImportData = ref(false)
 const showDeleteDialog = ref(false)
 const showBatchDeleteDialog = ref(false)
@@ -1568,6 +1582,8 @@ const handleEdit = (proxy: Proxy) => {
   editForm.max_concurrency = proxy.max_concurrency ?? 0
   editPasswordVisible.value = false
   editPasswordDirty.value = false
+  editStatusDirty.value = false
+  editExpiresDirty.value = false
   showEditModal.value = true
 }
 
@@ -1576,11 +1592,14 @@ const closeEditModal = () => {
   editingProxy.value = null
   editPasswordVisible.value = false
   editPasswordDirty.value = false
+  editStatusDirty.value = false
+  editExpiresDirty.value = false
 }
 
 const isEditingEdgeLandingProxy = computed(() => {
   const p = editingProxy.value
   if (!p) return false
+  if (p.is_edge_landing) return true
   const host = (p.host || '').trim().toLowerCase()
   if (host.endsWith('.edge.internal')) return true
   return !host && (p.name || '').startsWith('edge-landing-')
@@ -1607,14 +1626,18 @@ const handleUpdateProxy = async () => {
   try {
     const updateData: any = {
       name: editForm.name.trim(),
-      status: editForm.status,
-      expires_at: editForm.expires_at ? Math.floor(new Date(editForm.expires_at).getTime() / 1000) : null,
       fallback_mode: editForm.fallback_mode,
       backup_proxy_id: editForm.fallback_mode === 'proxy' ? editForm.backup_proxy_id : null,
       expiry_warn_days: editForm.expiry_warn_days,
       max_accounts: editForm.max_accounts,
       max_rpm: editForm.max_rpm,
       max_concurrency: editForm.max_concurrency,
+    }
+    if (editStatusDirty.value) {
+      updateData.status = editForm.status
+    }
+    if (editExpiresDirty.value) {
+      updateData.expires_at = editForm.expires_at ? Math.floor(new Date(editForm.expires_at).getTime() / 1000) : null
     }
     if (!isEditingEdgeLandingProxy.value) {
       updateData.protocol = editForm.protocol
@@ -1927,6 +1950,7 @@ const createExpiresDays = computed<number | null>({
 const editExpiresDays = computed<number | null>({
   get: () => daysFromBase(editBaseDate.value, editForm.expires_at),
   set: (v) => {
+    editExpiresDirty.value = true
     editForm.expires_at = addDaysToBase(editBaseDate.value, v)
   },
 })

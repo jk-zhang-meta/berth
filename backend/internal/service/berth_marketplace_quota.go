@@ -338,7 +338,7 @@ func (s *MarketplaceService) ReserveQuota(
 			now              time.Time
 		)
 		err = tx.QueryRowContext(ctx, `SELECT status,buyer_id,rental_mode,starts_at,expires_at,quota_limit_usd::text,quota_used_usd::text,quota_reserved_usd::text,clock_timestamp()
- FROM berth_marketplace_orders WHERE id=$1 FOR UPDATE`, orderID).Scan(
+ FROM berth_marketplace_orders WHERE id=$1 AND terminating_at IS NULL FOR UPDATE`, orderID).Scan(
 			&status, &orderBuyerID, &rentalMode, &startsAt, &expiresAt, &quotaLimitStr, &quotaUsedStr, &quotaReservedStr, &now,
 		)
 		if err != nil {
@@ -398,6 +398,138 @@ func (s *MarketplaceService) ReserveQuota(
 	return result, nil
 }
 
+// ReserveQuotaForDispatch atomically reserves min(upperBoundUSD, remaining) for
+// an in-flight gateway request or WebSocket turn (R-1). Rejects terminating
+// orders and fails with ErrMarketplaceQuotaInsufficient once remaining headroom
+// hits zero so concurrent bursts cannot overspend a prepaid quota order.
+func (s *MarketplaceService) ReserveQuotaForDispatch(
+	ctx context.Context,
+	orderID, buyerID int64,
+	operationID string,
+	upperBoundUSD float64,
+	ttl time.Duration,
+) (*MarketplaceQuotaReservation, error) {
+	operationID = strings.TrimSpace(operationID)
+	if orderID <= 0 || buyerID <= 0 || operationID == "" || len(operationID) > 128 || !utf8.ValidString(operationID) || strings.ContainsRune(operationID, 0) {
+		return nil, ErrMarketplaceInvalid
+	}
+	if math.IsNaN(upperBoundUSD) || math.IsInf(upperBoundUSD, 0) || upperBoundUSD <= 0 {
+		return nil, ErrMarketplaceQuotaInsufficient
+	}
+	if ttl <= 0 {
+		ttl = MarketplaceQuotaReservationDefaultTTL
+	}
+	boundDec := decimal.NewFromFloat(upperBoundUSD).RoundCeil(UsageBillingMonetaryScale)
+	if !boundDec.IsPositive() {
+		return nil, ErrMarketplaceQuotaInsufficient
+	}
+
+	var result *MarketplaceQuotaReservation
+	err := withMarketplaceTxRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var existing MarketplaceQuotaReservation
+		err = tx.QueryRowContext(ctx, `SELECT id,order_id,operation_id,buyer_id,reserved_usd,status,expires_at,created_at,updated_at
+ FROM berth_marketplace_quota_reservations WHERE operation_id=$1 FOR UPDATE`, operationID).Scan(
+			&existing.ID, &existing.OrderID, &existing.OperationID, &existing.BuyerID,
+			&existing.ReservedUSD, &existing.Status, &existing.ExpiresAt, &existing.CreatedAt, &existing.UpdatedAt,
+		)
+		if err == nil {
+			if existing.OrderID == orderID && existing.BuyerID == buyerID && existing.Status == MarketplaceQuotaReservationStatusReserved {
+				result = &existing
+				return nil
+			}
+			return ErrMarketplaceConflict
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		var (
+			status           string
+			orderBuyerID     int64
+			rentalMode       string
+			startsAt         time.Time
+			expiresAt        sql.NullTime
+			terminatingAt    sql.NullTime
+			quotaLimitStr    sql.NullString
+			quotaUsedStr     string
+			quotaReservedStr string
+			now              time.Time
+		)
+		err = tx.QueryRowContext(ctx, `SELECT status,buyer_id,rental_mode,starts_at,expires_at,terminating_at,quota_limit_usd::text,quota_used_usd::text,quota_reserved_usd::text,clock_timestamp()
+ FROM berth_marketplace_orders WHERE id=$1 FOR UPDATE`, orderID).Scan(
+			&status, &orderBuyerID, &rentalMode, &startsAt, &expiresAt, &terminatingAt, &quotaLimitStr, &quotaUsedStr, &quotaReservedStr, &now,
+		)
+		if err != nil {
+			return marketplaceNotFound(err)
+		}
+		if orderBuyerID != buyerID {
+			return ErrMarketplaceForbidden
+		}
+		if status != "active" || terminatingAt.Valid || now.Before(startsAt) || (expiresAt.Valid && !now.Before(expiresAt.Time)) {
+			return ErrMarketplaceUnavailable
+		}
+		if (rentalMode != MarketplaceRentalModeQuota && rentalMode != MarketplaceRentalModeHybrid) || !quotaLimitStr.Valid {
+			return ErrMarketplaceInvalid
+		}
+		quotaLimit, err := decimal.NewFromString(quotaLimitStr.String)
+		if err != nil {
+			return err
+		}
+		quotaUsed, err := decimal.NewFromString(quotaUsedStr)
+		if err != nil {
+			return err
+		}
+		quotaReserved, err := decimal.NewFromString(quotaReservedStr)
+		if err != nil {
+			return err
+		}
+		remaining := quotaLimit.Sub(quotaUsed).Sub(quotaReserved)
+		if !remaining.IsPositive() {
+			return ErrMarketplaceQuotaInsufficient
+		}
+		reserveDec := boundDec
+		if remaining.LessThan(reserveDec) {
+			reserveDec = remaining
+		}
+		reserveDec = reserveDec.Round(UsageBillingMonetaryScale)
+		if !reserveDec.IsPositive() {
+			return ErrMarketplaceQuotaInsufficient
+		}
+
+		resExpires := now.Add(ttl)
+		var res MarketplaceQuotaReservation
+		err = tx.QueryRowContext(ctx, `INSERT INTO berth_marketplace_quota_reservations(order_id,operation_id,buyer_id,reserved_usd,status,expires_at,created_at,updated_at)
+ VALUES($1,$2,$3,$4::numeric,'reserved',$5,$6,$6)
+ RETURNING id,order_id,operation_id,buyer_id,reserved_usd,status,expires_at,created_at,updated_at`,
+			orderID, operationID, buyerID, reserveDec.StringFixed(UsageBillingMonetaryScale), resExpires, now).Scan(
+			&res.ID, &res.OrderID, &res.OperationID, &res.BuyerID,
+			&res.ReservedUSD, &res.Status, &res.ExpiresAt, &res.CreatedAt, &res.UpdatedAt,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_orders SET quota_reserved_usd=quota_reserved_usd+$2::numeric WHERE id=$1`,
+			orderID, reserveDec.StringFixed(UsageBillingMonetaryScale)); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		result = &res
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ReleaseQuotaReservation releases a pre-dispatch reservation when an upstream
 // request fails or is aborted before usage billing executes.
 func (s *MarketplaceService) ReleaseQuotaReservation(ctx context.Context, operationID string) error {
@@ -429,11 +561,14 @@ func (s *MarketplaceService) ReleaseQuotaReservation(ctx context.Context, operat
 		var status string
 		var reservedStr string
 		err = tx.QueryRowContext(ctx, `SELECT id,status,reserved_usd::text FROM berth_marketplace_quota_reservations WHERE operation_id=$1 FOR UPDATE`, operationID).Scan(&resID, &status, &reservedStr)
-		if errors.Is(err, sql.ErrNoRows) || status != MarketplaceQuotaReservationStatusReserved {
-			return nil
-		}
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
 			return err
+		}
+		if status != MarketplaceQuotaReservationStatusReserved {
+			return nil
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_quota_reservations SET status='released',updated_at=clock_timestamp() WHERE id=$1`, resID); err != nil {
 			return err

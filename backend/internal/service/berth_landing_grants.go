@@ -147,6 +147,14 @@ type GrantSliceReservation struct {
 	NodeRemainingBytes  int64      `json:"node_remaining_bytes"`  // -1 if unlimited
 }
 
+// LandingGrantRuntimeLimit carries active grant concurrency/RPM enforcement caps
+// pushed to Landing nodes on heartbeat (K-1).
+type LandingGrantRuntimeLimit struct {
+	GrantID        int64 `json:"grant_id"`
+	MaxConcurrency int   `json:"max_concurrency"`
+	MaxRPM         int   `json:"max_rpm"`
+}
+
 // GrantUsageCommitResult reports the idempotent settlement result for a usage receipt.
 type GrantUsageCommitResult struct {
 	ReceiptID           string `json:"receipt_id"`
@@ -190,6 +198,62 @@ func NewBerthLandingGrantService(db *sql.DB) *BerthLandingGrantService {
 // NewBerthLandingGrantServiceWithStore constructs a service backed by a custom store.
 func NewBerthLandingGrantServiceWithStore(store BerthLandingGrantStore) *BerthLandingGrantService {
 	return &BerthLandingGrantService{store: store}
+}
+
+// ListActiveNodeGrantLimits returns concurrency/RPM limits for all active grants
+// targeting nodeID so Landing nodes enforce them via AdmissionGate (K-1).
+func (s *BerthLandingGrantService) ListActiveNodeGrantLimits(ctx context.Context, nodeID int64) ([]LandingGrantRuntimeLimit, error) {
+	if s == nil || s.store == nil || nodeID <= 0 {
+		return nil, nil
+	}
+	grants, err := s.store.ListGrants(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LandingGrantRuntimeLimit, 0)
+	for _, g := range grants {
+		if g.NodeID != nodeID || g.Status != GrantStatusActive {
+			continue
+		}
+		if g.MaxConcurrency > 0 || g.MaxRPM > 0 {
+			out = append(out, LandingGrantRuntimeLimit{
+				GrantID:        g.ID,
+				MaxConcurrency: g.MaxConcurrency,
+				MaxRPM:         g.MaxRPM,
+			})
+		}
+	}
+	return out, nil
+}
+
+type landingGrantIdempotentSliceStore interface {
+	ReserveGrantByteSliceWithOp(ctx context.Context, grantID, nodeID, requestedBytes int64, operationID string, now time.Time) (*GrantSliceReservation, error)
+}
+
+// ReserveGrantByteSliceWithOp atomically reserves a disjoint byte slice with
+// optional idempotent operation_id deduplication (K-4).
+func (s *BerthLandingGrantService) ReserveGrantByteSliceWithOp(
+	ctx context.Context,
+	grantID, nodeID, requestedBytes int64,
+	operationID string,
+	now time.Time,
+) (*GrantSliceReservation, error) {
+	if grantID <= 0 || nodeID <= 0 {
+		return nil, ErrLandingGrantInvalid
+	}
+	if requestedBytes <= 0 {
+		requestedBytes = DefaultGrantSliceBytes
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	operationID = strings.TrimSpace(operationID)
+	if operationID != "" {
+		if idemStore, ok := s.store.(landingGrantIdempotentSliceStore); ok {
+			return idemStore.ReserveGrantByteSliceWithOp(ctx, grantID, nodeID, requestedBytes, operationID, now)
+		}
+	}
+	return s.store.ReserveGrantByteSlice(ctx, grantID, nodeID, requestedBytes, now)
 }
 
 // SetOnGrantRevoked registers an optional hook notified after grant revocation bumps rev_seq.
@@ -723,6 +787,16 @@ func (s *sqlLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLandi
 	if nodeStatus == EdgeNodeStatusSuspended {
 		return nil, fmt.Errorf("%w: landing node %s is suspended", ErrLandingGrantInvalid, nodeName)
 	}
+	hasLanding := false
+	for _, r := range roles {
+		if r == EdgeRoleLanding || r == EdgeRoleCompat {
+			hasLanding = true
+			break
+		}
+	}
+	if !hasLanding {
+		return nil, fmt.Errorf("%w: node %s does not have landing role", ErrLandingGrantInvalid, nodeName)
+	}
 
 	var granteeUserID, curMaxBytes int64
 	var curMaxAccounts, curMaxRPM, curMaxConc int
@@ -960,6 +1034,9 @@ func (s *sqlLandingGrantStore) RevokeGrant(ctx context.Context, grantID int64, r
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	if leaseSvc := getDefaultEdgeLeaseService(); leaseSvc != nil {
+		leaseSvc.CancelPendingOAuthTasksForNode(nodeID, "landing grant revoked")
+	}
 	return revSeq, nil
 }
 
@@ -968,11 +1045,50 @@ func (s *sqlLandingGrantStore) ReserveGrantByteSlice(
 	grantID, nodeID, requestedBytes int64,
 	now time.Time,
 ) (*GrantSliceReservation, error) {
+	return s.ReserveGrantByteSliceWithOp(ctx, grantID, nodeID, requestedBytes, "", now)
+}
+
+func (s *sqlLandingGrantStore) ReserveGrantByteSliceWithOp(
+	ctx context.Context,
+	grantID, nodeID, requestedBytes int64,
+	operationID string,
+	now time.Time,
+) (*GrantSliceReservation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	operationID = strings.TrimSpace(operationID)
+	if operationID != "" {
+		var existingSliceID string
+		var existingGrantID, existingNodeID, existingBytes int64
+		var existingExp time.Time
+		qErr := tx.QueryRowContext(ctx, `
+			SELECT slice_id, grant_id, node_id, granted_bytes, expires_at
+			FROM berth_landing_grant_slices
+			WHERE operation_id = $1`, operationID).Scan(&existingSliceID, &existingGrantID, &existingNodeID, &existingBytes, &existingExp)
+		if qErr == nil {
+			if existingGrantID != grantID || existingNodeID != nodeID {
+				return nil, ErrLandingGrantForbidden
+			}
+			_ = tx.Rollback()
+			exp := existingExp
+			return &GrantSliceReservation{
+				SliceID:             existingSliceID,
+				GrantID:             existingGrantID,
+				NodeID:              existingNodeID,
+				GrantedBytes:        existingBytes,
+				ExpiresAt:           &exp,
+				GrantRemainingBytes: -1,
+				NodeRemainingBytes:  -1,
+			}, nil
+		}
+		if !errors.Is(qErr, sql.ErrNoRows) {
+			return nil, qErr
+		}
+	}
 
 	// Strict lock order: berth_edge_nodes -> berth_landing_node_grants.
 	var nodeStatus string
@@ -1065,12 +1181,26 @@ func (s *sqlLandingGrantStore) ReserveGrantByteSlice(
 		WHERE id = $1`, nodeID, slice); err != nil {
 		return nil, err
 	}
+	sliceID := uuid.NewString()
+	sliceExp := now.Add(30 * time.Minute)
+	if gExp.Valid && gExp.Time.Before(sliceExp) {
+		sliceExp = gExp.Time
+	}
+	if operationID != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO berth_landing_grant_slices (operation_id, slice_id, grant_id, node_id, granted_bytes, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (operation_id) DO NOTHING`,
+			operationID, sliceID, grantID, nodeID, slice, sliceExp); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
 	res := &GrantSliceReservation{
-		SliceID:             uuid.NewString(),
+		SliceID:             sliceID,
 		GrantID:             grantID,
 		NodeID:              nodeID,
 		GrantedBytes:        slice,
@@ -1096,6 +1226,30 @@ func (s *sqlLandingGrantStore) CommitGrantUsageReceipt(ctx context.Context, rece
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Preserve global lock order: berth_edge_nodes -> berth_landing_node_grants (K-4).
+	var lockedNodeID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM berth_edge_nodes WHERE id = $1 FOR UPDATE`, receipt.NodeID).Scan(&lockedNodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrEdgeZoneNotFound
+		}
+		return nil, err
+	}
+	var grantNodeID, grantReservedBefore int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT node_id, reserved_bytes
+		FROM berth_landing_node_grants
+		WHERE id = $1
+		FOR UPDATE`, receipt.GrantID).Scan(&grantNodeID, &grantReservedBefore); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrLandingGrantNotFound
+		}
+		return nil, err
+	}
+	if grantNodeID != receipt.NodeID {
+		return nil, ErrLandingGrantForbidden
+	}
 
 	// Idempotent insert keyed by receipt_id UNIQUE.
 	var leaseUUID any
@@ -1171,13 +1325,24 @@ func (s *sqlLandingGrantStore) CommitGrantUsageReceipt(ctx context.Context, rece
 		return nil, err
 	}
 
+	// Clamp node reserved release to LEAST(grantReservedBefore, receipt.TotalBytes) so a
+	// post-revocation receipt (whose grant reserved_bytes was already zeroed on revoke)
+	// cannot underflow another active grant's reserved_bytes_month on the same node (K-4).
+	nodeReservedRelease := receipt.TotalBytes
+	if nodeReservedRelease > grantReservedBefore {
+		nodeReservedRelease = grantReservedBefore
+	}
+	if nodeReservedRelease < 0 {
+		nodeReservedRelease = 0
+	}
+
 	// Lock hierarchy: berth_edge_nodes -> berth_landing_node_grants.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE berth_edge_nodes
 		SET used_bytes_month = used_bytes_month + $2,
-		    reserved_bytes_month = GREATEST(0, reserved_bytes_month - $2),
+		    reserved_bytes_month = GREATEST(0, reserved_bytes_month - $3),
 		    updated_at = NOW()
-		WHERE id = $1`, receipt.NodeID, receipt.TotalBytes); err != nil {
+		WHERE id = $1`, receipt.NodeID, receipt.TotalBytes, nodeReservedRelease); err != nil {
 		return nil, err
 	}
 
@@ -1291,7 +1456,7 @@ func (m *MemoryLandingGrantStore) CreateGrant(ctx context.Context, in CreateLand
 	if !node.HasRole(EdgeRoleLanding) && !node.HasRole(EdgeRoleCompat) {
 		return nil, ErrLandingGrantInvalid
 	}
-	if node.Status == EdgeNodeStatusSuspended {
+	if node.Status == EdgeNodeStatusSuspended || (!node.HasRole(EdgeRoleLanding) && !node.HasRole(EdgeRoleCompat)) {
 		return nil, ErrLandingGrantInvalid
 	}
 
@@ -1454,7 +1619,7 @@ func (m *MemoryLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLa
 	if err != nil {
 		return nil, err
 	}
-	if node.Status == EdgeNodeStatusSuspended {
+	if node.Status == EdgeNodeStatusSuspended || (!node.HasRole(EdgeRoleLanding) && !node.HasRole(EdgeRoleCompat)) {
 		return nil, ErrLandingGrantInvalid
 	}
 

@@ -26,9 +26,10 @@ const (
 	RefreshJournalStagePreSendAborted     = "pre_send_aborted"
 	RefreshJournalStageUnknownQuarantined = "unknown_quarantined"
 
-	refreshWALPersistTimeout = 10 * time.Second
-	refreshWALMinCooldown    = 5 * time.Second
-	refreshWALMaxCooldown    = 5 * time.Minute
+	refreshWALPersistTimeout      = 10 * time.Second
+	refreshWALMinCooldown         = 5 * time.Second
+	refreshWALMaxCooldown         = 5 * time.Minute
+	refreshWALStalePendingTimeout = 90 * time.Second
 )
 
 var (
@@ -505,18 +506,45 @@ func (w *BerthOAuthRefreshWAL) executeSingleFlight(
 	if latest != nil {
 		switch latest.Stage {
 		case RefreshJournalStageCommitted:
-			// Another worker already rotated this exact refresh_token; caller should reload DB.
-			res := &WALRefreshResult{
-				AlreadyCommitted: true,
-				JournalID:        latest.ID,
+			// Distinguish retained non-rotating refresh tokens (e.g. Gemini/Google, where
+			// upstream keeps returning the same refresh_token) from already-rotated ones.
+			// When a single-use refresh token was already rotated away (NewTokenFingerprint != tokenFP),
+			// late callers presenting the old token MUST follow the committed receipt and NEVER
+			// re-dial upstream — even after credential_version has already advanced in the DB.
+			retainedSameToken := latest.NewTokenFingerprint != "" &&
+				latest.NewTokenFingerprint == tokenFP &&
+				(latest.NewCredentialVersion == nil || *latest.NewCredentialVersion == baseCredVer)
+			if !retainedSameToken {
+				// Another worker already rotated this exact refresh_token; caller should reload DB.
+				res := &WALRefreshResult{
+					AlreadyCommitted: true,
+					JournalID:        latest.ID,
+				}
+				if latest.NewCredentialVersion != nil {
+					res.NewCredentialVersion = *latest.NewCredentialVersion
+				}
+				return res, nil
 			}
-			if latest.NewCredentialVersion != nil {
-				res.NewCredentialVersion = *latest.NewCredentialVersion
-			}
-			return res, nil
 		case RefreshJournalStageUnknownQuarantined:
-			return nil, fmt.Errorf("%w: journal_id=%d", ErrRefreshOutcomeUnknownQuarantined, latest.ID)
+			if latest.BaseCredentialVersion == baseCredVer {
+				return nil, fmt.Errorf("%w: journal_id=%d", ErrRefreshOutcomeUnknownQuarantined, latest.ID)
+			}
 		case RefreshJournalStagePending:
+			refTime := latest.UpdatedAt
+			if refTime.IsZero() {
+				refTime = latest.CreatedAt
+			}
+			if !refTime.IsZero() && w.now().Sub(refTime) > refreshWALStalePendingTimeout {
+				// Abandoned pending WAL row (e.g. crashed worker process): transition safely
+				// to unknown_quarantined instead of leaving the account permanently stuck in_flight.
+				persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), refreshWALPersistTimeout)
+				_ = w.store.MarkUnknownQuarantined(persistCtx, latest.ID, cageID, "stale_pending_abandoned", "pending refresh timed out without completion")
+				persistCancel()
+				if w.cageService != nil && cageID > 0 {
+					w.cageService.LiveGate(cageID).Quarantine("oauth_refresh_stale_pending")
+				}
+				return nil, fmt.Errorf("%w: abandoned pending journal_id=%d", ErrRefreshOutcomeUnknownQuarantined, latest.ID)
+			}
 			return nil, fmt.Errorf("%w: journal_id=%d", ErrRefreshInFlight, latest.ID)
 		case RefreshJournalStagePreSendAborted:
 			if latest.RetryAfterUntil != nil && latest.RetryAfterUntil.After(w.now()) {

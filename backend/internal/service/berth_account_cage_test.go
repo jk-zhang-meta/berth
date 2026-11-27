@@ -212,9 +212,9 @@ func TestBerthAccountCageService_ProvisionAnchorAndQuarantineOnDrift(t *testing.
 			"AS2516", "KDDI", "ipwho.is", "first_use", "system", now,
 		))
 
-	mock.ExpectExec(`UPDATE account_cages\s+SET gate_state = 'quarantined'`).
+	mock.ExpectQuery(`UPDATE account_cages\s+SET gate_state = 'quarantined'`).
 		WithArgs(int64(77), "exit_ip_drifted:198.51.100.20->203.0.113.99").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"gate_epoch"}).AddRow(int64(2)))
 
 	prevEpoch := svc.LiveGate(77).Snapshot().Epoch
 	drifted, reason, err := svc.VerifyExitAndCheckDrift(context.Background(), 77, &ProxyExitInfo{

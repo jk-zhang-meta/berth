@@ -121,10 +121,15 @@ func buildTransport(opts Options) (*http.Transport, error) {
 		maxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 	}
 
+	baseDialer := &net.Dialer{
+		Timeout: defaultDialTimeout,
+	}
+	dialCtx := baseDialer.DialContext
+	if opts.ValidateResolvedIP && !opts.AllowPrivateHosts {
+		dialCtx = urlvalidator.NewSafeDialContext(baseDialer, false)
+	}
 	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: defaultDialTimeout,
-		}).DialContext,
+		DialContext:           dialCtx,
 		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 		MaxIdleConns:          maxIdleConns,
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
@@ -146,7 +151,7 @@ func buildTransport(opts Options) (*http.Transport, error) {
 		return transport, nil
 	}
 
-	if err := proxyutil.ConfigureTransportProxy(transport, parsed); err != nil {
+	if err := proxyutil.ConfigureTransportProxyWithPolicy(transport, parsed, !opts.ValidateResolvedIP || opts.AllowPrivateHosts); err != nil {
 		return nil, err
 	}
 

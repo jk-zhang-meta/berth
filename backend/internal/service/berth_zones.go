@@ -1278,11 +1278,19 @@ func (s *sqlZoneStore) UpdateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 	defer func() { _ = tx.Rollback() }()
 
 	var oldName string
-	if err := tx.QueryRowContext(ctx, `SELECT name FROM berth_edge_nodes WHERE id = $1 FOR UPDATE`, n.ID).Scan(&oldName); err != nil {
+	var oldMeta []byte
+	if err := tx.QueryRowContext(ctx, `SELECT name, meta FROM berth_edge_nodes WHERE id = $1 FOR UPDATE`, n.ID).Scan(&oldName, &oldMeta); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrEdgeZoneNotFound
 		}
 		return nil, err
+	}
+	metaStr := strings.TrimSpace(string(n.Meta))
+	if (metaStr == "" || metaStr == "{}" || metaStr == "null") && len(oldMeta) > 0 && string(oldMeta) != "{}" {
+		metaStr = string(oldMeta)
+	}
+	if metaStr == "" {
+		metaStr = "{}"
 	}
 
 	row := tx.QueryRowContext(ctx, `
@@ -1297,7 +1305,7 @@ func (s *sqlZoneStore) UpdateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 		n.ID, n.Name, n.ZoneID, pq.Array(n.Roles), n.PublicAddr, n.TunnelAddr,
 		n.MgmtEntryAddr, n.ConnectMode, n.ProviderRegion,
 		n.ExitIP, n.ExitCountryCode, n.ExitTimezone, n.ExitLocale, n.ExitASNClass,
-		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, string(n.Meta),
+		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, metaStr,
 	)
 	updated, err := scanEdgeNode(row)
 	if err != nil {
@@ -1320,7 +1328,9 @@ func syncEdgeLandingProxiesOnNodeUpdate(ctx context.Context, tx *sql.Tx, nodeID 
 		LEFT JOIN berth_landing_node_grants g ON g.id = p.grant_id
 		WHERE p.edge_node_id = $1
 		  AND p.source_type = $2
-		  AND p.deleted_at IS NULL`,
+		  AND p.deleted_at IS NULL
+		ORDER BY p.id ASC
+		FOR UPDATE OF p`,
 		nodeID, ProxySourceTypeEdgeLandingGrant,
 	)
 	if err != nil {
@@ -1352,16 +1362,14 @@ func syncEdgeLandingProxiesOnNodeUpdate(ctx context.Context, tx *sql.Tx, nodeID 
 	canonicalHost := EdgeInternalProxyHost(nodeID)
 	oldTrim := strings.TrimSpace(oldName)
 	newTrim := strings.TrimSpace(newName)
-	oldPrefix := "edge-landing-" + oldTrim + "-u"
 
 	for _, r := range toInspect {
 		nextName := r.name
-		if oldTrim != "" && newTrim != "" && oldTrim != newTrim {
-			if r.granteeUserID > 0 && r.name == formatEdgeLandingProxyName(oldTrim, r.granteeUserID) {
+		if oldTrim != "" && newTrim != "" && oldTrim != newTrim && r.granteeUserID > 0 {
+			// Only rewrite when the proxy still carries the exact system-generated label;
+			// preserve any custom alias the operator set in the Proxies view.
+			if r.name == formatEdgeLandingProxyName(oldTrim, r.granteeUserID) {
 				nextName = formatEdgeLandingProxyName(newTrim, r.granteeUserID)
-			} else if strings.HasPrefix(r.name, oldPrefix) {
-				suffix := strings.TrimPrefix(r.name, oldPrefix)
-				nextName = truncateRunes("edge-landing-"+newTrim+"-u"+suffix, 100)
 			}
 		}
 		if nextName != r.name || r.host != canonicalHost {
@@ -1385,7 +1393,7 @@ func (s *sqlZoneStore) RecordHeartbeat(ctx context.Context, nodeID int64, upd Ed
 	}
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE berth_edge_nodes SET
-			status = CASE WHEN status = 'suspended' OR $2 = '' THEN status ELSE $2 END,
+			status = CASE WHEN status IN ('suspended', 'draining') OR $2 = '' THEN status ELSE $2 END,
 			exit_ip = CASE WHEN $3 <> '' THEN $3 ELSE exit_ip END,
 			exit_country_code = CASE WHEN $4 <> '' THEN $4 ELSE exit_country_code END,
 			exit_timezone = CASE WHEN $5 <> '' THEN $5 ELSE exit_timezone END,
@@ -1585,6 +1593,15 @@ func (m *MemoryZoneStore) UpdateNode(_ context.Context, n EdgeNode) (*EdgeNode, 
 	if !ok {
 		return nil, ErrEdgeZoneNotFound
 	}
+	for id, existing := range m.nodes {
+		if id != n.ID && existing.Name == n.Name {
+			return nil, ErrEdgeZoneConflict
+		}
+	}
+	metaStr := strings.TrimSpace(string(n.Meta))
+	if (metaStr == "" || metaStr == "{}" || metaStr == "null") && len(cur.Meta) > 0 && string(cur.Meta) != "{}" {
+		n.Meta = cur.Meta
+	}
 	n.CreatedAt = cur.CreatedAt
 	n.UsedBytesMonth = cur.UsedBytesMonth
 	n.ReservedBytesMonth = cur.ReservedBytesMonth
@@ -1602,7 +1619,7 @@ func (m *MemoryZoneStore) RecordHeartbeat(_ context.Context, nodeID int64, upd E
 	if !ok {
 		return nil, ErrEdgeZoneNotFound
 	}
-	if cur.Status != EdgeNodeStatusSuspended {
+	if cur.Status != EdgeNodeStatusSuspended && cur.Status != EdgeNodeStatusDraining && upd.Status != "" {
 		cur.Status = upd.Status
 	}
 	if upd.ExitIP != "" {

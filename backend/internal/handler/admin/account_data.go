@@ -109,6 +109,17 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 	return fmt.Sprintf("%s|%s|%d|%s|%s", strings.TrimSpace(protocol), strings.TrimSpace(host), port, strings.TrimSpace(username), strings.TrimSpace(password))
 }
 
+func redactProxyKey(raw string) string {
+	parts := strings.Split(raw, "|")
+	if len(parts) < 5 {
+		return raw
+	}
+	if strings.TrimSpace(parts[4]) != "" {
+		parts[4] = "***"
+	}
+	return strings.Join(parts[:5], "|")
+}
+
 func (h *AccountHandler) ExportData(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
@@ -172,6 +183,11 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	dataProxies := make([]DataProxy, 0, len(proxies))
 	for i := range proxies {
 		p := proxies[i]
+		if service.IsReservedEdgeInternalHost(p.Host) {
+			// Managed Berth Edge Landing virtual proxies are backed by grants and
+			// must not be exported/re-imported as raw proxies.
+			continue
+		}
 		key := buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)
 		proxyKeyByID[p.ID] = key
 
@@ -300,7 +316,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:     "proxy",
 				Name:     item.Name,
-				ProxyKey: key,
+				ProxyKey: redactProxyKey(key),
 				Message:  err.Error(),
 			})
 			continue
@@ -372,7 +388,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				result.Errors = append(result.Errors, DataImportError{
 					Kind:     "proxy",
 					Name:     item.Name,
-					ProxyKey: key,
+					ProxyKey: redactProxyKey(key),
 					Message:  fmt.Sprintf("backup_proxy_name %q not found, fallback_mode downgraded to none", item.BackupProxyName),
 				})
 			}
@@ -398,7 +414,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:     "proxy",
 				Name:     item.Name,
-				ProxyKey: key,
+				ProxyKey: redactProxyKey(key),
 				Message:  createErr.Error(),
 			})
 			continue
@@ -457,7 +473,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				result.Errors = append(result.Errors, DataImportError{
 					Kind:     "account",
 					Name:     item.Name,
-					ProxyKey: *item.ProxyKey,
+					ProxyKey: redactProxyKey(*item.ProxyKey),
 					Message:  "proxy_key not found",
 				})
 				continue
@@ -580,9 +596,7 @@ func (h *AccountHandler) resolveExportAccounts(ctx context.Context, ids []int64,
 	search := strings.TrimSpace(c.Query("search"))
 	sortBy := c.DefaultQuery("sort_by", "name")
 	sortOrder := c.DefaultQuery("sort_order", "asc")
-	if len(search) > 100 {
-		search = search[:100]
-	}
+	search = service.TruncateUTF8Bytes(search, 100)
 
 	groupID := int64(0)
 	if groupIDStr := c.Query("group"); groupIDStr != "" {
@@ -694,6 +708,9 @@ func validateDataProxy(item DataProxy) error {
 	}
 	if strings.TrimSpace(item.Host) == "" {
 		return errors.New("proxy host is required")
+	}
+	if service.IsReservedEdgeInternalHost(item.Host) {
+		return service.ErrReservedEdgeInternalHost
 	}
 	if item.Port <= 0 || item.Port > 65535 {
 		return errors.New("proxy port is invalid")

@@ -299,6 +299,29 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 		}
 
+		// Pre-dispatch marketplace quota reservation (R-1) for billable HTTP requests.
+		// WebSocket upgrades reserve per-turn inside the WS handler; read-only GET/HEAD/OPTIONS
+		// endpoints do not hold quota reservations.
+		releaseMarketplaceQuota := func() {}
+		if !skipBilling &&
+			isPrepaidMarketplaceQuotaKey(apiKey) &&
+			c.Request.Method != http.MethodGet &&
+			c.Request.Method != http.MethodHead &&
+			c.Request.Method != http.MethodOptions &&
+			!strings.EqualFold(strings.TrimSpace(c.GetHeader("Upgrade")), "websocket") {
+			rel, qErr := apiKeyService.ReserveMarketplaceQuota(c.Request.Context(), apiKey)
+			if qErr != nil {
+				if errors.Is(qErr, service.ErrMarketplaceQuotaInsufficient) {
+					AbortWithError(c, http.StatusPaymentRequired, "MARKETPLACE_QUOTA_INSUFFICIENT", "Insufficient remaining rental quota")
+					return
+				}
+				AbortWithError(c, http.StatusForbidden, "MARKETPLACE_UNAVAILABLE", "Marketplace rental order is unavailable")
+				return
+			}
+			releaseMarketplaceQuota = rel
+		}
+		defer releaseMarketplaceQuota()
+
 		c.Next()
 	}
 }

@@ -37,12 +37,22 @@ pub struct HeartbeatReport {
     pub live_reverse_tunnels: Option<Vec<i64>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrantLimitDto {
+    pub grant_id: i64,
+    #[serde(default)]
+    pub max_concurrency: usize,
+    #[serde(default)]
+    pub max_rpm: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct HeartbeatResult {
     pub revocation_snapshot: RevocationSnapshot,
     pub node_roles: Vec<String>,
     pub probe_targets: Vec<ProbeTarget>,
-    pub peer_public_keys: HashMap<i64, String>,
+    pub peer_public_keys: Option<HashMap<i64, String>>,
+    pub grant_limits: Option<Vec<GrantLimitDto>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +214,9 @@ impl CentralClient {
             #[serde(default)]
             probe_targets: Vec<ProbeTarget>,
             #[serde(default)]
-            peer_public_keys: HashMap<i64, String>,
+            peer_public_keys: Option<HashMap<i64, String>>,
+            #[serde(default)]
+            grant_limits: Option<Vec<GrantLimitDto>>,
         }
         #[derive(Deserialize)]
         struct Env {
@@ -221,6 +233,7 @@ impl CentralClient {
             node_roles: roles,
             probe_targets: env.data.probe_targets,
             peer_public_keys: env.data.peer_public_keys,
+            grant_limits: env.data.grant_limits,
         })
     }
 
@@ -237,9 +250,13 @@ impl CentralClient {
     }
 
     pub async fn request_grant_slice(&self, grant_id: i64, want_bytes: i64) -> Result<(String, i64, i64)> {
+        let mut nonce = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+        let op_id = format!("slice-{}-{}-{}", self.node_id, grant_id, hex::encode(nonce));
         let body = serde_json::to_vec(&serde_json::json!({
             "grant_id": grant_id,
             "requested_bytes": want_bytes,
+            "operation_id": op_id,
         }))?;
         let (code, raw) = self
             .do_signed_json(

@@ -123,3 +123,39 @@ func ProxyNeedsRentalRedaction(proxyID int64) bool {
 	rental, _, err := proxyRentalState(context.Background(), proxyID, false)
 	return rental || err != nil
 }
+
+type proxyPhysicalCapacityResolver interface {
+	ResolvePhysicalProxyCapacity(ctx context.Context, proxyID int64) (physicalID int64, maxConcurrency, maxRPM int, ok bool, err error)
+}
+
+// EffectiveProxyCapacity maps a rental proxy clone to its physical source proxy
+// ID and live concurrency/RPM limits so multiple rental clones share one
+// physical landing IP's concurrency/RPM budget (R-7).
+func EffectiveProxyCapacity(ctx context.Context, proxyID int64, fallbackMaxConcurrency, fallbackMaxRPM int) (effectiveProxyID int64, maxConcurrency, maxRPM int) {
+	effectiveProxyID, maxConcurrency, maxRPM = proxyID, fallbackMaxConcurrency, fallbackMaxRPM
+	if proxyID <= 0 {
+		return
+	}
+	holder := proxyRentalChecker.Load()
+	if holder == nil || holder.checker == nil {
+		return
+	}
+	resolver, ok := holder.checker.(proxyPhysicalCapacityResolver)
+	if !ok {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	physID, physConc, physRPM, mapped, err := resolver.ResolvePhysicalProxyCapacity(qCtx, proxyID)
+	if err != nil || !mapped || physID <= 0 {
+		return
+	}
+	effectiveProxyID = physID
+	if physConc > 0 {
+		maxConcurrency = physConc
+	}
+	if physRPM > 0 {
+		maxRPM = physRPM
+	}
+	return
+}

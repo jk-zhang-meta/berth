@@ -474,6 +474,7 @@ type Proxy struct {
 	ExitVerified   bool       `json:"exit_verified"`
 	IsRental       bool       `json:"is_rental,omitempty"`
 	RentalOrderID  *int64     `json:"rental_order_id,omitempty"`
+	IsEdgeLanding  bool       `json:"is_edge_landing,omitempty"`
 }
 
 type ProxyWithAccountCount struct {

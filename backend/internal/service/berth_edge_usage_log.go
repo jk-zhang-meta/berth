@@ -3,11 +3,15 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
+	"math"
+	"math/bits"
 	"strings"
 	"time"
 
 	"github.com/jk-zhang-meta/berth/internal/pkg/edgeproto"
+	"github.com/shopspring/decimal"
 )
 
 // SetEdgeUsageTelemetry wires PostgreSQL persistence, BillingService pricing, and an optional
@@ -99,6 +103,12 @@ func (s *BerthEdgeLeaseService) prepareEdgeReceiptTelemetry(ctx context.Context,
 		}
 	}
 
+	// Debit marketplace rental order usage for Berth Edge sessions bound to an
+	// active marketplace rental order (R-2), preventing free USD spend over Edge.
+	if db != nil && r.TotalCost > 0 && strings.TrimSpace(r.LeaseID) != "" {
+		s.debitEdgeMarketplaceOrderUsage(ctx, db, r, eventAt)
+	}
+
 	// Mirror token-bearing API-key Edge requests into usage_logs so Admin Usage / Dashboard /
 	// Account Stats Modal also show complete request-level telemetry with zero double counting.
 	if db == nil || r.UserID <= 0 || r.APIKeyID <= 0 || totalTokens <= 0 {
@@ -187,5 +197,210 @@ func (s *BerthEdgeLeaseService) prepareEdgeReceiptTelemetry(ctx context.Context,
 	}
 	if err != nil {
 		log.Printf("[BerthEdge] usage_logs mirror skipped for receipt %s (account=%d): %v", r.ReceiptID, r.AccountID, err)
+	}
+}
+
+// debitEdgeMarketplaceOrderUsage idempotently charges a Berth Edge usage receipt
+// against the marketplace rental order attributed to r.LeaseID (R-2).
+// Quota/hybrid orders debit quota_used_usd and settle + revoke Edge leases on
+// exhaustion; duration orders debit buyer balance and credit seller revenue.
+func (s *BerthEdgeLeaseService) debitEdgeMarketplaceOrderUsage(
+	ctx context.Context,
+	db *sql.DB,
+	r *edgeproto.UsageReceipt,
+	eventAt time.Time,
+) {
+	if db == nil || r == nil || r.TotalCost <= 0 || strings.TrimSpace(r.LeaseID) == "" {
+		return
+	}
+	var orderID sql.NullInt64
+	if err := db.QueryRowContext(ctx, `
+		SELECT marketplace_order_id
+		FROM berth_work_session_leases
+		WHERE lease_id = $1`, strings.TrimSpace(r.LeaseID)).Scan(&orderID); err != nil || !orderID.Valid || orderID.Int64 <= 0 {
+		return
+	}
+
+	reqID := edgeUsageRequestID(r.ReceiptID)
+	var revokeBuyerID, revokeGroupID int64
+	txErr := withMarketplaceTxRetry(ctx, func() error {
+		revokeBuyerID, revokeGroupID = 0, 0
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var (
+			status            string
+			rentalMode        string
+			buyerID           int64
+			sellerID          int64
+			groupID           sql.NullInt64
+			priceCents        int64
+			rentCommissionBPS int
+			rateMult          float64
+			quotaUsedStr      string
+			quotaLimitStr     sql.NullString
+		)
+		err = tx.QueryRowContext(ctx, `
+			SELECT status, rental_mode, buyer_id, seller_id, group_id,
+			       price_cents, rent_commission_bps, COALESCE(usage_rate_multiplier, 1.0),
+			       quota_used_usd::text, quota_limit_usd::text
+			FROM berth_marketplace_orders
+			WHERE id = $1
+			FOR UPDATE`, orderID.Int64).Scan(
+			&status, &rentalMode, &buyerID, &sellerID, &groupID,
+			&priceCents, &rentCommissionBPS, &rateMult, &quotaUsedStr, &quotaLimitStr,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if buyerID <= 0 || sellerID <= 0 || buyerID == sellerID {
+			return nil
+		}
+		if rateMult <= 0 {
+			rateMult = 1.0
+		}
+		billedUSD := QuantizeUsageBillingAmount(r.TotalCost * rateMult)
+		if billedUSD <= 0 {
+			return nil
+		}
+		r.ActualCost = billedUSD
+
+		if err = marketplaceLockUsers(ctx, tx, buyerID, sellerID, false); err != nil {
+			return err
+		}
+
+		if rentalMode == MarketplaceRentalModeQuota || rentalMode == MarketplaceRentalModeHybrid {
+			var existingID int64
+			err = tx.QueryRowContext(ctx, `
+				SELECT id FROM berth_marketplace_order_usage
+				WHERE order_id = $1 AND request_id = $2`, orderID.Int64, reqID).Scan(&existingID)
+			if err == nil {
+				return nil // Idempotent replay
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+
+			var newQuotaUsedStr string
+			if err = tx.QueryRowContext(ctx, `
+				UPDATE berth_marketplace_orders
+				SET quota_used_usd = quota_used_usd + $1::numeric
+				WHERE id = $2
+				RETURNING quota_used_usd::text`, billedUSD, orderID.Int64).Scan(&newQuotaUsedStr); err != nil {
+				return err
+			}
+			gid := groupID.Int64
+			if _, err = tx.ExecContext(ctx, `
+				INSERT INTO berth_marketplace_order_usage
+					(order_id, request_id, api_key_id, buyer_id, seller_id, account_id, group_id, amount_usd, quota_used_after_usd, admitted_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9::numeric, $10)`,
+				orderID.Int64, reqID, r.APIKeyID, buyerID, sellerID, r.AccountID, gid, billedUSD, newQuotaUsedStr, eventAt); err != nil {
+				return err
+			}
+
+			if status == "active" && quotaLimitStr.Valid {
+				usedDec, uErr := decimal.NewFromString(newQuotaUsedStr)
+				limitDec, lErr := decimal.NewFromString(quotaLimitStr.String)
+				if uErr == nil && lErr == nil && limitDec.IsPositive() && !usedDec.LessThan(limitDec) {
+					bps := rentCommissionBPS
+					if bps < 0 {
+						bps = 0
+					}
+					if bps > 10000 {
+						bps = 10000
+					}
+					hi, lo := bits.Mul64(uint64(priceCents), uint64(bps))
+					commQ, _ := bits.Div64(hi, lo, 10000)
+					commission := int64(commQ)
+					earned := priceCents - commission
+					if _, err = tx.ExecContext(ctx, `UPDATE users SET balance = balance + $1::numeric/100, updated_at = clock_timestamp() WHERE id = $2`, earned, sellerID); err != nil {
+						return err
+					}
+					if _, err = tx.ExecContext(ctx, `INSERT INTO berth_marketplace_ledger(order_id, user_id, kind, amount_cents) VALUES ($1,$2,'payout',$3),($1,$4,'refund',0)`, orderID.Int64, sellerID, earned, buyerID); err != nil {
+						return err
+					}
+					if commission > 0 {
+						if _, err = tx.ExecContext(ctx, `INSERT INTO berth_marketplace_ledger(order_id, kind, amount_cents) VALUES ($1,'platform_commission',$2)`, orderID.Int64, commission); err != nil {
+							return err
+						}
+					}
+					if _, err = tx.ExecContext(ctx, `UPDATE berth_marketplace_quota_reservations SET status = 'released', updated_at = clock_timestamp() WHERE order_id = $1 AND status = 'reserved'`, orderID.Int64); err != nil {
+						return err
+					}
+					if _, err = tx.ExecContext(ctx, `
+						UPDATE berth_marketplace_orders
+						SET status = 'completed',
+						    completion_reason = 'quota_exhausted',
+						    seller_earned_cents = $2,
+						    refund_cents = 0,
+						    platform_commission_cents = $3,
+						    quota_reserved_usd = 0,
+						    settled_at = clock_timestamp()
+						WHERE id = $1`, orderID.Int64, earned, commission); err != nil {
+						return err
+					}
+					if groupID.Valid && groupID.Int64 > 0 {
+						revokeBuyerID, revokeGroupID = buyerID, groupID.Int64
+					}
+				}
+			}
+			return tx.Commit()
+		}
+
+		// Duration rental order: idempotently debit buyer balance and credit seller usage revenue.
+		var usageCommBPS int
+		_ = tx.QueryRowContext(ctx, `SELECT usage_commission_bps FROM berth_marketplace_settings WHERE id = 1`).Scan(&usageCommBPS)
+		if usageCommBPS < 0 {
+			usageCommBPS = 0
+		}
+		if usageCommBPS > 10000 {
+			usageCommBPS = 10000
+		}
+		var dup int64
+		err = tx.QueryRowContext(ctx, `SELECT id FROM berth_marketplace_usage_revenue WHERE request_id = $1`, reqID).Scan(&dup)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var newBalance float64
+		if err = tx.QueryRowContext(ctx, `UPDATE users SET balance = balance - $1::numeric, updated_at = clock_timestamp() WHERE id = $2 RETURNING balance`, billedUSD, buyerID).Scan(&newBalance); err != nil {
+			return err
+		}
+		funded := billedUSD
+		if newBalance < 0 {
+			funded = math.Max(0, billedUSD+newBalance)
+		}
+		var sellerNet string
+		if err = tx.QueryRowContext(ctx, `
+			INSERT INTO berth_marketplace_usage_revenue
+				(request_id, api_key_id, buyer_id, seller_id, account_id, group_id, commission_bps, gross_amount, seller_amount, platform_amount, admitted_at, funded_amount, seller_paid_amount)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::integer,$8::numeric,
+				$8::numeric-trunc($8::numeric*($7::integer)/10000,8),trunc($8::numeric*($7::integer)/10000,8),$9,$10::numeric,
+				$10::numeric-trunc($10::numeric*($7::integer)/10000,8))
+			RETURNING seller_paid_amount::text`,
+			reqID, r.APIKeyID, buyerID, sellerID, r.AccountID, groupID.Int64, usageCommBPS, billedUSD, eventAt, QuantizeUsageBillingAmount(funded)).Scan(&sellerNet); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET balance = balance + $2::numeric, updated_at = clock_timestamp() WHERE id = $1`, sellerID, sellerNet); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if txErr != nil {
+		log.Printf("[BerthEdge] marketplace order usage debit failed for receipt %s (order=%d): %v", r.ReceiptID, orderID.Int64, txErr)
+		return
+	}
+	if revokeBuyerID > 0 && revokeGroupID > 0 {
+		revCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		_, _ = s.RevokeLeasesForUserGroup(revCtx, revokeBuyerID, revokeGroupID)
+		cancel()
 	}
 }

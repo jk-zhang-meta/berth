@@ -286,7 +286,7 @@ func (h *BerthEdgeHandler) MintLease(c *gin.Context) {
 }
 
 func (h *BerthEdgeHandler) RenewLease(c *gin.Context) {
-	userID, _, _, ok := edgeCallerIdentity(c)
+	userID, apiKeyID, _, ok := edgeCallerIdentity(c)
 	if !ok {
 		return
 	}
@@ -295,7 +295,7 @@ func (h *BerthEdgeHandler) RenewLease(c *gin.Context) {
 		response.BadRequest(c, "Missing lease ID")
 		return
 	}
-	resp, err := h.leases.RenewLease(c.Request.Context(), userID, leaseID)
+	resp, err := h.leases.RenewLeaseWithKey(c.Request.Context(), userID, apiKeyID, leaseID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -304,7 +304,7 @@ func (h *BerthEdgeHandler) RenewLease(c *gin.Context) {
 }
 
 func (h *BerthEdgeHandler) RevokeLease(c *gin.Context) {
-	userID, _, isAdmin, ok := edgeCallerIdentity(c)
+	userID, apiKeyID, isAdmin, ok := edgeCallerIdentity(c)
 	if !ok {
 		return
 	}
@@ -313,7 +313,7 @@ func (h *BerthEdgeHandler) RevokeLease(c *gin.Context) {
 		response.BadRequest(c, "Missing lease ID")
 		return
 	}
-	revSeq, err := h.leases.RevokeLease(c.Request.Context(), userID, isAdmin, leaseID)
+	revSeq, err := h.leases.RevokeLeaseWithKey(c.Request.Context(), userID, apiKeyID, isAdmin, leaseID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -413,17 +413,22 @@ func (h *BerthEdgeHandler) EdgeHeartbeat(c *gin.Context) {
 	peerPubKeys := make(map[int64]string)
 	if allNodes, lErr := h.zones.ListNodes(c.Request.Context()); lErr == nil {
 		for _, n := range allNodes {
+			if n.Status == service.EdgeNodeStatusSuspended {
+				continue
+			}
 			if pk := strings.TrimSpace(n.PubkeyEd25519); pk != "" {
 				peerPubKeys[n.ID] = pk
 			}
 		}
 	}
+	grantLimits, _ := h.grants.ListActiveNodeGrantLimits(c.Request.Context(), nodeID)
 	payload := gin.H{
 		"node":                node,
 		"revocation_snapshot": snap,
 		"central_pubkey":      h.leases.PublicKeyBase64(),
 		"probe_targets":       probeTargets,
 		"peer_public_keys":    peerPubKeys,
+		"grant_limits":        grantLimits,
 	}
 	if edgeRelease != nil {
 		payload["edge_release"] = edgeRelease
@@ -513,14 +518,15 @@ func (h *BerthEdgeHandler) EdgeGrantSlice(c *gin.Context) {
 		return
 	}
 	var body struct {
-		GrantID        int64 `json:"grant_id"`
-		RequestedBytes int64 `json:"requested_bytes"`
+		GrantID        int64  `json:"grant_id"`
+		RequestedBytes int64  `json:"requested_bytes"`
+		OperationID    string `json:"operation_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.BadRequest(c, "Invalid grant slice request")
 		return
 	}
-	res, err := h.grants.ReserveGrantByteSlice(c.Request.Context(), body.GrantID, nodeID, body.RequestedBytes, time.Now())
+	res, err := h.grants.ReserveGrantByteSliceWithOp(c.Request.Context(), body.GrantID, nodeID, body.RequestedBytes, body.OperationID, time.Now())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -549,7 +555,8 @@ func (h *BerthEdgeHandler) EdgeUsageOutbox(c *gin.Context) {
 }
 
 func (h *BerthEdgeHandler) EdgeFailover(c *gin.Context) {
-	if _, ok := getAuthenticatedEdgeNodeID(c); !ok {
+	nodeID, ok := getAuthenticatedEdgeNodeID(c)
+	if !ok {
 		return
 	}
 	var req service.EdgeFailoverRequest
@@ -557,6 +564,7 @@ func (h *BerthEdgeHandler) EdgeFailover(c *gin.Context) {
 		response.BadRequest(c, "Invalid failover request")
 		return
 	}
+	req.CallerNodeID = nodeID
 	resp, err := h.leases.CoordinateFailover(c.Request.Context(), req)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -689,6 +697,27 @@ func (h *BerthEdgeHandler) AdminCreateNode(c *gin.Context) {
 	response.Created(c, created)
 }
 
+type adminEdgeNodePatchBody struct {
+	Name                 *string          `json:"name"`
+	ZoneID               *int64           `json:"zone_id"`
+	Roles                *[]string        `json:"roles"`
+	PublicAddr           *string          `json:"public_addr"`
+	TunnelAddr           *string          `json:"tunnel_addr"`
+	MgmtEntryAddr        *string          `json:"mgmt_entry_addr"`
+	ConnectMode          *string          `json:"connect_mode"`
+	ProviderRegion       *string          `json:"provider_region"`
+	ExitIP               *string          `json:"exit_ip"`
+	ExitCountryCode      *string          `json:"exit_country_code"`
+	ExitTimezone         *string          `json:"exit_timezone"`
+	ExitLocale           *string          `json:"exit_locale"`
+	ExitASNClass         *string          `json:"exit_asn_class"`
+	PubkeyEd25519        *string          `json:"pubkey_ed25519"`
+	AgentCertFingerprint *string          `json:"agent_cert_fingerprint"`
+	Status               *string          `json:"status"`
+	MaxBytesMonth        *int64           `json:"max_bytes_month"`
+	Meta                 *json.RawMessage `json:"meta"`
+}
+
 func (h *BerthEdgeHandler) AdminUpdateNode(c *gin.Context) {
 	if _, ok := requireEdgeAdmin(c); !ok {
 		return
@@ -697,13 +726,72 @@ func (h *BerthEdgeHandler) AdminUpdateNode(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var n service.EdgeNode
-	if err := c.ShouldBindJSON(&n); err != nil {
+	var patch adminEdgeNodePatchBody
+	if err := c.ShouldBindJSON(&patch); err != nil {
 		response.BadRequest(c, "Invalid edge node body")
 		return
 	}
-	n.ID = id
-	updated, err := h.zones.UpdateNode(c.Request.Context(), n)
+	existing, err := h.zones.GetNode(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	merged := *existing
+	if patch.Name != nil {
+		merged.Name = *patch.Name
+	}
+	if patch.ZoneID != nil {
+		merged.ZoneID = *patch.ZoneID
+	}
+	if patch.Roles != nil {
+		merged.Roles = *patch.Roles
+	}
+	if patch.PublicAddr != nil {
+		merged.PublicAddr = *patch.PublicAddr
+	}
+	if patch.TunnelAddr != nil {
+		merged.TunnelAddr = *patch.TunnelAddr
+	}
+	if patch.MgmtEntryAddr != nil {
+		merged.MgmtEntryAddr = *patch.MgmtEntryAddr
+	}
+	if patch.ConnectMode != nil {
+		merged.ConnectMode = *patch.ConnectMode
+	}
+	if patch.ProviderRegion != nil {
+		merged.ProviderRegion = *patch.ProviderRegion
+	}
+	if patch.ExitIP != nil {
+		merged.ExitIP = *patch.ExitIP
+	}
+	if patch.ExitCountryCode != nil {
+		merged.ExitCountryCode = *patch.ExitCountryCode
+	}
+	if patch.ExitTimezone != nil {
+		merged.ExitTimezone = *patch.ExitTimezone
+	}
+	if patch.ExitLocale != nil {
+		merged.ExitLocale = *patch.ExitLocale
+	}
+	if patch.ExitASNClass != nil {
+		merged.ExitASNClass = *patch.ExitASNClass
+	}
+	if patch.PubkeyEd25519 != nil {
+		merged.PubkeyEd25519 = *patch.PubkeyEd25519
+	}
+	if patch.AgentCertFingerprint != nil {
+		merged.AgentCertFingerprint = *patch.AgentCertFingerprint
+	}
+	if patch.Status != nil {
+		merged.Status = *patch.Status
+	}
+	if patch.MaxBytesMonth != nil {
+		merged.MaxBytesMonth = *patch.MaxBytesMonth
+	}
+	if patch.Meta != nil && len(*patch.Meta) > 0 {
+		merged.Meta = *patch.Meta
+	}
+	updated, err := h.zones.UpdateNode(c.Request.Context(), merged)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
