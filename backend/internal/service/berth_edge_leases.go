@@ -255,6 +255,8 @@ type EdgeOAuthTask struct {
 	TaskID          string              `json:"task_id"`
 	NodeID          int64               `json:"node_id"`
 	AccountID       int64               `json:"account_id"`
+	CageEpoch       int64               `json:"cage_epoch,omitempty"`
+	AcceptLanguage  string              `json:"accept_language,omitempty"`
 	Kind            string              `json:"kind"` // oauth_exchange | token_refresh | health_probe
 	TargetURL       string              `json:"target_url"`
 	Method          string              `json:"method"`
@@ -1498,25 +1500,32 @@ func (s *BerthEdgeLeaseService) EnqueueOAuthTask(task EdgeOAuthTask) EdgeOAuthTa
 // tasks assigned to nodeID, removing them from the pending queue so a poller can NEVER execute
 // the same single-use OAuth POST twice.
 func (s *BerthEdgeLeaseService) ListPendingOAuthTasks(nodeID int64) []EdgeOAuthTask {
+	return s.ListPendingOAuthTasksForNode(context.Background(), nodeID)
+}
+
+// ListPendingOAuthTasksForNode claims pending OAuth tasks for nodeID and re-verifies
+// live account-to-node binding BEFORE releasing any secret-bearing task body so a
+// mid-queue proxy rebind or revocation NEVER leaks secrets to a former Landing node.
+func (s *BerthEdgeLeaseService) ListPendingOAuthTasksForNode(ctx context.Context, nodeID int64) []EdgeOAuthTask {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
 	s.reapExpiredOAuthTasksLocked(now)
 	list := s.oauthTasksByNode[nodeID]
 	if len(list) == 0 {
+		s.mu.Unlock()
 		return []EdgeOAuthTask{}
 	}
-	out := make([]EdgeOAuthTask, 0, min(len(list), maxClaimOAuthTaskBatch))
+	candidates := make([]*EdgeOAuthTask, 0, min(len(list), maxClaimOAuthTaskBatch))
 	remaining := make([]*EdgeOAuthTask, 0, len(list))
 	for _, t := range list {
 		if t == nil || t.Status != "pending" {
 			continue
 		}
-		if len(out) < maxClaimOAuthTaskBatch {
+		if len(candidates) < maxClaimOAuthTaskBatch {
 			t.Status = "claimed"
 			t.ClaimID = uuid.NewString()
 			t.ClaimedAt = now
-			out = append(out, *t)
+			candidates = append(candidates, t)
 		} else {
 			remaining = append(remaining, t)
 		}
@@ -1525,6 +1534,29 @@ func (s *BerthEdgeLeaseService) ListPendingOAuthTasks(nodeID int64) []EdgeOAuthT
 		delete(s.oauthTasksByNode, nodeID)
 	} else {
 		s.oauthTasksByNode[nodeID] = remaining
+	}
+	s.mu.Unlock()
+
+	authVerifier, hasVerifier := s.store.(edgeLandingOAuthAuthVerifier)
+	out := make([]EdgeOAuthTask, 0, len(candidates))
+	for _, t := range candidates {
+		if hasVerifier && t.AccountID > 0 {
+			if aErr := authVerifier.VerifyAccountEdgeLandingAuthorization(ctx, t.AccountID, nodeID); aErr != nil {
+				s.mu.Lock()
+				t.Status = "failed"
+				t.Error = fmt.Sprintf("landing node %d no longer authorized for account %d at claim time: %v", nodeID, t.AccountID, aErr)
+				t.Headers = nil
+				t.BodyBase64 = ""
+				t.CompletedAt = time.Now()
+				if ch, ok := s.oauthWaiters[t.TaskID]; ok {
+					close(ch)
+					delete(s.oauthWaiters, t.TaskID)
+				}
+				s.mu.Unlock()
+				continue
+			}
+		}
+		out = append(out, *t)
 	}
 	return out
 }

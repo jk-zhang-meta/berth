@@ -23,17 +23,22 @@ import (
 )
 
 type berthV2Deps struct {
-	db                   *sql.DB
-	cfg                  *config.Config
-	adminService         service.AdminService
-	oAuthRefreshAPI      *service.OAuthRefreshAPI
-	marketplace          *service.MarketplaceService
-	paymentService       *service.PaymentService
-	paymentConfigService *service.PaymentConfigService
-	stewardStore         *service.StewardStore
-	billingService       *service.BillingService
-	cnProviderHandler    *admin.CNProviderHandler
-	handlers             *handler.Handlers
+	db                       *sql.DB
+	cfg                      *config.Config
+	adminService             service.AdminService
+	oAuthRefreshAPI          *service.OAuthRefreshAPI
+	claudeTokenProvider      *service.ClaudeTokenProvider
+	openAITokenProvider      *service.OpenAITokenProvider
+	antigravityTokenProvider *service.AntigravityTokenProvider
+	geminiTokenProvider      *service.GeminiTokenProvider
+	grokTokenProvider        *service.GrokTokenProvider
+	marketplace              *service.MarketplaceService
+	paymentService           *service.PaymentService
+	paymentConfigService     *service.PaymentConfigService
+	stewardStore             *service.StewardStore
+	billingService           *service.BillingService
+	cnProviderHandler        *admin.CNProviderHandler
+	handlers                 *handler.Handlers
 }
 
 func validateBerthV2Deps(deps berthV2Deps) error {
@@ -148,6 +153,15 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	service.RegisterDefaultEdgeLeaseService(edgeLeaseService)
 	deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)
 	deps.handlers.BerthEdge.SetAccountLookup(deps.adminService)
+	deps.handlers.BerthEdge.SetCageLookup(cageService)
+	deps.handlers.BerthEdge.SetTokenRefresher(&service.MultiPlatformEdgeTokenRefresher{
+		Claude:      deps.claudeTokenProvider,
+		OpenAI:      deps.openAITokenProvider,
+		Antigravity: deps.antigravityTokenProvider,
+		Gemini:      deps.geminiTokenProvider,
+		Grok:        deps.grokTokenProvider,
+		Accounts:    deps.adminService,
+	})
 
 	return runCleanup, nil
 }

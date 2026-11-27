@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -278,6 +279,8 @@ func createReqClient(proxyURL string) (*req.Client, error) {
 		})
 	} else if trimmed != "" {
 		client.SetProxyURL(trimmed)
+	} else if strings.EqualFold(strings.TrimSpace(os.Getenv(service.EnvEdgeDataPlaneStrict)), "true") {
+		return nil, service.ErrCentralDirectEgressBlocked
 	}
 
 	return instrumentReqClient(client), nil

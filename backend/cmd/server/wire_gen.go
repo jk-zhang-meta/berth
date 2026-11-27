@@ -373,17 +373,22 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService, settingService, auditLogService)
 	handlers.Marketplace = handler.NewMarketplaceHandler(marketplace, db, billingCacheService, apiKeyService, configConfig.RunMode != config.RunModeSimple)
 	stopBerthV2, err := wireBerthV2(berthV2Deps{
-		db:                   db,
-		cfg:                  configConfig,
-		adminService:         adminService,
-		oAuthRefreshAPI:      oAuthRefreshAPI,
-		marketplace:          marketplace,
-		paymentService:       paymentService,
-		paymentConfigService: paymentConfigService,
-		stewardStore:         stewardStore,
-		billingService:       billingService,
-		cnProviderHandler:    cnProviderHandler,
-		handlers:             handlers,
+		db:                       db,
+		cfg:                      configConfig,
+		adminService:             adminService,
+		oAuthRefreshAPI:          oAuthRefreshAPI,
+		claudeTokenProvider:      claudeTokenProvider,
+		openAITokenProvider:      openAITokenProvider,
+		antigravityTokenProvider: antigravityTokenProvider,
+		geminiTokenProvider:      geminiTokenProvider,
+		grokTokenProvider:        grokTokenProvider,
+		marketplace:              marketplace,
+		paymentService:           paymentService,
+		paymentConfigService:     paymentConfigService,
+		stewardStore:             stewardStore,
+		billingService:           billingService,
+		cnProviderHandler:        cnProviderHandler,
+		handlers:                 handlers,
 	})
 	if err != nil {
 		stopMarketplace()

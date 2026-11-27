@@ -63,6 +63,10 @@ pub struct OAuthTaskDto {
     #[serde(default)]
     pub account_id: i64,
     #[serde(default)]
+    pub cage_epoch: i64,
+    #[serde(default)]
+    pub accept_language: String,
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub target_url: String,
@@ -78,6 +82,48 @@ pub struct OAuthTaskDto {
     pub claim_id: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CageIdentityDto {
+    #[serde(default)]
+    pub client_os: String,
+    #[serde(default)]
+    pub client_os_version: String,
+    #[serde(default)]
+    pub client_arch: String,
+    #[serde(default)]
+    pub client_runtime: String,
+    #[serde(default)]
+    pub client_runtime_version: String,
+    #[serde(default)]
+    pub client_app_version: String,
+    #[serde(default)]
+    pub user_agent_inference: String,
+    #[serde(default)]
+    pub user_agent_oauth: String,
+    #[serde(default)]
+    pub originator: String,
+    #[serde(default)]
+    pub accept_language: String,
+    #[serde(default)]
+    pub oai_language: String,
+    #[serde(default)]
+    pub timezone: String,
+    #[serde(default)]
+    pub claude_device_id: String,
+    #[serde(default)]
+    pub claude_account_uuid: String,
+    #[serde(default)]
+    pub codex_installation_id: String,
+    #[serde(default)]
+    pub codex_fingerprint_mode: String,
+    #[serde(default)]
+    pub antigravity_project_id: String,
+    #[serde(default)]
+    pub antigravity_plan_type: String,
+    #[serde(default)]
+    pub tls_profile: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamCredentialDto {
     pub account_id: i64,
@@ -91,6 +137,8 @@ pub struct UpstreamCredentialDto {
     pub base_url: String,
     #[serde(default)]
     pub expires_at_unix: i64,
+    #[serde(default)]
+    pub cage_identity: Option<CageIdentityDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

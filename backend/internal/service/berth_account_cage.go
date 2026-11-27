@@ -18,7 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jk-zhang-meta/berth/internal/pkg/antigravity"
 	"github.com/jk-zhang-meta/berth/internal/pkg/cage"
+	"github.com/jk-zhang-meta/berth/internal/pkg/claude"
 )
 
 const (
@@ -335,7 +337,10 @@ func BuildDefaultVirtualClientTuple(platform string, seed []byte) VirtualClientT
 
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case PlatformOpenAI:
-		appVer := "0.114.0"
+		appVer := maxNonEmptySemver(CodexCanonicalClientVersion(), codexUpstreamMinVersion)
+		if appVer == "" {
+			appVer = codexUpstreamMinVersion
+		}
 		ua := fmt.Sprintf("codex_cli_rs/%s (%s; %s)", appVer, chosen.codexOS, chosen.codexArch)
 		return VirtualClientTuple{
 			ClientOS:             chosen.osName,
@@ -368,7 +373,10 @@ func BuildDefaultVirtualClientTuple(platform string, seed []byte) VirtualClientT
 			HostnameAlias:        hostAlias,
 		}
 	case PlatformAntigravity:
-		appVer := "2.23.0"
+		appVer := strings.TrimSpace(antigravity.GetDefaultUserAgentVersion())
+		if appVer == "" {
+			appVer = antigravity.DefaultUserAgentVersion
+		}
 		goOS := strings.ToLower(chosen.osName)
 		if goOS == "macos" {
 			goOS = "darwin"
@@ -412,7 +420,10 @@ func BuildDefaultVirtualClientTuple(platform string, seed []byte) VirtualClientT
 			HostnameAlias:        hostAlias,
 		}
 	default: // Anthropic / Claude Code
-		appVer := "2.1.220"
+		appVer := strings.TrimSpace(claude.CLIVersion())
+		if appVer == "" {
+			appVer = claude.CLICurrentVersion
+		}
 		return VirtualClientTuple{
 			ClientOS:             chosen.osName,
 			ClientOSVersion:      chosen.osVersion,

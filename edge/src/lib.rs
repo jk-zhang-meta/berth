@@ -4,6 +4,7 @@ pub mod admission;
 pub mod cage;
 pub mod central;
 pub mod config;
+pub mod identity;
 pub mod mgmt_entry;
 pub mod prober;
 pub mod proto;

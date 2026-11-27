@@ -195,7 +195,7 @@ func (rt *edgeLandingRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 // WaitPendingOAuthTasks returns any pending OAuth tasks for nodeID immediately, or
 // waits up to maxWait until a new task is enqueued for nodeID (long-poll wakeup).
 func (s *BerthEdgeLeaseService) WaitPendingOAuthTasks(ctx context.Context, nodeID int64, maxWait time.Duration) []EdgeOAuthTask {
-	if tasks := s.ListPendingOAuthTasks(nodeID); len(tasks) > 0 || maxWait <= 0 {
+	if tasks := s.ListPendingOAuthTasksForNode(ctx, nodeID); len(tasks) > 0 || maxWait <= 0 {
 		return tasks
 	}
 
@@ -210,7 +210,7 @@ func (s *BerthEdgeLeaseService) WaitPendingOAuthTasks(ctx context.Context, nodeI
 	}
 	s.mu.Unlock()
 
-	if tasks := s.ListPendingOAuthTasks(nodeID); len(tasks) > 0 {
+	if tasks := s.ListPendingOAuthTasksForNode(ctx, nodeID); len(tasks) > 0 {
 		return tasks
 	}
 
@@ -218,9 +218,9 @@ func (s *BerthEdgeLeaseService) WaitPendingOAuthTasks(ctx context.Context, nodeI
 	defer timer.Stop()
 	select {
 	case <-ch:
-		return s.ListPendingOAuthTasks(nodeID)
+		return s.ListPendingOAuthTasksForNode(ctx, nodeID)
 	case <-timer.C:
-		return s.ListPendingOAuthTasks(nodeID)
+		return s.ListPendingOAuthTasksForNode(ctx, nodeID)
 	case <-ctx.Done():
 		return nil
 	}
@@ -267,10 +267,22 @@ func (s *BerthEdgeLeaseService) ExecuteOAuthTaskSyncForAccount(ctx context.Conte
 	if !targetNode.HasRole(EdgeRoleLanding) && !targetNode.HasRole(EdgeRoleCompat) {
 		return nil, fmt.Errorf("edge landing node %q does not have landing role", nodeName)
 	}
+	var cageEpoch int64
+	var cageLocale string
 	if accountID > 0 {
 		if authVerifier, ok := s.store.(edgeLandingOAuthAuthVerifier); ok {
 			if err := authVerifier.VerifyAccountEdgeLandingAuthorization(ctx, accountID, targetNode.ID); err != nil {
 				return nil, fmt.Errorf("edge landing OAuth authorization denied for account %d on node %d: %w", accountID, targetNode.ID, err)
+			}
+		}
+		if cageResolver, ok := s.store.(edgeLeaseAccountCageResolver); ok {
+			_, dbEpoch, gateState, _, _, dbLocale, found, cErr := cageResolver.ResolveAccountCageState(ctx, accountID)
+			if cErr == nil && found {
+				if gateState == CageGateStateQuarantined || gateState == CageGateStateClosed {
+					return nil, fmt.Errorf("edge landing OAuth denied for account %d: cage is %s", accountID, gateState)
+				}
+				cageEpoch = dbEpoch
+				cageLocale = strings.TrimSpace(dbLocale)
 			}
 		}
 	}
@@ -307,6 +319,8 @@ func (s *BerthEdgeLeaseService) ExecuteOAuthTaskSyncForAccount(ctx context.Conte
 	task := s.EnqueueOAuthTask(EdgeOAuthTask{
 		NodeID:          targetNode.ID,
 		AccountID:       accountID,
+		CageEpoch:       cageEpoch,
+		AcceptLanguage:  cageLocale,
 		Kind:            "oauth_exchange",
 		TargetURL:       req.URL.String(),
 		Method:          req.Method,

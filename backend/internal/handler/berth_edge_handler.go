@@ -25,6 +25,8 @@ type BerthEdgeHandler struct {
 	grants   *service.BerthLandingGrantService
 	leases   *service.BerthEdgeLeaseService
 	accounts service.EdgeAccountLookup
+	cages    service.EdgeCageLookup
+	tokens   service.EdgeTokenRefresher
 }
 
 // NewBerthEdgeHandler constructs a BerthEdgeHandler.
@@ -44,6 +46,20 @@ func NewBerthEdgeHandler(
 func (h *BerthEdgeHandler) SetAccountLookup(lookup service.EdgeAccountLookup) {
 	if h != nil {
 		h.accounts = lookup
+	}
+}
+
+// SetCageLookup attaches AccountCage lookup so Landing receives authoritative per-account identity.
+func (h *BerthEdgeHandler) SetCageLookup(cages service.EdgeCageLookup) {
+	if h != nil {
+		h.cages = cages
+	}
+}
+
+// SetTokenRefresher attaches unified OAuth token freshness coordination for Landing credentials.
+func (h *BerthEdgeHandler) SetTokenRefresher(refresher service.EdgeTokenRefresher) {
+	if h != nil {
+		h.tokens = refresher
 	}
 }
 
@@ -455,10 +471,12 @@ func (h *BerthEdgeHandler) EdgeAccountCredential(c *gin.Context) {
 		response.BadRequest(c, "Invalid account credential request")
 		return
 	}
-	cred, err := service.ResolveUpstreamCredentialForLease(
+	cred, err := service.ResolveUpstreamCredentialForLeaseWithDeps(
 		c.Request.Context(),
 		h.leases,
 		h.accounts,
+		h.cages,
+		h.tokens,
 		nodeID,
 		body.LeaseID,
 		body.AccountID,
@@ -598,7 +616,7 @@ func (h *BerthEdgeHandler) EdgeListOAuthTasks(c *gin.Context) {
 			return
 		}
 	}
-	tasks := h.leases.ListPendingOAuthTasks(nodeID)
+	tasks := h.leases.ListPendingOAuthTasksForNode(c.Request.Context(), nodeID)
 	response.Success(c, gin.H{"tasks": tasks})
 }
 

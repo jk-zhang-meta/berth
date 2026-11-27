@@ -26,12 +26,15 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use tracing::{info, warn};
 
 use crate::admission::{AdmissionError, AdmissionGate, AdmittedStream};
-use crate::cage::{
-    LandingCageExecutor, apply_credential_headers, rewrite_url_for_credential_base_strict,
-};
+use crate::cage::{LandingCageExecutor, rewrite_url_for_credential_base_strict};
 use crate::central::{CentralClient, CredentialError, UpstreamCredentialDto};
 use crate::config::{
     Config, ROLE_COMPAT, ROLE_INGRESS_RELAY, ROLE_LANDING, ROLE_TRANSIT, normalize_listen_addr,
+};
+use crate::identity::{
+    AntigravityBridgeMode, AntigravitySseUnwrapper, is_blocked_upstream_response_header,
+    prepare_landing_http_request, prepare_landing_ws_headers,
+    transform_v1internal_models_response, unwrap_v1internal_unary_response,
 };
 use crate::proto::{
     DEFAULT_MAX_WS_FRAME_BYTES, HEADER_ACCOUNT_ID, HEADER_CAGE_COHORT,
@@ -366,6 +369,8 @@ impl EdgeServer {
         let mut cur_lease_token = lease_token;
         let mut cur_claims = admitted.claims().clone();
         let mut cur_route = cur_claims.route_chain.clone();
+        let mut cur_admitted = admitted;
+        let mut cur_headers = headers;
 
         for attempt in 0..2 {
             // Single-hop direct landing optimization!
@@ -379,8 +384,9 @@ impl EdgeServer {
                         &cur_lease_token,
                         &method,
                         &target_url,
-                        &headers,
+                        &cur_headers,
                         body_bytes.clone(),
+                        attempt > 0,
                     )
                     .await;
                 if attempt == 0
@@ -398,6 +404,8 @@ impl EdgeServer {
                                 if let Some(c) = claims {
                                     cur_claims = c;
                                 }
+                                // Strip account-scoped Codex turn state before retrying on a different account.
+                                cur_headers.remove("x-codex-turn-state");
                                 continue;
                             }
                             FailoverAction::RebindRequired(rebind_resp) => return rebind_resp,
@@ -415,7 +423,7 @@ impl EdgeServer {
                     &cur_lease_token,
                     &method,
                     &target_url,
-                    &headers,
+                    &cur_headers,
                     full_body(body_bytes.clone()),
                 )
                 .await
@@ -429,27 +437,38 @@ impl EdgeServer {
                 && matches!(status.as_u16(), 429 | 529)
                 && self.central.is_some()
             {
-                drop(resp);
                 if let Some(alt) = self
                     .try_precommit_failover(&cur_claims, status.as_u16())
                     .await
                 {
                     match alt {
                         FailoverAction::Switched { token, route, claims } => {
+                            drop(resp);
+                            // Re-admit switched lease so stream cancellation watches the NEW lease!
+                            let next_admitted = match self.gate.admit(&token, 0).await {
+                                Ok(a) => a,
+                                Err(e) => return admission_error_response(&e),
+                            };
+                            cur_admitted = next_admitted;
                             cur_lease_token = token;
                             cur_route = route;
                             if let Some(c) = claims {
                                 cur_claims = c;
                             }
+                            cur_headers.remove("x-codex-turn-state");
                             continue;
                         }
-                        FailoverAction::RebindRequired(rebind_resp) => return rebind_resp,
+                        FailoverAction::RebindRequired(rebind_resp) => {
+                            drop(resp);
+                            return rebind_resp;
+                        }
                     }
                 }
-                return text_response(status.as_u16(), "upstream rate limited");
+                // Failover unavailable: preserve real provider 429/529 response (including Retry-After!).
+                return stream_incoming_with_revocation(resp, cur_admitted);
             }
 
-            return stream_incoming_with_revocation(resp, admitted);
+            return stream_incoming_with_revocation(resp, cur_admitted);
         }
         text_response(502, "tunnel dispatch exhausted retries")
     }
@@ -683,11 +702,7 @@ impl EdgeServer {
                     }
                 }
             }
-            let mut up_headers = HeaderMap::new();
-            copy_upstream_headers(&mut up_headers, &headers);
-            if let Some(ref c) = cred {
-                apply_credential_headers(&mut up_headers, &c.headers);
-            }
+            let up_headers = prepare_landing_ws_headers(&headers, &claims, cred.as_ref());
             let up_ws = match self
                 .upstream
                 .dial_websocket(&up_url, &up_headers, Some(&claims))
@@ -1076,7 +1091,7 @@ impl EdgeServer {
             Ok(Err(e)) => return text_response(400, format!("failed reading request stream: {e}")),
             Err(_) => return text_response(408, "request stream read timed out"),
         };
-        self.execute_landing_http_admitted(admitted, &up_method, &up_url, &headers, body_bytes)
+        self.execute_landing_http_admitted(admitted, &up_method, &up_url, &headers, body_bytes, false)
             .await
     }
 
@@ -1087,6 +1102,7 @@ impl EdgeServer {
         raw_up_url: &str,
         orig_headers: &HeaderMap,
         body_bytes: Bytes,
+        is_failover_retry: bool,
     ) -> Response<EdgeBody> {
         if !self.has_role(ROLE_LANDING) && !self.has_role(ROLE_COMPAT) {
             return text_response(403, "landing/compat role not enabled");
@@ -1095,8 +1111,15 @@ impl EdgeServer {
             Ok(a) => a,
             Err(e) => return admission_error_response(&e),
         };
-        self.execute_landing_http_admitted(admitted, up_method_str, raw_up_url, orig_headers, body_bytes)
-            .await
+        self.execute_landing_http_admitted(
+            admitted,
+            up_method_str,
+            raw_up_url,
+            orig_headers,
+            body_bytes,
+            is_failover_retry,
+        )
+        .await
     }
 
     async fn execute_landing_http_admitted(
@@ -1106,6 +1129,7 @@ impl EdgeServer {
         raw_up_url: &str,
         orig_headers: &HeaderMap,
         body_bytes: Bytes,
+        is_failover_retry: bool,
     ) -> Response<EdgeBody> {
         let start = Instant::now();
         let claims = admitted.claims().clone();
@@ -1160,17 +1184,27 @@ impl EdgeServer {
         }
 
         let req_meta = extract_request_meta(&up_url, &body_bytes);
-
-        let up_method = Method::from_bytes(up_method_str.as_bytes()).unwrap_or(Method::POST);
-        let mut up_headers = HeaderMap::new();
-        copy_upstream_headers(&mut up_headers, orig_headers);
-        if let Some(ref c) = cred {
-            apply_credential_headers(&mut up_headers, &c.headers);
-        }
+        let raw_method = Method::from_bytes(up_method_str.as_bytes()).unwrap_or(Method::POST);
+        let prepared = prepare_landing_http_request(
+            raw_method,
+            &up_url,
+            orig_headers,
+            body_bytes,
+            &claims,
+            cred.as_ref(),
+            is_failover_retry,
+        );
+        let agy_bridge = prepared.agy_bridge;
 
         let up_resp = match self
             .upstream
-            .do_http(up_method, &up_url, up_headers, body_bytes, Some(&claims))
+            .do_http(
+                prepared.method,
+                &prepared.url,
+                prepared.headers,
+                prepared.body,
+                Some(&claims),
+            )
             .await
         {
             Ok(r) => r,
@@ -1199,10 +1233,69 @@ impl EdgeServer {
             .get(http::header::CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
+        let is_compressed = content_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some_and(|s| !s.eq_ignore_ascii_case("identity"));
+
+        // Non-streaming Antigravity v1internal bridge transformations (ModelsList / UnaryGenerate).
+        if status.is_success()
+            && !is_compressed
+            && matches!(
+                agy_bridge,
+                AntigravityBridgeMode::ModelsList | AntigravityBridgeMode::UnaryGenerate
+            )
+        {
+            let raw_body = match collect_capped(up_resp.into_body(), 16 * 1024 * 1024).await {
+                Ok(b) => b,
+                Err(e) => {
+                    self.record_receipt(&claims, ingress_bytes, 0, 502, 0, start.elapsed());
+                    return text_response(502, format!("read upstream response failed: {e}"));
+                }
+            };
+            let transformed = match agy_bridge {
+                AntigravityBridgeMode::ModelsList => transform_v1internal_models_response(&raw_body),
+                AntigravityBridgeMode::UnaryGenerate => unwrap_v1internal_unary_response(&raw_body),
+                _ => raw_body.to_vec(),
+            };
+            if let Err(e) = admitted.pre_debit(transformed.len() as i64).await {
+                self.record_receipt(&claims, ingress_bytes, 0, 403, 0, start.elapsed());
+                return admission_error_response(&e);
+            }
+            let mut sniffer = UsageStreamSniffer::new_http(req_meta, false, None);
+            sniffer.feed_http_chunk(&transformed);
+            let extracted = sniffer.finish();
+            let ttft_ms = (start.elapsed().as_millis() as i64).max(1);
+            self.record_receipt_with_usage(
+                &claims,
+                ingress_bytes,
+                transformed.len() as i64,
+                status.as_u16(),
+                ttft_ms,
+                start.elapsed(),
+                Some(extracted),
+            );
+            return Response::builder()
+                .status(status)
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(HEADER_ACCOUNT_ID, claims.account_id.to_string())
+                .header(HEADER_LANDING_NODE, self.cfg.node_name.clone())
+                .header(
+                    HEADER_CAGE_COHORT,
+                    format!(
+                        "{}:{}:{}",
+                        claims.platform, claims.cohort_country_code, claims.cohort_timezone
+                    ),
+                )
+                .body(full_body(transformed))
+                .unwrap();
+        }
 
         let mut resp_builder = Response::builder().status(status);
         for (k, v) in up_resp.headers() {
-            if !is_hop_by_hop(k.as_str()) {
+            // Strip hop-by-hop AND any upstream-spoofed `x-berth-*` control headers!
+            if !is_hop_by_hop(k.as_str()) && !is_blocked_upstream_response_header(k.as_str()) {
                 resp_builder = resp_builder.header(k.clone(), v.clone());
             }
         }
@@ -1217,6 +1310,9 @@ impl EdgeServer {
                 ),
             );
 
+        let unwrap_agy_sse =
+            status.is_success() && !is_compressed && agy_bridge == AntigravityBridgeMode::StreamGenerate;
+
         let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(32);
         let me = Arc::clone(&self);
         tokio::spawn(async move {
@@ -1226,11 +1322,13 @@ impl EdgeServer {
             let mut cancel_rx = admitted.cancel_receiver();
             let mut sniffer =
                 UsageStreamSniffer::new_http(req_meta, is_sse, content_encoding.as_deref());
+            let mut agy_unwrapper = unwrap_agy_sse.then(AntigravitySseUnwrapper::default);
 
             loop {
                 tokio::select! {
                     _ = wait_revoked(&mut cancel_rx) => {
-                        if is_sse {
+                        // Never append plaintext SSE error bytes into a compressed stream!
+                        if is_sse && !is_compressed {
                             let _ = tx.send(Ok(Frame::data(Bytes::from_static(
                                 b"event: error\ndata: {\"code\":\"cage_rebind_required\",\"reason\":\"stream_revoked\"}\n\n"
                             )))).await;
@@ -1244,21 +1342,30 @@ impl EdgeServer {
                                     if data.is_empty() {
                                         continue;
                                     }
+                                    let out_chunk: Bytes = if let Some(ref mut unwrapper) = agy_unwrapper {
+                                        let unwrapped = unwrapper.push_chunk(data);
+                                        if unwrapped.is_empty() {
+                                            continue;
+                                        }
+                                        Bytes::from(unwrapped)
+                                    } else {
+                                        data.clone()
+                                    };
                                     if ttft_ms == 0 {
                                         ttft_ms = (start.elapsed().as_millis() as i64).max(1);
                                     }
-                                    sniffer.feed_http_chunk(data);
-                                    match admitted.pre_debit_up_to(data.len() as i64).await {
+                                    sniffer.feed_http_chunk(&out_chunk);
+                                    match admitted.pre_debit_up_to(out_chunk.len() as i64).await {
                                         Ok(allowed) => {
-                                            let n = (allowed as usize).min(data.len());
+                                            let n = (allowed as usize).min(out_chunk.len());
                                             if n > 0 {
-                                                if tx.send(Ok(Frame::data(data.slice(..n)))).await.is_err() {
+                                                if tx.send(Ok(Frame::data(out_chunk.slice(..n)))).await.is_err() {
                                                     break;
                                                 }
                                                 egress_bytes += n as i64;
                                             }
-                                            if n < data.len() {
-                                                if is_sse {
+                                            if n < out_chunk.len() {
+                                                if is_sse && !is_compressed {
                                                     let _ = tx.send(Ok(Frame::data(Bytes::from_static(
                                                         b"event: error\ndata: {\"code\":\"landing_grant_exhausted\"}\n\n"
                                                     )))).await;
@@ -1267,7 +1374,7 @@ impl EdgeServer {
                                             }
                                         }
                                         Err(_) => {
-                                            if is_sse {
+                                            if is_sse && !is_compressed {
                                                 let _ = tx.send(Ok(Frame::data(Bytes::from_static(
                                                     b"event: error\ndata: {\"code\":\"landing_grant_exhausted\"}\n\n"
                                                 )))).await;
@@ -1277,7 +1384,22 @@ impl EdgeServer {
                                     }
                                 }
                             }
-                            Some(Err(_)) | None => break,
+                            Some(Err(_)) | None => {
+                                if let Some(ref mut unwrapper) = agy_unwrapper {
+                                    let tail = unwrapper.finish();
+                                    if !tail.is_empty() {
+                                        sniffer.feed_http_chunk(&tail);
+                                        if let Ok(allowed) = admitted.pre_debit_up_to(tail.len() as i64).await {
+                                            let n = (allowed as usize).min(tail.len());
+                                            if n > 0 {
+                                                let _ = tx.send(Ok(Frame::data(Bytes::from(tail[..n].to_vec())))).await;
+                                                egress_bytes += n as i64;
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -1492,11 +1614,7 @@ impl EdgeServer {
                 }
             }
         }
-        let mut up_headers = HeaderMap::new();
-        copy_upstream_headers(&mut up_headers, &headers);
-        if let Some(ref c) = cred {
-            apply_credential_headers(&mut up_headers, &c.headers);
-        }
+        let up_headers = prepare_landing_ws_headers(&headers, &claims, cred.as_ref());
 
         let up_ws = match self
             .upstream
@@ -1828,6 +1946,8 @@ impl EdgeServer {
                 headers,
                 body,
                 task.account_id,
+                task.cage_epoch,
+                &task.accept_language,
                 task.follow_redirects,
             )
             .await
@@ -1905,7 +2025,10 @@ impl EdgeServer {
         if cred.expires_at_unix > 0 {
             let rem = cred.expires_at_unix - now_unix();
             if rem <= 0 {
-                return Ok(Some(cred));
+                // Fail closed: NEVER dial upstream with an already-expired credential envelope!
+                return Err(CredentialError::Unavailable(
+                    "upstream credential envelope already expired".into(),
+                ));
             }
             ttl = ttl.min(Duration::from_secs(rem as u64));
         }
@@ -2156,21 +2279,6 @@ fn is_hop_by_hop(name: &str) -> bool {
     )
 }
 
-fn copy_upstream_headers(dst: &mut HeaderMap, src: &HeaderMap) {
-    for (k, v) in src {
-        let lk = k.as_str().to_ascii_lowercase();
-        if lk.starts_with("x-berth-")
-            || matches!(
-                lk.as_str(),
-                "authorization" | "host" | "connection" | "transfer-encoding" | "content-length" | "upgrade"
-            )
-        {
-            continue;
-        }
-        dst.append(k.clone(), v.clone());
-    }
-}
-
 fn stream_incoming_with_revocation(
     resp: Response<Incoming>,
     admitted: AdmittedStream,
@@ -2190,6 +2298,13 @@ fn stream_incoming_with_revocation_mode(
             .get(http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|ct| ct.to_ascii_lowercase().contains("text/event-stream"));
+    let is_compressed = resp
+        .headers()
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some_and(|s| !s.eq_ignore_ascii_case("identity"));
     let mut builder = Response::builder().status(status);
     for (k, v) in resp.headers() {
         if !is_hop_by_hop(k.as_str()) {
@@ -2210,7 +2325,7 @@ fn stream_incoming_with_revocation_mode(
                             0x80 | WS_OP_CLOSE,
                             &close_p,
                         ))))).await;
-                    } else if is_sse {
+                    } else if is_sse && !is_compressed {
                         let _ = tx.send(Ok(Frame::data(Bytes::from_static(
                             b"event: error\ndata: {\"code\":\"cage_rebind_required\",\"reason\":\"stream_revoked\"}\n\n"
                         )))).await;
