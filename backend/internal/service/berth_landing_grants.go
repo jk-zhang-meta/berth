@@ -382,11 +382,8 @@ func (s *sqlLandingGrantStore) CreateGrant(ctx context.Context, in CreateLanding
 	}
 
 	// Materialize a redacted, credential-free user-bindable proxies projection.
-	proxyName := fmt.Sprintf("edge-landing-%s-u%d", nodeName, in.GranteeUserID)
-	if len(proxyName) > 100 {
-		proxyName = proxyName[:100]
-	}
-	proxyHost := fmt.Sprintf("%s.edge.internal", nodeName)
+	proxyName := formatEdgeLandingProxyName(nodeName, in.GranteeUserID)
+	proxyHost := EdgeInternalProxyHost(in.NodeID)
 	var proxyID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO proxies (
@@ -772,11 +769,8 @@ func (s *sqlLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLandi
 	}
 
 	// Materialize redacted, credential-free proxies row for this approved landing grant.
-	proxyName := fmt.Sprintf("edge-landing-%s-u%d", nodeName, granteeUserID)
-	if len(proxyName) > 100 {
-		proxyName = proxyName[:100]
-	}
-	proxyHost := fmt.Sprintf("%s.edge.internal", nodeName)
+	proxyName := formatEdgeLandingProxyName(nodeName, granteeUserID)
+	proxyHost := EdgeInternalProxyHost(nodeID)
 	var proxyID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO proxies (
@@ -1311,7 +1305,7 @@ func (m *MemoryLandingGrantStore) CreateGrant(ctx context.Context, in CreateLand
 
 	m.proxies[pid] = &MemoryProxyProjection{
 		ID:             pid,
-		Name:           fmt.Sprintf("edge-landing-%s-u%d", node.Name, in.GranteeUserID),
+		Name:           formatEdgeLandingProxyName(node.Name, in.GranteeUserID),
 		EdgeNodeID:     node.ID,
 		GrantID:        gid,
 		SourceType:     ProxySourceTypeEdgeLandingGrant,
@@ -1494,7 +1488,7 @@ func (m *MemoryLandingGrantStore) ApproveGrant(ctx context.Context, in ApproveLa
 	pid := m.nextProxyID
 	m.proxies[pid] = &MemoryProxyProjection{
 		ID:             pid,
-		Name:           fmt.Sprintf("edge-landing-%s-u%d", node.Name, g.GranteeUserID),
+		Name:           formatEdgeLandingProxyName(node.Name, g.GranteeUserID),
 		EdgeNodeID:     node.ID,
 		GrantID:        g.ID,
 		SourceType:     ProxySourceTypeEdgeLandingGrant,

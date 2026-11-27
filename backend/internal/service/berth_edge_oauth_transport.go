@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,8 +50,73 @@ func getDefaultEdgeLeaseService() *BerthEdgeLeaseService {
 	return svc
 }
 
-// ParseEdgeInternalNodeName returns the edge node name if proxyURL points to a
-// Berth virtual `edge_landing_grant` placeholder host (`<node-name>.edge.internal`).
+// EdgeInternalProxyHost returns the canonical, rename-safe virtual proxy host
+// for a Berth Edge Landing node (`node-<id>.edge.internal`). Using the numeric
+// node ID ensures proxies.host remains RFC-3986 / DNS-safe regardless of
+// Unicode characters, spaces, parentheses, or future node renames in the UI.
+func EdgeInternalProxyHost(nodeID int64) string {
+	return fmt.Sprintf("node-%d%s", nodeID, edgeInternalHostSuffix)
+}
+
+// ParseEdgeInternalNodeID parses a canonical `node-<id>` selector into a positive node ID.
+func ParseEdgeInternalNodeID(selector string) (int64, bool) {
+	s := strings.ToLower(strings.TrimSpace(selector))
+	if !strings.HasPrefix(s, "node-") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(s, "node-"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes])
+}
+
+func formatEdgeLandingProxyName(nodeName string, userID int64) string {
+	return truncateRunes(fmt.Sprintf("edge-landing-%s-u%d", strings.TrimSpace(nodeName), userID), 100)
+}
+
+func findEdgeLandingNode(nodes []EdgeNode, selector string) *EdgeNode {
+	trimmed := strings.TrimSpace(selector)
+	if trimmed == "" {
+		return nil
+	}
+	if id, ok := ParseEdgeInternalNodeID(trimmed); ok {
+		for i := range nodes {
+			if nodes[i].ID == id {
+				return &nodes[i]
+			}
+		}
+		return nil
+	}
+	for i := range nodes {
+		if strings.EqualFold(strings.TrimSpace(nodes[i].Name), trimmed) {
+			return &nodes[i]
+		}
+	}
+	if unescaped, err := url.PathUnescape(trimmed); err == nil && unescaped != trimmed {
+		for i := range nodes {
+			if strings.EqualFold(strings.TrimSpace(nodes[i].Name), strings.TrimSpace(unescaped)) {
+				return &nodes[i]
+			}
+		}
+	}
+	return nil
+}
+
+// ParseEdgeInternalNodeName returns the edge node selector (`node-<id>` or legacy
+// `<node-name>`) if proxyURL points to a Berth virtual `edge_landing_grant` host
+// (`*.edge.internal`).
 func ParseEdgeInternalNodeName(proxyURL string) (string, bool) {
 	raw := strings.TrimSpace(proxyURL)
 	if raw == "" {
@@ -167,13 +233,7 @@ func (s *BerthEdgeLeaseService) ExecuteOAuthTaskSyncForAccount(ctx context.Conte
 	if err != nil {
 		return nil, fmt.Errorf("lookup edge landing node %q: %w", nodeName, err)
 	}
-	var targetNode *EdgeNode
-	for i := range nodes {
-		if strings.EqualFold(strings.TrimSpace(nodes[i].Name), nodeName) {
-			targetNode = &nodes[i]
-			break
-		}
-	}
+	targetNode := findEdgeLandingNode(nodes, nodeName)
 	if targetNode == nil {
 		return nil, fmt.Errorf("edge landing node %q not found", nodeName)
 	}
@@ -316,67 +376,64 @@ func ProbeEdgeLandingNode(ctx context.Context, nodeName string) (*ProxyExitInfo,
 	if err != nil {
 		return nil, 0, fmt.Errorf("lookup edge landing node %q: %w", nodeName, err)
 	}
-	for i := range nodes {
-		if !strings.EqualFold(strings.TrimSpace(nodes[i].Name), nodeName) {
-			continue
-		}
-		n := &nodes[i]
-		if n.Status != EdgeNodeStatusActive && n.Status != EdgeNodeStatusDraining {
-			return nil, 0, fmt.Errorf("edge landing node %q is %s", nodeName, n.Status)
-		}
-		if n.LastHeartbeatAt == nil {
-			return nil, 0, fmt.Errorf("edge landing node %q has not reported a heartbeat yet", nodeName)
-		}
-		if time.Since(*n.LastHeartbeatAt) > 5*time.Minute {
-			return nil, 0, fmt.Errorf("edge landing node %q heartbeat stale (%s ago)", nodeName, time.Since(*n.LastHeartbeatAt).Round(time.Second))
-		}
-		exitIP := strings.TrimSpace(n.ExitIP)
-		if exitIP == "" {
-			return nil, 0, fmt.Errorf("edge landing node %q has no observed exit IP", nodeName)
-		}
-
-		// Live Central <-> Landing round-trip health_probe proves the node's OAuth worker is responsive now.
-		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		start := time.Now()
-		task := svc.EnqueueOAuthTask(EdgeOAuthTask{
-			NodeID:    n.ID,
-			Kind:      "health_probe",
-			TargetURL: "",
-			Method:    http.MethodGet,
-		})
-		if task.Status == "failed" {
-			return nil, 0, fmt.Errorf("edge landing node %q probe enqueue failed: %s", nodeName, task.Error)
-		}
-		svc.mu.Lock()
-		var waitCh chan struct{}
-		if t, ok := svc.oauthTaskIndex[task.TaskID]; ok && (t.Status == "pending" || t.Status == "claimed") {
-			waitCh = svc.oauthWaiters[task.TaskID]
-		}
-		svc.mu.Unlock()
-		if waitCh != nil {
-			select {
-			case <-waitCh:
-			case <-probeCtx.Done():
-				svc.CancelOAuthTask(n.ID, task.TaskID, "timed out waiting for edge landing health probe")
-				return nil, 0, fmt.Errorf("edge landing node %q did not respond to live probe: %w", nodeName, probeCtx.Err())
-			}
-		}
-		snap, _ := svc.ConsumeOAuthTask(task.TaskID)
-		if snap.Status == "failed" || snap.Error != "" || snap.StatusCode < 200 || snap.StatusCode >= 300 {
-			return nil, 0, fmt.Errorf("edge landing node %q live probe failed (status=%d): %s", nodeName, snap.StatusCode, snap.Error)
-		}
-		latencyMs := time.Since(start).Milliseconds()
-		if latencyMs < 1 {
-			latencyMs = 1
-		}
-		return &ProxyExitInfo{
-			IP:          exitIP,
-			CountryCode: strings.ToUpper(strings.TrimSpace(n.ExitCountryCode)),
-			Timezone:    strings.TrimSpace(n.ExitTimezone),
-			ASN:         strings.TrimSpace(n.ExitASNClass),
-			ISP:         "Berth Edge Landing (" + n.Name + ")",
-		}, latencyMs, nil
+	n := findEdgeLandingNode(nodes, nodeName)
+	if n == nil {
+		return nil, 0, fmt.Errorf("edge landing node %q not found", nodeName)
 	}
-	return nil, 0, fmt.Errorf("edge landing node %q not found", nodeName)
+	if n.Status != EdgeNodeStatusActive && n.Status != EdgeNodeStatusDraining {
+		return nil, 0, fmt.Errorf("edge landing node %q is %s", nodeName, n.Status)
+	}
+	if n.LastHeartbeatAt == nil {
+		return nil, 0, fmt.Errorf("edge landing node %q has not reported a heartbeat yet", nodeName)
+	}
+	if time.Since(*n.LastHeartbeatAt) > 5*time.Minute {
+		return nil, 0, fmt.Errorf("edge landing node %q heartbeat stale (%s ago)", nodeName, time.Since(*n.LastHeartbeatAt).Round(time.Second))
+	}
+	exitIP := strings.TrimSpace(n.ExitIP)
+	if exitIP == "" {
+		return nil, 0, fmt.Errorf("edge landing node %q has no observed exit IP", nodeName)
+	}
+
+	// Live Central <-> Landing round-trip health_probe proves the node's OAuth worker is responsive now.
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	task := svc.EnqueueOAuthTask(EdgeOAuthTask{
+		NodeID:    n.ID,
+		Kind:      "health_probe",
+		TargetURL: "",
+		Method:    http.MethodGet,
+	})
+	if task.Status == "failed" {
+		return nil, 0, fmt.Errorf("edge landing node %q probe enqueue failed: %s", nodeName, task.Error)
+	}
+	svc.mu.Lock()
+	var waitCh chan struct{}
+	if t, ok := svc.oauthTaskIndex[task.TaskID]; ok && (t.Status == "pending" || t.Status == "claimed") {
+		waitCh = svc.oauthWaiters[task.TaskID]
+	}
+	svc.mu.Unlock()
+	if waitCh != nil {
+		select {
+		case <-waitCh:
+		case <-probeCtx.Done():
+			svc.CancelOAuthTask(n.ID, task.TaskID, "timed out waiting for edge landing health probe")
+			return nil, 0, fmt.Errorf("edge landing node %q did not respond to live probe: %w", nodeName, probeCtx.Err())
+		}
+	}
+	snap, _ := svc.ConsumeOAuthTask(task.TaskID)
+	if snap.Status == "failed" || snap.Error != "" || snap.StatusCode < 200 || snap.StatusCode >= 300 {
+		return nil, 0, fmt.Errorf("edge landing node %q live probe failed (status=%d): %s", nodeName, snap.StatusCode, snap.Error)
+	}
+	latencyMs := time.Since(start).Milliseconds()
+	if latencyMs < 1 {
+		latencyMs = 1
+	}
+	return &ProxyExitInfo{
+		IP:          exitIP,
+		CountryCode: strings.ToUpper(strings.TrimSpace(n.ExitCountryCode)),
+		Timezone:    strings.TrimSpace(n.ExitTimezone),
+		ASN:         strings.TrimSpace(n.ExitASNClass),
+		ISP:         "Berth Edge Landing (" + n.Name + ")",
+	}, latencyMs, nil
 }

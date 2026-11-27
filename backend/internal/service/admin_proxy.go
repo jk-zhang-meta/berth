@@ -127,6 +127,7 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		}
 	}
 	originalConnection := proxyConnectionIdentity(proxy)
+	origProtocol, origHost, origPort := proxy.Protocol, proxy.Host, proxy.Port
 
 	// Merge only supplied fields, then validate the resulting fallback configuration.
 	mode := proxy.FallbackMode
@@ -188,10 +189,12 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		proxy.MaxConcurrency = *input.MaxConcurrency
 	}
 
+	edgeLandingManaged := s.enforceEdgeLandingProxyTransport(ctx, proxy, origProtocol, origHost, origPort)
+
 	var exitInfo *ProxyExitInfo
 	var latencyMs int64
 	var checkedAt time.Time
-	if originalConnection != proxyConnectionIdentity(proxy) {
+	if !edgeLandingManaged && originalConnection != proxyConnectionIdentity(proxy) {
 		exitInfo, latencyMs, checkedAt, err = s.probeVerifiedProxyExit(ctx, proxy)
 		if err != nil {
 			return nil, err

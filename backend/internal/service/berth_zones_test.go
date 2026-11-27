@@ -362,3 +362,58 @@ func TestBerthZoneService_FR125AutoMeasuredTopologyAndOverrides(t *testing.T) {
 	_, _, _, err = svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, houston.ID, liveRevAfter, nil)
 	require.ErrorIs(t, err, ErrNoRouteAvailable)
 }
+
+func TestSQLZoneStoreUpdateNode_SyncsLandingProxiesAndPreservesCustomNames(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	store := &sqlZoneStore{db: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name FROM berth_edge_nodes WHERE id = \$1 FOR UPDATE`).
+		WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("houston(host)"))
+	mock.ExpectQuery(`UPDATE berth_edge_nodes SET`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "zone_id", "roles", "public_addr", "tunnel_addr", "mgmt_entry_addr",
+			"connect_mode", "provider_region", "exit_ip", "exit_country_code", "exit_timezone",
+			"exit_locale", "exit_asn_class", "pubkey_ed25519", "agent_cert_fingerprint",
+			"status", "max_bytes_month", "used_bytes_month", "reserved_bytes_month",
+			"last_heartbeat_at", "meta", "created_at", "updated_at",
+		}).AddRow(
+			int64(9), "Houston (母机)", int64(3), pq.Array([]string{EdgeRoleLanding}), "", "", "",
+			ConnectModeReverseTunnel, "us-houston", "68.77.201.111", "US", "America/Chicago",
+			"en_US.UTF-8", "residential", "", "", EdgeNodeStatusActive, int64(0), int64(0), int64(0),
+			now, []byte(`{}`), now, now,
+		))
+	mock.ExpectQuery(`SELECT p\.id, p\.name, p\.host, COALESCE\(g\.grantee_user_id, 0\)`).
+		WithArgs(int64(9), ProxySourceTypeEdgeLandingGrant).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "host", "grantee_user_id"}).
+			AddRow(int64(56), "edge-landing-houston(host)-u1", "houston(host).edge.internal", int64(1)).
+			AddRow(int64(57), "我的母机专属代理", "houston(host).edge.internal", int64(2)))
+
+	// Default auto-generated name updates + host upgrades to canonical node-9.edge.internal.
+	mock.ExpectExec(`UPDATE proxies\s+SET name = \$2, host = \$3, updated_at = NOW\(\)\s+WHERE id = \$1`).
+		WithArgs(int64(56), "edge-landing-Houston (母机)-u1", "node-9.edge.internal").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Custom user-defined proxy name is preserved, while legacy host still upgrades to node-9.edge.internal.
+	mock.ExpectExec(`UPDATE proxies\s+SET name = \$2, host = \$3, updated_at = NOW\(\)\s+WHERE id = \$1`).
+		WithArgs(int64(57), "我的母机专属代理", "node-9.edge.internal").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	updated, err := store.UpdateNode(context.Background(), EdgeNode{
+		ID:          9,
+		Name:        "Houston (母机)",
+		ZoneID:      3,
+		Roles:       []string{EdgeRoleLanding},
+		ConnectMode: ConnectModeReverseTunnel,
+		Status:      EdgeNodeStatusActive,
+		Meta:        []byte(`{}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Houston (母机)", updated.Name)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

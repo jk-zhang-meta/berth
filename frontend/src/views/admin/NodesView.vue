@@ -362,7 +362,10 @@
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <label class="input-label">节点名称 *</label>
-            <input v-model="nodeForm.name" type="text" class="input" placeholder="如 houston-vm104" />
+            <input v-model="nodeForm.name" type="text" class="input" placeholder="如 houston(meteor)" />
+            <p class="mt-1 text-[11px] text-gray-400">
+              支持中英文与括号标注；改名会自动同步默认落地代理名称，不影响在线转发与 OAuth。
+            </p>
           </div>
           <div>
             <label class="input-label">所属逻辑分区 (Zone) *</label>

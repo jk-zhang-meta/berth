@@ -22,11 +22,107 @@ func TestParseEdgeInternalNodeName(t *testing.T) {
 	if name, ok := ParseEdgeInternalNodeName("http://houston-vm100.edge.internal"); !ok || name != "houston-vm100" {
 		t.Fatalf("expected houston-vm100, got %q (%v)", name, ok)
 	}
+	if name, ok := ParseEdgeInternalNodeName("https://node-9.edge.internal:443"); !ok || name != "node-9" {
+		t.Fatalf("expected node-9, got %q (%v)", name, ok)
+	}
+	if id, ok := ParseEdgeInternalNodeID("node-9"); !ok || id != 9 {
+		t.Fatalf("expected node ID 9, got %d (%v)", id, ok)
+	}
+	if _, ok := ParseEdgeInternalNodeID("houston(host)"); ok {
+		t.Fatalf("non-ID node name must not parse as node ID")
+	}
+	if host := EdgeInternalProxyHost(12); host != "node-12.edge.internal" {
+		t.Fatalf("unexpected canonical host %q", host)
+	}
 	if _, ok := ParseEdgeInternalNodeName("socks5://1.2.3.4:1080"); ok {
 		t.Fatalf("external socks5 proxy must not match edge.internal")
 	}
 	if _, ok := ParseEdgeInternalNodeName(""); ok {
 		t.Fatalf("empty proxy must not match")
+	}
+}
+
+func TestEdgeLandingCanonicalIDSurvivesArbitraryRenames(t *testing.T) {
+	zoneStore := NewMemoryZoneStore(false)
+	zoneSvc := NewBerthZoneServiceWithStore(zoneStore)
+	ctx := context.Background()
+	z, err := zoneSvc.CreateZone(ctx, NetworkZone{Slug: "us", DisplayName: "US"})
+	if err != nil {
+		t.Fatalf("create zone: %v", err)
+	}
+	node, err := zoneSvc.CreateNode(ctx, EdgeNode{
+		Name:            "houston(host)",
+		ZoneID:          z.ID,
+		Roles:           []string{EdgeRoleLanding},
+		ConnectMode:     ConnectModeReverseTunnel,
+		Status:          EdgeNodeStatusActive,
+		ExitIP:          "68.77.201.111",
+		ExitCountryCode: "US",
+		ExitTimezone:    "America/Chicago",
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if _, err := zoneSvc.RecordHeartbeat(ctx, node.ID, EdgeHeartbeatUpdate{Status: EdgeNodeStatusActive}, time.Now()); err != nil {
+		t.Fatalf("RecordHeartbeat: %v", err)
+	}
+
+	// Rename node to a display name with Chinese characters, spaces, and parentheses!
+	node.Name = "Houston (母机 7600X)"
+	if _, err := zoneSvc.UpdateNode(ctx, *node); err != nil {
+		t.Fatalf("UpdateNode rename: %v", err)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	leaseSvc := NewBerthEdgeLeaseServiceWithStore(NewMemoryEdgeLeaseStore(nil), zoneSvc, nil, pub, priv, "k1")
+	RegisterDefaultEdgeLeaseService(leaseSvc)
+	defer RegisterDefaultEdgeLeaseService(nil)
+
+	proxyURL := "https://" + EdgeInternalProxyHost(node.ID) + ":443"
+	selector, ok := ParseEdgeInternalNodeName(proxyURL)
+	if !ok {
+		t.Fatalf("expected canonical proxyURL %q to parse", proxyURL)
+	}
+
+	go func() {
+		tasks := leaseSvc.WaitPendingOAuthTasks(ctx, node.ID, 5*time.Second)
+		if len(tasks) != 1 || tasks[0].Kind != "health_probe" {
+			return
+		}
+		_, _ = leaseSvc.CompleteOAuthTaskFull(node.ID, tasks[0].TaskID, tasks[0].ClaimID, 200, "ok", "", nil, "")
+	}()
+	exitInfo, latencyMs, err := ProbeEdgeLandingNode(ctx, selector)
+	if err != nil {
+		t.Fatalf("ProbeEdgeLandingNode by canonical ID failed after Unicode rename: %v", err)
+	}
+	if exitInfo.IP != "68.77.201.111" || !strings.Contains(exitInfo.ISP, "Houston (母机 7600X)") || latencyMs < 1 {
+		t.Fatalf("unexpected probe result after rename: %+v latencyMs=%d", exitInfo, latencyMs)
+	}
+
+	// Verify OAuth dispatch via httpclient also resolves cleanly after arbitrary rename.
+	go func() {
+		tasks := leaseSvc.WaitPendingOAuthTasks(ctx, node.ID, 5*time.Second)
+		if len(tasks) != 1 {
+			return
+		}
+		_, _ = leaseSvc.CompleteOAuthTaskFull(
+			node.ID, tasks[0].TaskID, tasks[0].ClaimID, 200, "",
+			base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
+			map[string][]string{"Content-Type": {"application/json"}}, "",
+		)
+	}()
+	hc, err := httpclient.GetClient(httpclient.Options{ProxyURL: proxyURL, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("httpclient.GetClient canonical host: %v", err)
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://oauth2.googleapis.com/token", nil)
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatalf("httpclient Do canonical host failed after rename: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }
 

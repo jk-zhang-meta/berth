@@ -1271,7 +1271,21 @@ func (s *sqlZoneStore) CreateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 }
 
 func (s *sqlZoneStore) UpdateNode(ctx context.Context, n EdgeNode) (*EdgeNode, error) {
-	row := s.db.QueryRowContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var oldName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM berth_edge_nodes WHERE id = $1 FOR UPDATE`, n.ID).Scan(&oldName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrEdgeZoneNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRowContext(ctx, `
 		UPDATE berth_edge_nodes SET
 			name = $2, zone_id = $3, roles = $4, public_addr = $5, tunnel_addr = $6,
 			mgmt_entry_addr = $7, connect_mode = $8, provider_region = $9,
@@ -1285,7 +1299,83 @@ func (s *sqlZoneStore) UpdateNode(ctx context.Context, n EdgeNode) (*EdgeNode, e
 		n.ExitIP, n.ExitCountryCode, n.ExitTimezone, n.ExitLocale, n.ExitASNClass,
 		n.PubkeyEd25519, n.AgentCertFingerprint, n.Status, n.MaxBytesMonth, string(n.Meta),
 	)
-	return scanEdgeNode(row)
+	updated, err := scanEdgeNode(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syncEdgeLandingProxiesOnNodeUpdate(ctx, tx, updated.ID, oldName, updated.Name); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func syncEdgeLandingProxiesOnNodeUpdate(ctx context.Context, tx *sql.Tx, nodeID int64, oldName, newName string) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT p.id, p.name, p.host, COALESCE(g.grantee_user_id, 0)
+		FROM proxies p
+		LEFT JOIN berth_landing_node_grants g ON g.id = p.grant_id
+		WHERE p.edge_node_id = $1
+		  AND p.source_type = $2
+		  AND p.deleted_at IS NULL`,
+		nodeID, ProxySourceTypeEdgeLandingGrant,
+	)
+	if err != nil {
+		return err
+	}
+	type proxyRow struct {
+		id            int64
+		name          string
+		host          string
+		granteeUserID int64
+	}
+	var toInspect []proxyRow
+	for rows.Next() {
+		var r proxyRow
+		if err := rows.Scan(&r.id, &r.name, &r.host, &r.granteeUserID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		toInspect = append(toInspect, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	canonicalHost := EdgeInternalProxyHost(nodeID)
+	oldTrim := strings.TrimSpace(oldName)
+	newTrim := strings.TrimSpace(newName)
+	oldPrefix := "edge-landing-" + oldTrim + "-u"
+
+	for _, r := range toInspect {
+		nextName := r.name
+		if oldTrim != "" && newTrim != "" && oldTrim != newTrim {
+			if r.granteeUserID > 0 && r.name == formatEdgeLandingProxyName(oldTrim, r.granteeUserID) {
+				nextName = formatEdgeLandingProxyName(newTrim, r.granteeUserID)
+			} else if strings.HasPrefix(r.name, oldPrefix) {
+				suffix := strings.TrimPrefix(r.name, oldPrefix)
+				nextName = truncateRunes("edge-landing-"+newTrim+"-u"+suffix, 100)
+			}
+		}
+		if nextName != r.name || r.host != canonicalHost {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE proxies
+				SET name = $2, host = $3, updated_at = NOW()
+				WHERE id = $1`,
+				r.id, nextName, canonicalHost,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *sqlZoneStore) RecordHeartbeat(ctx context.Context, nodeID int64, upd EdgeHeartbeatUpdate, at time.Time) (*EdgeNode, error) {

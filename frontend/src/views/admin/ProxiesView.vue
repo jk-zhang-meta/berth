@@ -740,36 +740,51 @@
         @submit.prevent="handleUpdateProxy"
         class="space-y-5"
       >
+        <div
+          v-if="isEditingEdgeLandingProxy"
+          class="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-2 text-xs text-blue-700 dark:border-blue-800/60 dark:bg-blue-950/30 dark:text-blue-300"
+        >
+          Berth 落地节点虚拟代理：可自由修改显示名称（支持中英文与括号）与配额；协议、主机与端口由节点 ID 自动托管，改名不会影响在线转发或 OAuth。
+        </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.name') }}</label>
           <input v-model="editForm.name" type="text" required class="input" />
         </div>
         <div>
           <label class="input-label">{{ t('admin.proxies.protocol') }}</label>
-          <Select v-model="editForm.protocol" :options="protocolSelectOptions" />
+          <Select v-model="editForm.protocol" :options="protocolSelectOptions" :disabled="isEditingEdgeLandingProxy" />
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="input-label">{{ t('admin.proxies.host') }}</label>
-            <input v-model="editForm.host" type="text" required class="input" />
+            <input
+              v-model="editForm.host"
+              type="text"
+              :required="!isEditingEdgeLandingProxy"
+              :disabled="isEditingEdgeLandingProxy"
+              class="input"
+              :class="isEditingEdgeLandingProxy ? 'opacity-60 cursor-not-allowed' : ''"
+            />
           </div>
           <div>
             <label class="input-label">{{ t('admin.proxies.port') }}</label>
             <input
               v-model.number="editForm.port"
               type="number"
-              required
+              :required="!isEditingEdgeLandingProxy"
+              :disabled="isEditingEdgeLandingProxy"
               min="1"
               max="65535"
               class="input"
+              :class="isEditingEdgeLandingProxy ? 'opacity-60 cursor-not-allowed' : ''"
             />
           </div>
         </div>
-        <div>
+        <div v-if="!isEditingEdgeLandingProxy">
           <label class="input-label">{{ t('admin.proxies.username') }}</label>
           <input v-model="editForm.username" type="text" class="input" />
         </div>
-        <div>
+        <div v-if="!isEditingEdgeLandingProxy">
           <label class="input-label">{{ t('admin.proxies.password') }}</label>
           <div class="relative">
             <input
@@ -1563,29 +1578,35 @@ const closeEditModal = () => {
   editPasswordDirty.value = false
 }
 
+const isEditingEdgeLandingProxy = computed(() => {
+  const p = editingProxy.value
+  if (!p) return false
+  const host = (p.host || '').trim().toLowerCase()
+  if (host.endsWith('.edge.internal')) return true
+  return !host && (p.name || '').startsWith('edge-landing-')
+})
+
 const handleUpdateProxy = async () => {
   if (!editingProxy.value) return
   if (!editForm.name.trim()) {
     appStore.showError(t('admin.proxies.nameRequired'))
     return
   }
-  if (!editForm.host.trim()) {
-    appStore.showError(t('admin.proxies.hostRequired'))
-    return
-  }
-  if (editForm.port < 1 || editForm.port > 65535) {
-    appStore.showError(t('admin.proxies.portInvalid'))
-    return
+  if (!isEditingEdgeLandingProxy.value) {
+    if (!editForm.host.trim()) {
+      appStore.showError(t('admin.proxies.hostRequired'))
+      return
+    }
+    if (editForm.port < 1 || editForm.port > 65535) {
+      appStore.showError(t('admin.proxies.portInvalid'))
+      return
+    }
   }
 
   submitting.value = true
   try {
     const updateData: any = {
       name: editForm.name.trim(),
-      protocol: editForm.protocol,
-      host: editForm.host.trim(),
-      port: editForm.port,
-      username: editForm.username.trim(),
       status: editForm.status,
       expires_at: editForm.expires_at ? Math.floor(new Date(editForm.expires_at).getTime() / 1000) : null,
       fallback_mode: editForm.fallback_mode,
@@ -1595,10 +1616,15 @@ const handleUpdateProxy = async () => {
       max_rpm: editForm.max_rpm,
       max_concurrency: editForm.max_concurrency,
     }
-
-    // Only include password if user actually modified the field
-    if (editPasswordDirty.value) {
-      updateData.password = editForm.password.trim()
+    if (!isEditingEdgeLandingProxy.value) {
+      updateData.protocol = editForm.protocol
+      updateData.host = editForm.host.trim()
+      updateData.port = editForm.port
+      updateData.username = editForm.username.trim()
+      // Only include password if user actually modified the field
+      if (editPasswordDirty.value) {
+        updateData.password = editForm.password.trim()
+      }
     }
 
     await adminAPI.proxies.update(editingProxy.value.id, updateData)

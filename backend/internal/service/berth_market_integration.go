@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 )
@@ -112,6 +113,72 @@ func (s *MarketplaceService) IsActiveEdgeLandingGrantProxy(ctx context.Context, 
 		  AND p.source_type = $2
 	)`, proxyID, ProxySourceTypeEdgeLandingGrant).Scan(&ok)
 	return ok, err
+}
+
+// EdgeLandingProxyBinding reports whether proxyID is a materialized Berth
+// `edge_landing_grant` proxy and returns its bound edge_node_id (if present).
+func (s *MarketplaceService) EdgeLandingProxyBinding(ctx context.Context, proxyID int64) (bool, int64, error) {
+	if s == nil || s.db == nil || proxyID <= 0 {
+		return false, 0, nil
+	}
+	var sourceType string
+	var edgeNodeID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(source_type, ''), edge_node_id
+		FROM proxies
+		WHERE id = $1 AND deleted_at IS NULL
+	`, proxyID).Scan(&sourceType, &edgeNodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	if sourceType != ProxySourceTypeEdgeLandingGrant {
+		return false, 0, nil
+	}
+	return true, edgeNodeID.Int64, nil
+}
+
+// enforceEdgeLandingProxyTransport keeps virtual `*.edge.internal` landing proxy
+// transport fields (`protocol`, `host`, `port`, credentials) managed by Berth so
+// renaming or editing quota/status in the Web UI can never corrupt edge routing.
+func (s *adminServiceImpl) enforceEdgeLandingProxyTransport(
+	ctx context.Context,
+	proxy *Proxy,
+	origProtocol, origHost string,
+	origPort int,
+) bool {
+	if proxy == nil {
+		return false
+	}
+	isManaged := strings.HasSuffix(strings.ToLower(strings.TrimSpace(origHost)), edgeInternalHostSuffix)
+	var edgeNodeID int64
+	if s != nil && s.marketplace != nil && proxy.ID > 0 {
+		if bound, nid, err := s.marketplace.EdgeLandingProxyBinding(ctx, proxy.ID); err == nil && bound {
+			isManaged = true
+			edgeNodeID = nid
+		}
+	}
+	if !isManaged {
+		return false
+	}
+	proxy.Protocol = "https"
+	if edgeNodeID > 0 {
+		proxy.Host = EdgeInternalProxyHost(edgeNodeID)
+	} else {
+		proxy.Host = origHost
+	}
+	proxy.Port = 443
+	if origPort > 0 && edgeNodeID <= 0 {
+		proxy.Port = origPort
+	}
+	if origProtocol != "" && edgeNodeID <= 0 {
+		proxy.Protocol = origProtocol
+	}
+	proxy.Username = ""
+	proxy.Password = ""
+	return true
 }
 
 func (s *adminServiceImpl) isActiveEdgeLandingGrantProxy(ctx context.Context, proxy *Proxy) bool {
