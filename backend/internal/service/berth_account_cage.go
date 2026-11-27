@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	mathrand "math/rand/v2"
 	"net/netip"
 	"net/url"
@@ -1036,24 +1037,32 @@ func resolveRequiredProxyURL(ctx context.Context, proxyRepo ProxyRepository, pro
 	return proxy.URL(), nil
 }
 
-func (s *BerthAccountCageService) loadProxyExitProfile(ctx context.Context, proxyID int64) (*ProxyExitInfo, error) {
+func deriveCageBindingModeForMaxAccounts(maxAccounts int) string {
+	if maxAccounts == 1 {
+		return CageBindingModeExclusive
+	}
+	return CageBindingModeSharedCapped
+}
+
+func (s *BerthAccountCageService) loadProxyExitProfile(ctx context.Context, proxyID int64) (*ProxyExitInfo, string, error) {
 	if s == nil || s.db == nil || proxyID <= 0 {
-		return nil, nil
+		return nil, CageBindingModeSharedCapped, nil
 	}
 	var ip, country, cc, region, city, tz, asn, isp sql.NullString
 	var checkedAt sql.NullTime
+	var maxAccounts int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT exit_ip, exit_country, exit_country_code, exit_region, exit_city,
-		       exit_timezone, exit_asn, exit_isp, exit_checked_at
+		       exit_timezone, exit_asn, exit_isp, exit_checked_at, COALESCE(max_accounts, 0)
 		FROM proxies
 		WHERE id = $1 AND deleted_at IS NULL`, proxyID).Scan(
-		&ip, &country, &cc, &region, &city, &tz, &asn, &isp, &checkedAt,
+		&ip, &country, &cc, &region, &city, &tz, &asn, &isp, &checkedAt, &maxAccounts,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, CageBindingModeSharedCapped, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	return &ProxyExitInfo{
 		IP:          strings.TrimSpace(ip.String),
@@ -1064,7 +1073,7 @@ func (s *BerthAccountCageService) loadProxyExitProfile(ctx context.Context, prox
 		Timezone:    strings.TrimSpace(tz.String),
 		ASN:         strings.TrimSpace(asn.String),
 		ISP:         strings.TrimSpace(isp.String),
-	}, nil
+	}, deriveCageBindingModeForMaxAccounts(maxAccounts), nil
 }
 
 // EnsureCageForAccount idempotently creates an AccountCage for accountID when bound to
@@ -1081,14 +1090,15 @@ func (s *BerthAccountCageService) EnsureCageForAccount(ctx context.Context, acco
 		return nil, err
 	}
 
-	exitInfo, err := s.loadProxyExitProfile(ctx, proxyID)
+	exitInfo, bindingMode, err := s.loadProxyExitProfile(ctx, proxyID)
 	if err != nil {
 		return nil, err
 	}
 	in := ProvisionCageInput{
-		AccountID: accountID,
-		Platform:  platform,
-		ProxyID:   proxyID,
+		AccountID:          accountID,
+		Platform:           platform,
+		ProxyID:            proxyID,
+		LandingBindingMode: bindingMode,
 	}
 	if exitInfo != nil {
 		in.ExitCountryCode = exitInfo.CountryCode
@@ -1151,8 +1161,9 @@ func (s *BerthAccountCageService) RebindAccountProxy(
 	}
 
 	var exitInfo *ProxyExitInfo
+	targetBindingMode := CageBindingModeSharedCapped
 	if targetProxyID > 0 {
-		exitInfo, err = s.loadProxyExitProfile(ctx, targetProxyID)
+		exitInfo, targetBindingMode, err = s.loadProxyExitProfile(ctx, targetProxyID)
 		if err != nil {
 			return err
 		}
@@ -1186,6 +1197,7 @@ func (s *BerthAccountCageService) RebindAccountProxy(
 		if err := tx.QueryRowContext(ctx, `
 			UPDATE account_cages
 			   SET proxy_id = $2,
+			       landing_binding_mode = $8,
 			       timezone = $3,
 			       locale = $4,
 			       accept_language = $5,
@@ -1197,7 +1209,7 @@ func (s *BerthAccountCageService) RebindAccountProxy(
 			       updated_at = NOW()
 			 WHERE id = $1 AND deleted_at IS NULL
 			 RETURNING gate_epoch`,
-			existing.ID, targetProxyID, geo.Timezone, geo.Locale, geo.AcceptLanguage, geo.OAILanguage, reason,
+			existing.ID, targetProxyID, geo.Timezone, geo.Locale, geo.AcceptLanguage, geo.OAILanguage, reason, targetBindingMode,
 		).Scan(&newEpoch); err != nil {
 			return err
 		}
@@ -1313,6 +1325,20 @@ func (s *BerthAccountCageService) BackfillMissingCages(ctx context.Context) (int
 	if s == nil || s.db == nil {
 		return 0, nil
 	}
+	// Align any existing exclusive_1to1 cages bound to shared-capacity proxies
+	// (max_accounts != 1) to shared_capped so co-hosted accounts (e.g. different
+	// platforms sharing a residential landing proxy) can also provision cages.
+	if _, alignErr := s.db.ExecContext(ctx, `
+		UPDATE account_cages c
+		   SET landing_binding_mode = 'shared_capped'
+		  FROM proxies p
+		 WHERE c.proxy_id = p.id
+		   AND c.deleted_at IS NULL
+		   AND c.landing_binding_mode = 'exclusive_1to1'
+		   AND p.deleted_at IS NULL
+		   AND COALESCE(p.max_accounts, 0) <> 1`); alignErr != nil {
+		log.Printf("Warning: berth-v2 align shared_capped cages failed: %v", alignErr)
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.platform, a.proxy_id
 		FROM accounts a
@@ -1349,7 +1375,9 @@ func (s *BerthAccountCageService) BackfillMissingCages(ctx context.Context) (int
 	}
 	created := 0
 	for _, item := range pending {
-		if c, cErr := s.EnsureCageForAccount(ctx, item.accountID, item.platform, item.proxyID); cErr == nil && c != nil {
+		if c, cErr := s.EnsureCageForAccount(ctx, item.accountID, item.platform, item.proxyID); cErr != nil {
+			log.Printf("Warning: berth-v2 cage backfill skipped account=%d proxy=%d: %v", item.accountID, item.proxyID, cErr)
+		} else if c != nil {
 			created++
 		}
 	}
