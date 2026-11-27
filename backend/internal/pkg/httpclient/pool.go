@@ -64,6 +64,16 @@ var validateResolvedIP = urlvalidator.ValidateResolvedIP
 // 性能优化：相同配置复用同一客户端，避免重复创建 Transport
 // 安全说明：代理配置失败时直接返回错误，不会回退到直连，避免 IP 关联风险
 func GetClient(opts Options) (*http.Client, error) {
+	if edgeRT := proxyutil.NewEdgeRoundTripper(opts.ProxyURL); edgeRT != nil {
+		if opts.InsecureSkipVerify {
+			return nil, fmt.Errorf("insecure_skip_verify is not allowed; install a trusted certificate instead")
+		}
+		return &http.Client{
+			Transport: servertiming.WrapRoundTripper(edgeRT),
+			Timeout:   opts.Timeout,
+		}, nil
+	}
+
 	key := buildClientKey(opts)
 	if cached, ok := sharedClients.Load(key); ok {
 		if client, ok := cached.(*http.Client); ok {

@@ -3065,6 +3065,7 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 // BatchTodayStatsRequest 批量今日统计请求体。
 type BatchTodayStatsRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required"`
+	Force      bool    `json:"force"`
 }
 
 type BatchUsageRequest struct {
@@ -3091,19 +3092,22 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
+	ensureAccountTodayStatsCacheDay()
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
-	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
-		if cached.ETag != "" {
-			c.Header("ETag", cached.ETag)
-			c.Header("Vary", "If-None-Match")
-			if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
-				c.Status(http.StatusNotModified)
-				return
+	if !req.Force {
+		if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
+			if cached.ETag != "" {
+				c.Header("ETag", cached.ETag)
+				c.Header("Vary", "If-None-Match")
+				if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
+					c.Status(http.StatusNotModified)
+					return
+				}
 			}
+			c.Header("X-Snapshot-Cache", "hit")
+			response.Success(c, cached.Payload)
+			return
 		}
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
-		return
 	}
 
 	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)

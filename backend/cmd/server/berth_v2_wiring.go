@@ -31,6 +31,7 @@ type berthV2Deps struct {
 	paymentService       *service.PaymentService
 	paymentConfigService *service.PaymentConfigService
 	stewardStore         *service.StewardStore
+	billingService       *service.BillingService
 	cnProviderHandler    *admin.CNProviderHandler
 	handlers             *handler.Handlers
 }
@@ -135,6 +136,8 @@ func wireBerthV2(deps berthV2Deps) (func(), error) {
 	zoneService := service.NewBerthZoneService(deps.db)
 	grantService := service.NewBerthLandingGrantService(deps.db)
 	edgeLeaseService := service.NewBerthEdgeLeaseService(deps.db, zoneService, grantService, pub, priv, keyID)
+	edgeLeaseService.SetEdgeUsageTelemetry(deps.db, deps.billingService, admin.InvalidateAccountTodayStatsCache)
+	service.RegisterDefaultEdgeLeaseService(edgeLeaseService)
 	deps.handlers.BerthEdge = handler.NewBerthEdgeHandler(zoneService, grantService, edgeLeaseService)
 	deps.handlers.BerthEdge.SetAccountLookup(deps.adminService)
 

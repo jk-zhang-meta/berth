@@ -1,0 +1,37 @@
+[package]
+name = "berth-vault"
+version = "0.1.0"
+edition = "2024"
+description = "Pure-Rust Berth Cloud Session Vault daemon (per-user 1 GiB quota, immutable snapshots + tombstones, zero Go)"
+
+[[bin]]
+name = "berth-vault"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+deadpool-postgres = "0.14"
+futures-util = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+ipnet = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["sensitive-headers", "timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v7"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

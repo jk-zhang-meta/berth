@@ -295,6 +295,11 @@ func NewClient(proxyURL string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if edgeRT := proxyutil.NewEdgeRoundTripper(proxyURL); edgeRT != nil {
+		client.Timeout = 30 * time.Second
+		client.Transport = edgeRT
+		return &Client{httpClient: client}, nil
+	}
 	if parsed != nil {
 		transport := &http.Transport{
 			DialContext: (&net.Dialer{

@@ -174,4 +174,57 @@ describe('user AccountsView hides admin-only pool controls', () => {
     expect(wrapper.get('[data-test="account-filters"]').attributes('data-owner-count')).toBe('0')
     expect(getAllGroups).not.toHaveBeenCalled()
   })
+
+  it('passes force=true to getBatchTodayStats on manual refresh and preserves latency fields on inline account update', async () => {
+    role.isAdmin = true
+    const account = {
+      id: 24,
+      name: 'codex@example.com',
+      platform: 'openai',
+      type: 'oauth',
+      credentials: {},
+      extra: {},
+      status: 'active',
+      schedulable: true,
+      group_ids: [],
+      first_token_ms: 1010,
+      duration_ms: 2340,
+      owner_user_id: 1,
+      owner_label: 'admin@example.com'
+    }
+    listAccounts.mockResolvedValue({ items: [account], total: 1, page: 1, page_size: 20, pages: 1 })
+    getBatchTodayStats.mockResolvedValue({ stats: { '24': { requests: 5, tokens: 1200, cost: 0.05 } } })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '卡片')!.trigger('click')
+    await flushPromises()
+
+    getBatchTodayStats.mockClear()
+    wrapper.findComponent({ name: 'AccountTableActions' }).vm.$emit('refresh')
+    await flushPromises()
+    expect(getBatchTodayStats).toHaveBeenCalledWith([24], { force: true })
+
+    // Inline card update (e.g. proxy or notes PUT) returns Account without steward latency fields;
+    // mergeRuntimeFields must preserve first_token_ms, duration_ms, and owner_label.
+    const card = wrapper.findComponent({ name: 'AccountPoolCard' })
+    card.vm.$emit('account-updated', {
+      id: 24,
+      name: 'codex@example.com',
+      platform: 'openai',
+      type: 'oauth',
+      credentials: {},
+      extra: {},
+      status: 'active',
+      schedulable: true,
+      group_ids: [],
+      notes: 'updated'
+    })
+    await flushPromises()
+    const updatedProp = wrapper.findComponent({ name: 'AccountPoolCard' }).props('account') as Record<string, unknown>
+    expect(updatedProp.first_token_ms).toBe(1010)
+    expect(updatedProp.duration_ms).toBe(2340)
+    expect(updatedProp.owner_label).toBe('admin@example.com')
+    wrapper.unmount()
+  })
 })

@@ -410,11 +410,20 @@ func (h *BerthEdgeHandler) EdgeHeartbeat(c *gin.Context) {
 	osName, archName := service.ParseEdgeArchPair(upd.AgentArch)
 	edgeRelease, _, _ := service.LookupEdgeRelease(service.ResolveEdgeReleaseDir(), osName, archName)
 	probeTargets, _ := h.zones.ProbeTargetsForNode(c.Request.Context(), nodeID)
+	peerPubKeys := make(map[int64]string)
+	if allNodes, lErr := h.zones.ListNodes(c.Request.Context()); lErr == nil {
+		for _, n := range allNodes {
+			if pk := strings.TrimSpace(n.PubkeyEd25519); pk != "" {
+				peerPubKeys[n.ID] = pk
+			}
+		}
+	}
 	payload := gin.H{
 		"node":                node,
 		"revocation_snapshot": snap,
 		"central_pubkey":      h.leases.PublicKeyBase64(),
 		"probe_targets":       probeTargets,
+		"peer_public_keys":    peerPubKeys,
 	}
 	if edgeRelease != nil {
 		payload["edge_release"] = edgeRelease
@@ -571,6 +580,16 @@ func (h *BerthEdgeHandler) EdgeListOAuthTasks(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if rawWait := strings.TrimSpace(c.Query("wait")); rawWait != "" {
+		if secs, err := strconv.Atoi(rawWait); err == nil && secs > 0 {
+			if secs > 25 {
+				secs = 25
+			}
+			tasks := h.leases.WaitPendingOAuthTasks(c.Request.Context(), nodeID, time.Duration(secs)*time.Second)
+			response.Success(c, gin.H{"tasks": tasks})
+			return
+		}
+	}
 	tasks := h.leases.ListPendingOAuthTasks(nodeID)
 	response.Success(c, gin.H{"tasks": tasks})
 }
@@ -582,15 +601,27 @@ func (h *BerthEdgeHandler) EdgeCompleteOAuthTask(c *gin.Context) {
 	}
 	taskID := strings.TrimSpace(c.Param("id"))
 	var body struct {
-		StatusCode int    `json:"status_code"`
-		RespBody   string `json:"resp_body"`
-		Error      string `json:"error"`
+		ClaimID        string              `json:"claim_id"`
+		StatusCode     int                 `json:"status_code"`
+		RespHeaders    map[string][]string `json:"resp_headers"`
+		RespBody       string              `json:"resp_body"`
+		RespBodyBase64 string              `json:"resp_body_base64"`
+		Error          string              `json:"error"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.BadRequest(c, "Invalid task completion body")
 		return
 	}
-	task, err := h.leases.CompleteOAuthTask(nodeID, taskID, body.StatusCode, body.RespBody, body.Error)
+	task, err := h.leases.CompleteOAuthTaskFull(
+		nodeID,
+		taskID,
+		strings.TrimSpace(body.ClaimID),
+		body.StatusCode,
+		body.RespBody,
+		body.RespBodyBase64,
+		body.RespHeaders,
+		body.Error,
+	)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

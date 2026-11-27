@@ -60,6 +60,15 @@ func (c *snapshotCache) Get(key string) (snapshotCacheEntry, bool) {
 	return entry, true
 }
 
+func (c *snapshotCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	clear(c.items)
+	c.mu.Unlock()
+}
+
 func (c *snapshotCache) Set(key string, payload any) snapshotCacheEntry {
 	if c == nil {
 		return snapshotCacheEntry{}

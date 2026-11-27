@@ -258,6 +258,9 @@ func (h *MarketplaceHandler) Terminate(c *gin.Context) {
 	}
 	h.invalidate(c, item.BuyerID)
 	h.invalidate(c, item.SellerID)
+	if item.GroupID != nil && *item.GroupID > 0 {
+		_, _ = service.RevokeActiveEdgeLeasesForUserGroup(c.Request.Context(), item.BuyerID, *item.GroupID)
+	}
 	response.Success(c, item)
 }
 func (h *MarketplaceHandler) invalidate(c *gin.Context, userID int64) {

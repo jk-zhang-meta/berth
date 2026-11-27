@@ -13,8 +13,8 @@ func TestStewardTodayLatencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	mock.ExpectQuery(`SELECT account_id, ROUND\(AVG\(first_token_ms\)\)::bigint, ROUND\(AVG\(duration_ms\)\)::bigint`).
-		WithArgs(int64(1), int64(2), int64(3)).
+	mock.ExpectQuery(`SELECT account_id, ROUND\(AVG\(NULLIF\(first_token_ms, 0\)\)\)::bigint, ROUND\(AVG\(NULLIF\(duration_ms, 0\)\)\)::bigint`).
+		WithArgs(sqlmock.AnyArg(), int64(1), int64(2), int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"account_id", "first_token_ms", "duration_ms"}).
 			AddRow(1, 420, 2320).AddRow(2, nil, 800).AddRow(3, 100, nil))
 	got := NewStewardStore(db).TodayLatencies(context.Background(), []int64{1, 2, 3})

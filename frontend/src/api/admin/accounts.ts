@@ -579,10 +579,17 @@ export interface BatchTodayStatsResponse {
  * @param accountIds - 账号 ID 列表
  * @returns 以账号 ID（字符串）为键的统计映射
  */
-export async function getBatchTodayStats(accountIds: number[]): Promise<BatchTodayStatsResponse> {
-  const { data } = await apiClient.post<BatchTodayStatsResponse>('/admin/accounts/today-stats/batch', {
+export async function getBatchTodayStats(
+  accountIds: number[],
+  options?: { force?: boolean }
+): Promise<BatchTodayStatsResponse> {
+  const payload: { account_ids: number[]; force?: boolean } = {
     account_ids: accountIds
-  })
+  }
+  if (options?.force) {
+    payload.force = true
+  }
+  const { data } = await apiClient.post<BatchTodayStatsResponse>('/admin/accounts/today-stats/batch', payload)
   return data
 }
 

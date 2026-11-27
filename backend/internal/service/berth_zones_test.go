@@ -336,6 +336,20 @@ func TestBerthZoneService_FR125AutoMeasuredTopologyAndOverrides(t *testing.T) {
 	require.Equal(t, []string{"po0-gz", "po0-hk", "hyonix-la", "houston-vm100"},
 		[]string{hops2[0].NodeName, hops2[1].NodeName, hops2[2].NodeName, hops2[3].NodeName})
 
+	// 5b. Snapshot-only heartbeat (empty Status + empty slices from edge revocation refresh)
+	// must NEVER wipe existing measured links or live reverse tunnels!
+	_, err = svc.RecordHeartbeat(ctx, hyLA.ID, EdgeHeartbeatUpdate{
+		Status:             "",
+		MeasuredLinks:      []MeasuredPeerLink{},
+		LiveReverseTunnels: []int64{},
+	}, now.Add(500*time.Millisecond))
+	require.NoError(t, err)
+	liveRevSnap := svc.LiveReverseTunnelsSnapshot(now.Add(500 * time.Millisecond))
+	require.True(t, liveRevSnap[houston.ID])
+	_, hopsSnap, _, err := svc.SelectBestIngressAndRouteWithRTT(ctx, cnZoneID, houston.ID, liveRevSnap, nil)
+	require.NoError(t, err)
+	require.Len(t, hopsSnap, 4)
+
 	// 6. When hyonix-la reports houston-vm100 disconnected (empty non-nil LiveReverseTunnels), route is immediately withdrawn!
 	_, err = svc.RecordHeartbeat(ctx, hyLA.ID, EdgeHeartbeatUpdate{
 		Status:             EdgeNodeStatusActive,

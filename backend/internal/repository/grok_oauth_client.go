@@ -159,6 +159,15 @@ func createGrokReqClient(proxyURL string) (*req.Client, error) {
 }
 
 func createGrokSSOHTTPClient(proxyURL string) (*http.Client, error) {
+	if edgeRT := service.NewEdgeLandingRoundTripper(proxyURL); edgeRT != nil {
+		return &http.Client{
+			Transport: edgeRT,
+			Timeout:   xai.SSOConversionTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}, nil
+	}
 	client, err := sharedhttp.GetClient(sharedhttp.Options{
 		ProxyURL:              proxyURL,
 		Timeout:               xai.SSOConversionTimeout,
@@ -241,15 +250,21 @@ func grokOAuthHasExplicitEntitlementDenial(body string) bool {
 }
 
 func createGrokHTTPClient(proxyURL string, noRedirect bool) (*http.Client, error) {
-	transport := &http.Transport{}
-	if strings.TrimSpace(proxyURL) != "" {
-		parsed, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, err
+	var rt http.RoundTripper
+	if edgeRT := service.NewEdgeLandingRoundTripper(proxyURL); edgeRT != nil {
+		rt = edgeRT
+	} else {
+		transport := &http.Transport{}
+		if strings.TrimSpace(proxyURL) != "" {
+			parsed, err := url.Parse(proxyURL)
+			if err != nil {
+				return nil, err
+			}
+			transport.Proxy = http.ProxyURL(parsed)
 		}
-		transport.Proxy = http.ProxyURL(parsed)
+		rt = transport
 	}
-	client := &http.Client{Timeout: 120 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: 120 * time.Second, Transport: rt}
 	if noRedirect {
 		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

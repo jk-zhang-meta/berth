@@ -1025,6 +1025,7 @@ const emailPasswordInput = ref(props.initialEmailPassword || '')
 const showHelpDialog = ref(false)
 const oauthState = ref('')
 const projectId = ref('')
+let lastExtractedCode = ''
 
 watch(
   () => [props.platform, props.showEmailPasswordOption] as const,
@@ -1129,42 +1130,77 @@ watch(inputMethod, (newVal) => {
   emit('update:inputMethod', newVal)
 })
 
+// Reset extracted callback state whenever platform, session, or generated auth URL changes
+// so a prior platform/attempt's `state` (e.g. Antigravity -> Gemini) can never leak into a new flow.
+watch(
+  () => [props.platform, props.sessionId, props.authUrl] as const,
+  ([newPlatform], [oldPlatform]) => {
+    oauthState.value = ''
+    lastExtractedCode = ''
+    if (oldPlatform && newPlatform !== oldPlatform) {
+      authCodeInput.value = ''
+    }
+  }
+)
+
+const safeDecodeURIComponent = (raw: string): string => {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 // Auto-extract code from callback URL (OpenAI/Gemini/Antigravity/Grok)
 // e.g., http://localhost:8085/callback?code=xxx...&state=...
 watch(authCodeInput, (newVal) => {
   if (props.platform !== 'openai' && props.platform !== 'gemini' && props.platform !== 'antigravity' && props.platform !== 'grok') return
 
   const trimmed = newVal.trim()
-  // Check if it looks like a URL with code parameter
+  if (!trimmed) {
+    oauthState.value = ''
+    lastExtractedCode = ''
+    return
+  }
+
+  // Check if it looks like a URL or query string with code parameter
   if (trimmed.includes('code=')) {
     try {
       // Try to parse as URL
       const url = trimmed.includes('?') ? new URL(trimmed) : new URL(`http://localhost/callback?${trimmed.replace(/^\?/, '')}`)
       const code = url.searchParams.get('code')
       const stateParam = url.searchParams.get('state')
-      if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateParam) {
-        oauthState.value = stateParam
-      }
+      oauthState.value = stateParam || ''
       if (code && code !== trimmed) {
-        // Replace the input with just the code
+        // Replace the input with just the code (remember it so the follow-up watcher tick preserves oauthState)
+        lastExtractedCode = code
         authCodeInput.value = code
       }
     } catch {
       // If URL parsing fails, try regex extraction
-      const match = trimmed.match(/[?&]code=([^&]+)/)
-      const stateMatch = trimmed.match(/[?&]state=([^&]+)/)
-      if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateMatch && stateMatch[1]) {
-        oauthState.value = stateMatch[1]
-      }
-      if (match && match[1] && match[1] !== trimmed) {
-        authCodeInput.value = match[1]
+      const match = trimmed.match(/(?:^|[?&])code=([^&#]+)/)
+      const stateMatch = trimmed.match(/(?:^|[?&])state=([^&#]+)/)
+      oauthState.value = stateMatch && stateMatch[1] ? safeDecodeURIComponent(stateMatch[1]) : ''
+      if (match && match[1]) {
+        const decodedCode = safeDecodeURIComponent(match[1])
+        if (decodedCode && decodedCode !== trimmed) {
+          lastExtractedCode = decodedCode
+          authCodeInput.value = decodedCode
+        }
       }
     }
+  } else if (trimmed !== lastExtractedCode) {
+    // Operator pasted or typed a bare authorization code (e.g. from codeassist.google.com/authcode):
+    // clear any previously extracted callback URL state so the active session state is used.
+    oauthState.value = ''
+    lastExtractedCode = ''
   }
 })
 
 // Methods
 const handleGenerateUrl = () => {
+  oauthState.value = ''
+  lastExtractedCode = ''
   emit('generate-url')
 }
 
@@ -1176,6 +1212,8 @@ const handleCopyUrl = () => {
 
 const handleRegenerate = () => {
   authCodeInput.value = ''
+  oauthState.value = ''
+  lastExtractedCode = ''
   emit('generate-url')
 }
 
@@ -1229,6 +1267,7 @@ defineExpose({
   reset: () => {
     authCodeInput.value = ''
     oauthState.value = ''
+    lastExtractedCode = ''
     projectId.value = ''
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''

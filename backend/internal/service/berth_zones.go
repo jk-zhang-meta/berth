@@ -380,6 +380,7 @@ func (s *BerthZoneService) RecordHeartbeat(ctx context.Context, nodeID int64, up
 	if nodeID <= 0 {
 		return nil, ErrEdgeZoneInvalid
 	}
+	isSnapshotOnly := strings.TrimSpace(upd.Status) == "" && len(upd.MeasuredLinks) == 0 && len(upd.LiveReverseTunnels) == 0
 	if upd.Status == "" {
 		upd.Status = EdgeNodeStatusActive
 	}
@@ -395,15 +396,24 @@ func (s *BerthZoneService) RecordHeartbeat(ctx context.Context, nodeID int64, up
 		s.measuredMu.Lock()
 		delete(s.measuredByNode, nodeID)
 		s.measuredMu.Unlock()
-	} else if upd.MeasuredLinks != nil || upd.LiveReverseTunnels != nil {
+	} else if !isSnapshotOnly && (upd.MeasuredLinks != nil || upd.LiveReverseTunnels != nil) {
 		s.measuredMu.Lock()
 		if s.measuredByNode == nil {
 			s.measuredByNode = make(map[int64]nodeMeasuredReport)
 		}
+		prev := s.measuredByNode[nodeID]
+		nextLinks := prev.links
+		if upd.MeasuredLinks != nil {
+			nextLinks = append([]MeasuredPeerLink(nil), upd.MeasuredLinks...)
+		}
+		nextRev := prev.liveReverseTunnels
+		if upd.LiveReverseTunnels != nil {
+			nextRev = append([]int64(nil), upd.LiveReverseTunnels...)
+		}
 		s.measuredByNode[nodeID] = nodeMeasuredReport{
 			reportedAt:         at,
-			links:              append([]MeasuredPeerLink(nil), upd.MeasuredLinks...),
-			liveReverseTunnels: append([]int64(nil), upd.LiveReverseTunnels...),
+			links:              nextLinks,
+			liveReverseTunnels: nextRev,
 		}
 		s.measuredMu.Unlock()
 	}
@@ -915,7 +925,9 @@ func solveDijkstraPathWithMeasured(
 		if !ok || fromNode.Status != EdgeNodeStatusActive {
 			continue
 		}
-		hasMeasuredFrom[fromID] = true
+		if len(rep.links) > 0 {
+			hasMeasuredFrom[fromID] = true
+		}
 		for _, m := range rep.links {
 			if !m.Reachable || m.TargetNodeID <= 0 {
 				continue

@@ -82,6 +82,9 @@ type proxyProbeService struct {
 }
 
 func (s *proxyProbeService) ProbeProxy(ctx context.Context, proxyURL string) (*service.ProxyExitInfo, int64, error) {
+	if nodeName, ok := service.ParseEdgeInternalNodeName(proxyURL); ok {
+		return service.ProbeEdgeLandingNode(ctx, nodeName)
+	}
 	client, err := httpclient.GetClient(httpclient.Options{
 		ProxyURL:           proxyURL,
 		Timeout:            defaultProxyProbeTimeout,

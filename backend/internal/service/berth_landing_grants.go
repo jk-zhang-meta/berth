@@ -1112,18 +1112,40 @@ func (s *sqlLandingGrantStore) CommitGrantUsageReceipt(ctx context.Context, rece
 	if receipt.AccountID > 0 {
 		acctID = sql.NullInt64{Int64: receipt.AccountID, Valid: true}
 	}
+	var durMs sql.NullInt64
+	if receipt.DurationMs > 0 {
+		durMs = sql.NullInt64{Int64: receipt.DurationMs, Valid: true}
+	}
+	var acctStatsCost sql.NullFloat64
+	if receipt.AccountStatsCost > 0 || receipt.TotalCost > 0 {
+		v := receipt.AccountStatsCost
+		if v <= 0 {
+			v = receipt.TotalCost
+		}
+		acctStatsCost = sql.NullFloat64{Float64: v, Valid: true}
+	}
+	var usageLogID sql.NullInt64
+	if receipt.UsageLogID > 0 {
+		usageLogID = sql.NullInt64{Int64: receipt.UsageLogID, Valid: true}
+	}
 
 	var insertedID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO berth_landing_node_grant_usage (
 			receipt_id, grant_id, node_id, lease_id, account_id,
-			ingress_bytes, egress_bytes, total_bytes, request_count, ttft_ms, status_code
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			ingress_bytes, egress_bytes, total_bytes, request_count, ttft_ms, status_code,
+			duration_ms, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+			total_cost, actual_cost, account_stats_cost, usage_log_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT (receipt_id) DO NOTHING
 		RETURNING id`,
 		receipt.ReceiptID, receipt.GrantID, receipt.NodeID, leaseUUID, acctID,
 		receipt.IngressBytes, receipt.EgressBytes, receipt.TotalBytes,
 		receipt.RequestCount, receipt.TTFTMs, receipt.StatusCode,
+		durMs, nullIfEmpty(strings.TrimSpace(receipt.Model)),
+		max(receipt.InputTokens, 0), max(receipt.OutputTokens, 0),
+		max(receipt.CacheCreationTokens, 0), max(receipt.CacheReadTokens, 0),
+		receipt.TotalCost, receipt.ActualCost, acctStatsCost, usageLogID,
 	).Scan(&insertedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Duplicate receipt replay: idempotently return success without double-charging!
@@ -1148,6 +1170,10 @@ func (s *sqlLandingGrantStore) CommitGrantUsageReceipt(ctx context.Context, rece
 		}, nil
 	}
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" && pqErr.Constraint == "berth_landing_node_grant_usage_grant_id_fkey" {
+			return nil, ErrLandingGrantNotFound
+		}
 		return nil, err
 	}
 

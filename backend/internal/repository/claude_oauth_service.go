@@ -272,7 +272,11 @@ func createReqClient(proxyURL string) (*req.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if trimmed != "" {
+	if edgeRT := service.NewEdgeLandingRoundTripper(trimmed); edgeRT != nil {
+		client.GetTransport().WrapRoundTripFunc(func(_ http.RoundTripper) req.HttpRoundTripFunc {
+			return edgeRT.RoundTrip
+		})
+	} else if trimmed != "" {
 		client.SetProxyURL(trimmed)
 	}
 

@@ -211,6 +211,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		}
 	}
 	applyGrokCLIProxyHeaders(req)
+	if edgeRT := service.NewEdgeLandingRoundTripperForAccount(proxyURL, accountID); edgeRT != nil {
+		// Defer provider DNS resolution and IPv4 SSRF enforcement to the bound Landing node.
+		if req == nil || req.URL == nil || strings.TrimSpace(req.URL.Host) == "" {
+			return nil, fmt.Errorf("invalid upstream request URL")
+		}
+		return doUpstreamRequest(&http.Client{Transport: edgeRT}, req, s.upstreamDrainTimeout())
+	}
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
 	}
@@ -285,6 +292,13 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 	slog.Debug("tls_fingerprint_enabled", "account_id", accountID, "target", targetHost, "proxy", proxyInfo, "profile", profile.Name)
 
+	if edgeRT := service.NewEdgeLandingRoundTripperForAccount(proxyURL, accountID); edgeRT != nil {
+		// Defer provider DNS resolution and IPv4 SSRF enforcement to the bound Landing node.
+		if req == nil || req.URL == nil || strings.TrimSpace(req.URL.Host) == "" {
+			return nil, fmt.Errorf("invalid upstream request URL")
+		}
+		return doUpstreamRequest(&http.Client{Transport: edgeRT}, req, s.upstreamDrainTimeout())
+	}
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
 	}

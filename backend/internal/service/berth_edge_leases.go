@@ -250,19 +250,25 @@ type EdgeFailoverResponse struct {
 // EdgeOAuthTask represents a Central-dispatched OAuth/refresh/probe task executed
 // strictly by the bound Landing node so Central never contacts AI provider IPs.
 type EdgeOAuthTask struct {
-	TaskID     string            `json:"task_id"`
-	NodeID     int64             `json:"node_id"`
-	AccountID  int64             `json:"account_id"`
-	Kind       string            `json:"kind"` // oauth_exchange | token_refresh | health_probe
-	TargetURL  string            `json:"target_url"`
-	Method     string            `json:"method"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	BodyBase64 string            `json:"body_base64,omitempty"`
-	Status     string            `json:"status"` // pending | completed | failed
-	StatusCode int               `json:"status_code,omitempty"`
-	RespBody   string            `json:"resp_body,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
+	TaskID          string              `json:"task_id"`
+	NodeID          int64               `json:"node_id"`
+	AccountID       int64               `json:"account_id"`
+	Kind            string              `json:"kind"` // oauth_exchange | token_refresh | health_probe
+	TargetURL       string              `json:"target_url"`
+	Method          string              `json:"method"`
+	Headers         map[string]string   `json:"headers,omitempty"`
+	BodyBase64      string              `json:"body_base64,omitempty"`
+	FollowRedirects bool                `json:"follow_redirects,omitempty"`
+	ClaimID         string              `json:"claim_id,omitempty"`
+	Status          string              `json:"status"` // pending | claimed | completed | failed
+	StatusCode      int                 `json:"status_code,omitempty"`
+	RespHeaders     map[string][]string `json:"resp_headers,omitempty"`
+	RespBody        string              `json:"resp_body,omitempty"`
+	RespBodyBase64  string              `json:"resp_body_base64,omitempty"`
+	Error           string              `json:"error,omitempty"`
+	CreatedAt       time.Time           `json:"created_at"`
+	ClaimedAt       time.Time           `json:"-"`
+	CompletedAt     time.Time           `json:"-"`
 }
 
 // BerthEdgeLeaseStore abstracts lease & revocation-sequence persistence.
@@ -289,12 +295,17 @@ type BerthEdgeLeaseService struct {
 	snapshotTTL         time.Duration
 	edgeDataPlaneStrict bool
 
-	mu               sync.RWMutex
-	revokedAPIKeys   map[int64]struct{}
-	cageMinEpochs    map[int64]int64
-	liveRevTunnels   map[int64]bool
-	oauthTasksByNode map[int64][]*EdgeOAuthTask
-	oauthTaskIndex   map[string]*EdgeOAuthTask
+	mu                sync.RWMutex
+	telemetryDB       *sql.DB
+	billingSvc        *BillingService
+	onUsageIngested   func()
+	revokedAPIKeys    map[int64]struct{}
+	cageMinEpochs     map[int64]int64
+	liveRevTunnels    map[int64]bool
+	oauthTasksByNode  map[int64][]*EdgeOAuthTask
+	oauthTaskIndex    map[string]*EdgeOAuthTask
+	oauthWaiters      map[string]chan struct{}
+	oauthNotifyByNode map[int64]chan struct{}
 }
 
 // NewBerthEdgeLeaseService constructs a PostgreSQL-backed BerthEdgeLeaseService.
@@ -340,6 +351,8 @@ func NewBerthEdgeLeaseServiceWithStore(
 		liveRevTunnels:      make(map[int64]bool),
 		oauthTasksByNode:    make(map[int64][]*EdgeOAuthTask),
 		oauthTaskIndex:      make(map[string]*EdgeOAuthTask),
+		oauthWaiters:        make(map[string]chan struct{}),
+		oauthNotifyByNode:   make(map[int64]chan struct{}),
 	}
 }
 
@@ -446,6 +459,21 @@ type edgeLeaseAccountResolver interface {
 	ResolveAccountForLease(ctx context.Context, userID int64, platform string, preferred []string) (int64, error)
 }
 
+type edgeLeaseAuthorizedAccountResolver interface {
+	ResolveAuthorizedAccountForLease(ctx context.Context, userID, apiKeyID int64, platform string, preferred []string) (int64, error)
+	VerifyAccountAccessForLease(ctx context.Context, userID, apiKeyID, accountID int64) (bool, error)
+	ResolveActiveGrantForProxy(ctx context.Context, proxyID int64) (int64, error)
+	RevokeUserGroupLeases(ctx context.Context, userID, groupID int64, revokedAt time.Time) (int, int64, error)
+}
+
+type edgeLeaseAccountProxyResolver interface {
+	ResolveAccountProxyBinding(ctx context.Context, accountID int64) (proxyID int64, pinnedEdgeNodeID int64, err error)
+}
+
+type edgeLeaseFailoverCandidateResolver interface {
+	ListAuthorizedFailoverCandidates(ctx context.Context, userID, apiKeyID int64, platform string, excludeAccountID int64) ([]FailoverCandidate, error)
+}
+
 // MintLease resolves client zone, validates grant & landing node, solves shortest route,
 // persists berth_work_session_leases, and signs a compact Ed25519 SessionLease JWS.
 func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput) (*MintedLeaseResponse, error) {
@@ -457,63 +485,169 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 	}
 	now := time.Now()
 
-	// Auto-resolve an eligible active Admin Landing Grant & active Landing node when
-	// AGS v2 omits explicit landing_node_id/grant_id.
+	// 1. Resolve and strictly authorize the active schedulable account FIRST (honoring API key group,
+	//    steward ownership, and active marketplace rental orders) so we can pin its landing node.
+	if in.UserID > 0 {
+		if authResolver, ok := s.store.(edgeLeaseAuthorizedAccountResolver); ok {
+			if in.AccountID <= 0 {
+				// If a CohortHint was supplied (e.g. during 409 cage_rebind_required) and no explicit
+				// account preference was pinned, prefer an authorized account matching that cohort first.
+				if hint := strings.TrimSpace(in.CohortHint); hint != "" && len(in.AccountPreference) == 0 {
+					if foResolver, ok := s.store.(edgeLeaseFailoverCandidateResolver); ok {
+						if cands, cErr := foResolver.ListAuthorizedFailoverCandidates(ctx, in.UserID, in.APIKeyID, in.Platform, 0); cErr == nil {
+							for _, cand := range cands {
+								if strings.EqualFold(strings.TrimSpace(cand.CohortTimezone), hint) ||
+									strings.EqualFold(strings.TrimSpace(cand.CohortCountryCode), hint) {
+									in.AccountID = cand.AccountID
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+			if in.AccountID <= 0 {
+				resolvedID, rErr := authResolver.ResolveAuthorizedAccountForLease(ctx, in.UserID, in.APIKeyID, in.Platform, in.AccountPreference)
+				if rErr != nil && !errors.Is(rErr, sql.ErrNoRows) {
+					return nil, fmt.Errorf("resolve authorized account for lease: %w", rErr)
+				}
+				if resolvedID <= 0 {
+					return nil, fmt.Errorf("%w: no authorized active account available for platform %q", ErrEdgeLeaseForbidden, in.Platform)
+				}
+				in.AccountID = resolvedID
+			} else {
+				allowed, vErr := authResolver.VerifyAccountAccessForLease(ctx, in.UserID, in.APIKeyID, in.AccountID)
+				if vErr != nil {
+					return nil, fmt.Errorf("verify account %d lease access: %w", in.AccountID, vErr)
+				}
+				if !allowed {
+					return nil, fmt.Errorf("%w: caller is not authorized to use account %d", ErrEdgeLeaseForbidden, in.AccountID)
+				}
+			}
+		} else if in.AccountID <= 0 {
+			if resolver, ok := s.store.(edgeLeaseAccountResolver); ok {
+				if resolvedID, rErr := resolver.ResolveAccountForLease(ctx, in.UserID, in.Platform, in.AccountPreference); rErr == nil && resolvedID > 0 {
+					in.AccountID = resolvedID
+				}
+			}
+		}
+	}
+
+	var pinnedProxyID int64
+	var pinnedEdgeNodeID int64
+	if in.AccountID > 0 {
+		if pr, ok := s.store.(edgeLeaseAccountProxyResolver); ok {
+			pid, eid, pErr := pr.ResolveAccountProxyBinding(ctx, in.AccountID)
+			if pErr != nil && !errors.Is(pErr, sql.ErrNoRows) {
+				return nil, fmt.Errorf("resolve account %d proxy binding: %w", in.AccountID, pErr)
+			}
+			pinnedProxyID = pid
+			pinnedEdgeNodeID = eid
+		}
+	}
+
+	// Enforce authoritative edge landing pin before any auto-resolution or explicit override.
+	if pinnedEdgeNodeID > 0 && in.LandingNodeID > 0 && in.LandingNodeID != pinnedEdgeNodeID {
+		return nil, fmt.Errorf("%w: account %d is pinned to landing node %d (cannot route via %d)",
+			ErrLandingGrantForbidden, in.AccountID, pinnedEdgeNodeID, in.LandingNodeID)
+	}
+
+	// 2. Auto-resolve an eligible active Admin Landing Grant & active Landing node when
+	//    AGS v2 omits explicit landing_node_id/grant_id. For marketplace renters using an
+	//    authorized rented account pinned to a seller's landing proxy, resolve the active
+	//    grant backing that pinned proxy so traffic exits strictly from the account's IP.
+	grantBackedByAuthorizedAccount := false
 	if in.UserID > 0 && s.grants != nil {
 		if in.LandingNodeID <= 0 && in.GrantID > 0 {
 			if g, gErr := s.grants.GetGrant(ctx, in.GrantID); gErr == nil && g != nil {
 				in.LandingNodeID = g.NodeID
 			}
 		}
+		if pinnedEdgeNodeID > 0 && in.LandingNodeID > 0 && in.LandingNodeID != pinnedEdgeNodeID {
+			return nil, fmt.Errorf("%w: grant %d does not match account %d pinned landing node %d",
+				ErrLandingGrantForbidden, in.GrantID, in.AccountID, pinnedEdgeNodeID)
+		}
 		if in.LandingNodeID <= 0 {
 			userGrants, gErr := s.grants.ListUserGrants(ctx, in.UserID)
-			if gErr == nil {
-				hint := strings.ToLower(strings.TrimSpace(in.CohortHint))
-				var fallbackGrant *LandingNodeGrant
-				for i := range userGrants {
-					g := &userGrants[i]
-					if g.Status != GrantStatusActive {
-						continue
-					}
-					if g.ExpiresAt != nil && !now.Before(*g.ExpiresAt) {
-						continue
-					}
-					if g.MaxBytes > 0 && g.RemainingBytes <= 0 {
-						continue
-					}
-					node, nErr := s.zones.GetNode(ctx, g.NodeID)
-					if nErr != nil || node == nil || node.Status != EdgeNodeStatusActive {
-						continue
-					}
-					if fallbackGrant == nil {
-						fallbackGrant = g
-					}
-					if hint != "" && (strings.Contains(strings.ToLower(node.Name), hint) ||
-						strings.Contains(strings.ToLower(node.ExitTimezone), hint) ||
-						strings.EqualFold(node.ExitCountryCode, hint)) {
-						fallbackGrant = g
-						break
-					}
+			if gErr != nil {
+				return nil, fmt.Errorf("list user grants: %w", gErr)
+			}
+			hint := strings.ToLower(strings.TrimSpace(in.CohortHint))
+			var pinnedGrant *LandingNodeGrant
+			var hintGrant *LandingNodeGrant
+			var fallbackGrant *LandingNodeGrant
+			for i := range userGrants {
+				g := &userGrants[i]
+				if g.Status != GrantStatusActive {
+					continue
 				}
-				if fallbackGrant != nil {
-					in.GrantID = fallbackGrant.ID
-					in.LandingNodeID = fallbackGrant.NodeID
+				if g.ExpiresAt != nil && !now.Before(*g.ExpiresAt) {
+					continue
+				}
+				if g.MaxBytes > 0 && g.RemainingBytes <= 0 {
+					continue
+				}
+				node, nErr := s.zones.GetNode(ctx, g.NodeID)
+				if nErr != nil || node == nil || node.Status != EdgeNodeStatusActive {
+					continue
+				}
+				if pinnedProxyID > 0 && g.ProxyID != nil && *g.ProxyID == pinnedProxyID {
+					pinnedGrant = g
+					break
+				}
+				if pinnedEdgeNodeID > 0 && g.NodeID == pinnedEdgeNodeID && pinnedGrant == nil {
+					pinnedGrant = g
+					continue
+				}
+				if pinnedEdgeNodeID > 0 {
+					// Account has an authoritative edge landing pin; never select a different landing node.
+					continue
+				}
+				if fallbackGrant == nil {
+					fallbackGrant = g
+				}
+				if hintGrant == nil && hint != "" && (strings.Contains(strings.ToLower(node.Name), hint) ||
+					strings.Contains(strings.ToLower(node.ExitTimezone), hint) ||
+					strings.EqualFold(node.ExitCountryCode, hint)) {
+					hintGrant = g
 				}
 			}
-		}
-	}
-
-	// Auto-resolve an active schedulable account for the requested platform when AGS v2 omits account_id.
-	if in.UserID > 0 && in.AccountID <= 0 {
-		if resolver, ok := s.store.(edgeLeaseAccountResolver); ok {
-			if resolvedID, rErr := resolver.ResolveAccountForLease(ctx, in.UserID, in.Platform, in.AccountPreference); rErr == nil && resolvedID > 0 {
-				in.AccountID = resolvedID
+			chosen := pinnedGrant
+			if chosen == nil && pinnedEdgeNodeID > 0 && pinnedProxyID > 0 {
+				// Authorized renter/caller on an account pinned to a seller's edge landing proxy:
+				// bind the active grant backing that proxy so the rented account exits from its pinned IP.
+				if authResolver, ok := s.store.(edgeLeaseAuthorizedAccountResolver); ok {
+					if backingGrantID, bErr := authResolver.ResolveActiveGrantForProxy(ctx, pinnedProxyID); bErr == nil && backingGrantID > 0 {
+						if bg, bgErr := s.grants.GetGrant(ctx, backingGrantID); bgErr == nil && bg != nil && bg.Status == GrantStatusActive && bg.NodeID == pinnedEdgeNodeID {
+							chosen = bg
+							grantBackedByAuthorizedAccount = true
+						}
+					}
+				}
+			}
+			if chosen == nil && pinnedEdgeNodeID > 0 {
+				return nil, fmt.Errorf("%w: no active landing grant matches account %d pinned landing node %d",
+					ErrNoRouteAvailable, in.AccountID, pinnedEdgeNodeID)
+			}
+			if chosen == nil {
+				chosen = hintGrant
+			}
+			if chosen == nil {
+				chosen = fallbackGrant
+			}
+			if chosen != nil {
+				in.GrantID = chosen.ID
+				in.LandingNodeID = chosen.NodeID
 			}
 		}
 	}
 
 	if in.UserID <= 0 || in.AccountID <= 0 || in.LandingNodeID <= 0 {
 		return nil, fmt.Errorf("%w: user_id, account_id, and landing_node_id are required", ErrEdgeLeaseInvalid)
+	}
+	if pinnedEdgeNodeID > 0 && in.LandingNodeID != pinnedEdgeNodeID {
+		return nil, fmt.Errorf("%w: account %d must exit via pinned landing node %d",
+			ErrLandingGrantForbidden, in.AccountID, pinnedEdgeNodeID)
 	}
 
 	// Validate landing node.
@@ -532,9 +666,17 @@ func (s *BerthEdgeLeaseService) MintLease(ctx context.Context, in MintLeaseInput
 			return nil, err
 		}
 		if grant.GranteeUserID != in.UserID {
-			return nil, ErrLandingGrantForbidden
+			if !(grantBackedByAuthorizedAccount && pinnedProxyID > 0 && grant.ProxyID != nil && *grant.ProxyID == pinnedProxyID) {
+				return nil, ErrLandingGrantForbidden
+			}
 		}
 		if grant.NodeID != in.LandingNodeID {
+			return nil, ErrLandingGrantForbidden
+		}
+		if pinnedEdgeNodeID > 0 && grant.NodeID != pinnedEdgeNodeID {
+			return nil, ErrLandingGrantForbidden
+		}
+		if pinnedEdgeNodeID > 0 && pinnedProxyID > 0 && grant.ProxyID != nil && *grant.ProxyID != pinnedProxyID {
 			return nil, ErrLandingGrantForbidden
 		}
 		if grant.Status != GrantStatusActive {
@@ -746,6 +888,15 @@ func (s *BerthEdgeLeaseService) RenewLease(ctx context.Context, userID int64, le
 	if rec.RevokedAt != nil {
 		return nil, ErrEdgeLeaseRevoked
 	}
+	if authResolver, ok := s.store.(edgeLeaseAuthorizedAccountResolver); ok && rec.UserID > 0 && rec.AccountID > 0 {
+		allowed, vErr := authResolver.VerifyAccountAccessForLease(ctx, rec.UserID, rec.APIKeyID, rec.AccountID)
+		if vErr != nil {
+			return nil, fmt.Errorf("re-verify lease account access: %w", vErr)
+		}
+		if !allowed {
+			return nil, ErrEdgeLeaseForbidden
+		}
+	}
 
 	now := time.Now()
 	if rec.GrantID > 0 && s.grants != nil {
@@ -896,8 +1047,19 @@ func (s *BerthEdgeLeaseService) CoordinateFailover(ctx context.Context, req Edge
 		return nil, ErrEdgeLeaseRevoked
 	}
 
+	candidates := req.Candidates
+	if len(candidates) == 0 {
+		if foResolver, ok := s.store.(edgeLeaseFailoverCandidateResolver); ok {
+			if resolved, rErr := foResolver.ListAuthorizedFailoverCandidates(
+				ctx, cur.UserID, cur.APIKeyID, cur.Platform, req.FailedAccountID,
+			); rErr == nil {
+				candidates = resolved
+			}
+		}
+	}
+
 	var crossCohortOffer *CageRebindOffer
-	for _, cand := range req.Candidates {
+	for _, cand := range candidates {
 		if cand.AccountID <= 0 || cand.AccountID == req.FailedAccountID || cand.LandingNodeID <= 0 {
 			continue
 		}
@@ -948,6 +1110,7 @@ func (s *BerthEdgeLeaseService) CoordinateFailover(ctx context.Context, req Edge
 // IngestUsageOutbox idempotently commits a batch of Landing usage receipts and returns ACKed receipt IDs.
 func (s *BerthEdgeLeaseService) IngestUsageOutbox(ctx context.Context, nodeID int64, receipts []edgeproto.UsageReceipt) ([]string, error) {
 	acked := make([]string, 0, len(receipts))
+	anyCommitted := false
 	for _, r := range receipts {
 		if r.ReceiptID == "" {
 			continue
@@ -958,14 +1121,87 @@ func (s *BerthEdgeLeaseService) IngestUsageOutbox(ctx context.Context, nodeID in
 		if r.NodeID != nodeID {
 			continue
 		}
+		s.prepareEdgeReceiptTelemetry(ctx, &r)
 		if r.GrantID > 0 && s.grants != nil {
-			if _, err := s.grants.CommitGrantUsageReceipt(ctx, r); err != nil {
+			res, err := s.grants.CommitGrantUsageReceipt(ctx, r)
+			if err != nil {
+				if errors.Is(err, ErrLandingGrantNotFound) {
+					// Deleted/orphaned grant is a permanent failure: ACK so the Edge OutboxWAL
+					// never head-of-line blocks subsequent valid receipts forever.
+					acked = append(acked, r.ReceiptID)
+					continue
+				}
 				return acked, err
 			}
+			if res != nil && !res.Duplicate {
+				anyCommitted = true
+			}
+		} else {
+			anyCommitted = true
 		}
 		acked = append(acked, r.ReceiptID)
 	}
+	if anyCommitted || len(acked) > 0 {
+		s.notifyUsageIngested()
+	}
 	return acked, nil
+}
+
+const (
+	maxPendingOAuthTasksPerNode = 128
+	maxClaimOAuthTaskBatch      = 8
+	oauthTaskRetentionTTL       = 2 * time.Minute
+)
+
+func (s *BerthEdgeLeaseService) reapExpiredOAuthTasksLocked(now time.Time) {
+	for id, t := range s.oauthTaskIndex {
+		if t == nil {
+			delete(s.oauthTaskIndex, id)
+			continue
+		}
+		expired := false
+		switch t.Status {
+		case "completed", "failed":
+			ref := t.CompletedAt
+			if ref.IsZero() {
+				ref = t.CreatedAt
+			}
+			expired = now.Sub(ref) > oauthTaskRetentionTTL
+		case "claimed":
+			ref := t.ClaimedAt
+			if ref.IsZero() {
+				ref = t.CreatedAt
+			}
+			expired = now.Sub(ref) > oauthTaskRetentionTTL
+		default:
+			expired = now.Sub(t.CreatedAt) > oauthTaskRetentionTTL
+		}
+		if expired {
+			t.Headers = nil
+			t.BodyBase64 = ""
+			t.RespHeaders = nil
+			t.RespBody = ""
+			t.RespBodyBase64 = ""
+			if ch, ok := s.oauthWaiters[id]; ok {
+				close(ch)
+				delete(s.oauthWaiters, id)
+			}
+			delete(s.oauthTaskIndex, id)
+		}
+	}
+	for nid, list := range s.oauthTasksByNode {
+		kept := list[:0]
+		for _, t := range list {
+			if t != nil && t.Status == "pending" && s.oauthTaskIndex[t.TaskID] == t {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.oauthTasksByNode, nid)
+		} else {
+			s.oauthTasksByNode[nid] = kept
+		}
+	}
 }
 
 // EnqueueOAuthTask queues an upstream OAuth/refresh/probe task for execution strictly by nodeID.
@@ -976,38 +1212,97 @@ func (s *BerthEdgeLeaseService) EnqueueOAuthTask(task EdgeOAuthTask) EdgeOAuthTa
 	if task.Status == "" {
 		task.Status = "pending"
 	}
+	now := time.Now()
 	if task.CreatedAt.IsZero() {
-		task.CreatedAt = time.Now()
+		task.CreatedAt = now
 	}
 	cp := task
 	s.mu.Lock()
+	s.reapExpiredOAuthTasksLocked(now)
+	if len(s.oauthTasksByNode[task.NodeID]) >= maxPendingOAuthTasksPerNode {
+		cp.Status = "failed"
+		cp.Error = "edge landing OAuth task queue full"
+		cp.CompletedAt = now
+		s.mu.Unlock()
+		return cp
+	}
 	s.oauthTasksByNode[task.NodeID] = append(s.oauthTasksByNode[task.NodeID], &cp)
 	s.oauthTaskIndex[task.TaskID] = &cp
+	if s.oauthWaiters == nil {
+		s.oauthWaiters = make(map[string]chan struct{})
+	}
+	if _, exists := s.oauthWaiters[task.TaskID]; !exists {
+		s.oauthWaiters[task.TaskID] = make(chan struct{})
+	}
+	ret := cp // Copy before releasing lock so concurrent completion cannot race.
+	s.notifyNodeOAuthLocked(task.NodeID)
 	s.mu.Unlock()
-	return cp
+	return ret
 }
 
-// ListPendingOAuthTasks returns pending OAuth/refresh/probe tasks assigned to nodeID.
+// ListPendingOAuthTasks atomically claims up to a bounded batch of pending OAuth/refresh/probe
+// tasks assigned to nodeID, removing them from the pending queue so a poller can NEVER execute
+// the same single-use OAuth POST twice.
 func (s *BerthEdgeLeaseService) ListPendingOAuthTasks(nodeID int64) []EdgeOAuthTask {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	s.reapExpiredOAuthTasksLocked(now)
 	list := s.oauthTasksByNode[nodeID]
-	out := make([]EdgeOAuthTask, 0, len(list))
+	if len(list) == 0 {
+		return []EdgeOAuthTask{}
+	}
+	out := make([]EdgeOAuthTask, 0, min(len(list), maxClaimOAuthTaskBatch))
+	remaining := make([]*EdgeOAuthTask, 0, len(list))
 	for _, t := range list {
-		if t.Status == "pending" {
-			out = append(out, *t)
+		if t == nil || t.Status != "pending" {
+			continue
 		}
+		if len(out) < maxClaimOAuthTaskBatch {
+			t.Status = "claimed"
+			t.ClaimID = uuid.NewString()
+			t.ClaimedAt = now
+			out = append(out, *t)
+		} else {
+			remaining = append(remaining, t)
+		}
+	}
+	if len(remaining) == 0 {
+		delete(s.oauthTasksByNode, nodeID)
+	} else {
+		s.oauthTasksByNode[nodeID] = remaining
 	}
 	return out
 }
 
-// CompleteOAuthTask records the Landing node's execution result for taskID.
+// CompleteOAuthTask records the Landing node's execution result for taskID (backward-compatible wrapper).
 func (s *BerthEdgeLeaseService) CompleteOAuthTask(nodeID int64, taskID string, statusCode int, respBody, errMsg string) (*EdgeOAuthTask, error) {
+	return s.CompleteOAuthTaskFull(nodeID, taskID, "", statusCode, respBody, "", nil, errMsg)
+}
+
+// CompleteOAuthTaskFull records the Landing node's execution result idempotently, binds completion
+// to the claim token when present, and purges request secrets immediately.
+func (s *BerthEdgeLeaseService) CompleteOAuthTaskFull(
+	nodeID int64,
+	taskID, claimID string,
+	statusCode int,
+	respBody, respBodyBase64 string,
+	respHeaders map[string][]string,
+	errMsg string,
+) (*EdgeOAuthTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.oauthTaskIndex[taskID]
-	if !ok || t.NodeID != nodeID {
+	if !ok || t == nil || t.NodeID != nodeID {
 		return nil, ErrEdgeLeaseNotFound
+	}
+	if t.ClaimID != "" && claimID != "" && t.ClaimID != claimID {
+		return nil, ErrEdgeLeaseForbidden
+	}
+	// Terminal completion is strictly idempotent: never overwrite the first terminal result.
+	if t.Status == "completed" || t.Status == "failed" {
+		cp := *t
+		return &cp, nil
 	}
 	if errMsg != "" {
 		t.Status = "failed"
@@ -1017,8 +1312,82 @@ func (s *BerthEdgeLeaseService) CompleteOAuthTask(nodeID int64, taskID string, s
 	}
 	t.StatusCode = statusCode
 	t.RespBody = respBody
+	t.RespBodyBase64 = respBodyBase64
+	if len(respHeaders) > 0 {
+		hdrCopy := make(map[string][]string, len(respHeaders))
+		for k, vals := range respHeaders {
+			cpVals := make([]string, len(vals))
+			copy(cpVals, vals)
+			hdrCopy[k] = cpVals
+		}
+		t.RespHeaders = hdrCopy
+	}
+	t.CompletedAt = time.Now()
+	// Purge request secrets immediately once upstream execution completes.
+	t.Headers = nil
+	t.BodyBase64 = ""
+	if ch, ok := s.oauthWaiters[taskID]; ok {
+		close(ch)
+		delete(s.oauthWaiters, taskID)
+	}
 	cp := *t
 	return &cp, nil
+}
+
+// ConsumeOAuthTask returns the completed task snapshot and immediately purges its payload
+// and secrets from Central memory.
+func (s *BerthEdgeLeaseService) ConsumeOAuthTask(taskID string) (EdgeOAuthTask, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.oauthTaskIndex[taskID]
+	if !ok || t == nil {
+		return EdgeOAuthTask{}, false
+	}
+	snap := *t
+	t.Headers = nil
+	t.BodyBase64 = ""
+	t.RespHeaders = nil
+	t.RespBody = ""
+	t.RespBodyBase64 = ""
+	delete(s.oauthTaskIndex, taskID)
+	delete(s.oauthWaiters, taskID)
+	return snap, true
+}
+
+// CancelOAuthTask marks an expired/cancelled task as failed and purges its secrets from memory.
+func (s *BerthEdgeLeaseService) CancelOAuthTask(nodeID int64, taskID, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.oauthTaskIndex[taskID]; ok && t != nil {
+		if t.Status == "pending" || t.Status == "claimed" {
+			t.Status = "failed"
+			t.Error = reason
+			t.CompletedAt = time.Now()
+		}
+		t.Headers = nil
+		t.BodyBase64 = ""
+		t.RespHeaders = nil
+		t.RespBody = ""
+		t.RespBodyBase64 = ""
+		delete(s.oauthTaskIndex, taskID)
+	}
+	if ch, ok := s.oauthWaiters[taskID]; ok {
+		close(ch)
+		delete(s.oauthWaiters, taskID)
+	}
+	if list := s.oauthTasksByNode[nodeID]; len(list) > 0 {
+		kept := list[:0]
+		for _, t := range list {
+			if t != nil && t.TaskID != taskID && t.Status == "pending" {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.oauthTasksByNode, nodeID)
+		} else {
+			s.oauthTasksByNode[nodeID] = kept
+		}
+	}
 }
 
 // ---------- PostgreSQL BerthEdgeLeaseStore ----------
@@ -1034,6 +1403,240 @@ func (s *sqlEdgeLeaseStore) CurrentRevSeq(ctx context.Context) (int64, error) {
 		return 1, nil
 	}
 	return seq, err
+}
+
+func (s *BerthEdgeLeaseService) RevokeLeasesForUserGroup(ctx context.Context, userID, groupID int64) (int, error) {
+	if s == nil || userID <= 0 || groupID <= 0 {
+		return 0, nil
+	}
+	authResolver, ok := s.store.(edgeLeaseAuthorizedAccountResolver)
+	if !ok {
+		return 0, nil
+	}
+	count, _, err := authResolver.RevokeUserGroupLeases(ctx, userID, groupID, time.Now())
+	return count, err
+}
+
+// RevokeActiveEdgeLeasesForUserGroup revokes active Berth Edge leases belonging to
+// userID on groupID via the globally registered BerthEdgeLeaseService (e.g. upon
+// marketplace rental termination).
+func RevokeActiveEdgeLeasesForUserGroup(ctx context.Context, userID, groupID int64) (int, error) {
+	svc := getDefaultEdgeLeaseService()
+	if svc == nil {
+		return 0, nil
+	}
+	return svc.RevokeLeasesForUserGroup(ctx, userID, groupID)
+}
+
+func (s *sqlEdgeLeaseStore) ResolveAuthorizedAccountForLease(ctx context.Context, userID, apiKeyID int64, platform string, preferred []string) (int64, error) {
+	var keyGroupID int64
+	if apiKeyID > 0 {
+		var gid sql.NullInt64
+		var keyStatus string
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT group_id, status FROM api_keys
+			WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, apiKeyID, userID).Scan(&gid, &keyStatus); err != nil {
+			return 0, err
+		}
+		if keyStatus != "active" {
+			return 0, sql.ErrNoRows
+		}
+		if gid.Valid && gid.Int64 > 0 {
+			keyGroupID = gid.Int64
+		}
+	}
+
+	queryBase := `
+		SELECT a.id
+		FROM accounts a
+		JOIN users u ON u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'
+		WHERE a.deleted_at IS NULL AND a.status = 'active' AND a.schedulable = TRUE
+		  AND (a.expires_at IS NULL OR a.expires_at > clock_timestamp())
+		  AND (
+		    $2 = ''
+		    OR LOWER(a.platform) = LOWER($2)
+		    OR (LOWER($2) IN ('antigravity','gemini') AND LOWER(a.platform) IN ('antigravity','gemini'))
+		    OR (LOWER($2) IN ('grok','xai') AND LOWER(a.platform) IN ('grok','xai'))
+		  )
+		  AND (
+		    ($3 > 0 AND EXISTS(
+		      SELECT 1 FROM account_groups ag
+		      JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL AND g.status = 'active'
+		      WHERE ag.account_id = a.id AND ag.group_id = $3
+		        AND (
+		          u.role = 'admin'
+		          OR NOT EXISTS(SELECT 1 FROM berth_account_groups bg WHERE bg.group_id = g.id)
+		          OR EXISTS(
+		            SELECT 1 FROM berth_account_groups bg
+		            JOIN account_stewards st ON st.account_id = bg.account_id AND st.user_id = u.id
+		            WHERE bg.group_id = g.id AND bg.owner_user_id = u.id
+		          )
+		          OR EXISTS(
+		            SELECT 1 FROM berth_marketplace_orders o
+		            WHERE o.group_id = g.id AND o.buyer_id = u.id AND o.status = 'active'
+		              AND o.starts_at <= clock_timestamp()
+		              AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+		              AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+		          )
+		        )
+		    ))
+		    OR ($3 = 0 AND (
+		      u.role = 'admin'
+		      OR EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id = a.id AND st.user_id = u.id)
+		      OR EXISTS(
+		        SELECT 1 FROM berth_account_groups bg
+		        JOIN berth_marketplace_orders o ON o.group_id = bg.group_id
+		        WHERE bg.account_id = a.id AND o.buyer_id = u.id AND o.status = 'active'
+		          AND o.starts_at <= clock_timestamp()
+		          AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+		          AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+		      )
+		    ))
+		  )`
+
+	for _, pref := range preferred {
+		pref = strings.TrimSpace(pref)
+		if pref == "" {
+			continue
+		}
+		var id int64
+		if err := s.db.QueryRowContext(ctx, queryBase+`
+			AND (a.id::text = $4 OR LOWER(a.name) = LOWER($4))
+			ORDER BY EXISTS(SELECT 1 FROM account_groups ag2 WHERE ag2.account_id = a.id) DESC, a.priority ASC, a.id DESC
+			LIMIT 1`, userID, platform, keyGroupID, pref).Scan(&id); err == nil && id > 0 {
+			return id, nil
+		}
+	}
+
+	var id int64
+	err := s.db.QueryRowContext(ctx, queryBase+`
+		ORDER BY EXISTS(SELECT 1 FROM account_groups ag2 WHERE ag2.account_id = a.id) DESC, a.priority ASC, a.id DESC
+		LIMIT 1`, userID, platform, keyGroupID).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (s *sqlEdgeLeaseStore) VerifyAccountAccessForLease(ctx context.Context, userID, apiKeyID, accountID int64) (bool, error) {
+	if userID <= 0 || accountID <= 0 {
+		return false, nil
+	}
+	var keyGroupID int64
+	if apiKeyID > 0 {
+		var gid sql.NullInt64
+		var keyStatus string
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT group_id, status FROM api_keys
+			WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, apiKeyID, userID).Scan(&gid, &keyStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		if keyStatus != "active" {
+			return false, nil
+		}
+		if gid.Valid && gid.Int64 > 0 {
+			keyGroupID = gid.Int64
+		}
+	}
+	var allowed bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM accounts a
+			JOIN users u ON u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'
+			WHERE a.id = $2 AND a.deleted_at IS NULL AND a.status = 'active'
+			  AND (a.expires_at IS NULL OR a.expires_at > clock_timestamp())
+			  AND (
+			    ($3 > 0 AND EXISTS(
+			      SELECT 1 FROM account_groups ag
+			      JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL AND g.status = 'active'
+			      WHERE ag.account_id = a.id AND ag.group_id = $3
+			        AND (
+			          u.role = 'admin'
+			          OR NOT EXISTS(SELECT 1 FROM berth_account_groups bg WHERE bg.group_id = g.id)
+			          OR EXISTS(
+			            SELECT 1 FROM berth_account_groups bg
+			            JOIN account_stewards st ON st.account_id = bg.account_id AND st.user_id = u.id
+			            WHERE bg.group_id = g.id AND bg.owner_user_id = u.id
+			          )
+			          OR EXISTS(
+			            SELECT 1 FROM berth_marketplace_orders o
+			            WHERE o.group_id = g.id AND o.buyer_id = u.id AND o.status = 'active'
+			              AND o.starts_at <= clock_timestamp()
+			              AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+			              AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+			          )
+			        )
+			    ))
+			    OR ($3 = 0 AND (
+			      u.role = 'admin'
+			      OR EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id = a.id AND st.user_id = u.id)
+			      OR EXISTS(
+			        SELECT 1 FROM berth_account_groups bg
+			        JOIN berth_marketplace_orders o ON o.group_id = bg.group_id
+			        WHERE bg.account_id = a.id AND o.buyer_id = u.id AND o.status = 'active'
+			          AND o.starts_at <= clock_timestamp()
+			          AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+			          AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+			      )
+			    ))
+			  )
+		)`, userID, accountID, keyGroupID).Scan(&allowed)
+	return allowed, err
+}
+
+func (s *sqlEdgeLeaseStore) ResolveActiveGrantForProxy(ctx context.Context, proxyID int64) (int64, error) {
+	if proxyID <= 0 {
+		return 0, sql.ErrNoRows
+	}
+	var grantID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM berth_landing_node_grants
+		WHERE proxy_id = $1 AND status = 'active'
+		  AND (expires_at IS NULL OR expires_at > clock_timestamp())
+		  AND (max_bytes <= 0 OR (max_bytes - used_bytes - reserved_bytes) > 0)
+		ORDER BY id DESC
+		LIMIT 1`, proxyID).Scan(&grantID)
+	return grantID, err
+}
+
+func (s *sqlEdgeLeaseStore) RevokeUserGroupLeases(ctx context.Context, userID, groupID int64, revokedAt time.Time) (int, int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE berth_work_session_leases
+		SET revoked_at = COALESCE(revoked_at, $3)
+		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > $3
+		  AND (
+		    account_id IN (SELECT account_id FROM account_groups WHERE group_id = $2)
+		    OR api_key_id IN (SELECT id FROM api_keys WHERE user_id = $1 AND group_id = $2)
+		  )`, userID, groupID, revokedAt)
+	if err != nil {
+		return 0, 0, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return 0, 0, nil
+	}
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE berth_edge_revocation_state
+		SET rev_seq = rev_seq + 1, updated_at = NOW()
+		WHERE id = 1
+		RETURNING rev_seq`).Scan(&seq); err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return int(affected), seq, nil
 }
 
 func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64, platform string, preferred []string) (int64, error) {
@@ -1074,6 +1677,137 @@ func (s *sqlEdgeLeaseStore) ResolveAccountForLease(ctx context.Context, _ int64,
 		return 0, err
 	}
 	return id, nil
+}
+
+func (s *sqlEdgeLeaseStore) ResolveAccountProxyBinding(ctx context.Context, accountID int64) (int64, int64, error) {
+	var proxyID sql.NullInt64
+	var edgeNodeID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT a.proxy_id, p.edge_node_id
+		FROM accounts a
+		LEFT JOIN proxies p ON p.id = a.proxy_id AND p.deleted_at IS NULL
+		WHERE a.id = $1 AND a.deleted_at IS NULL`, accountID).Scan(&proxyID, &edgeNodeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	var pid, eid int64
+	if proxyID.Valid {
+		pid = proxyID.Int64
+	}
+	if edgeNodeID.Valid {
+		eid = edgeNodeID.Int64
+	}
+	return pid, eid, nil
+}
+
+func (s *sqlEdgeLeaseStore) ListAuthorizedFailoverCandidates(ctx context.Context, userID, apiKeyID int64, platform string, excludeAccountID int64) ([]FailoverCandidate, error) {
+	if userID <= 0 {
+		return nil, nil
+	}
+	var keyGroupID int64
+	if apiKeyID > 0 {
+		var gid sql.NullInt64
+		var keyStatus string
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT group_id, status FROM api_keys
+			WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, apiKeyID, userID).Scan(&gid, &keyStatus); err != nil {
+			return nil, err
+		}
+		if keyStatus != "active" {
+			return nil, nil
+		}
+		if gid.Valid && gid.Int64 > 0 {
+			keyGroupID = gid.Int64
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id,
+		       COALESCE(c.id, a.id),
+		       COALESCE(c.gate_epoch, 1),
+		       COALESCE((
+		         SELECT g2.id FROM berth_landing_node_grants g2
+		         WHERE g2.status = 'active'
+		           AND (g2.expires_at IS NULL OR g2.expires_at > clock_timestamp())
+		           AND (g2.max_bytes <= 0 OR (g2.max_bytes - g2.used_bytes - g2.reserved_bytes) > 0)
+		           AND (g2.proxy_id = p.id OR (g2.node_id = n.id AND g2.grantee_user_id = $1))
+		         ORDER BY (g2.proxy_id = p.id) DESC, g2.id DESC
+		         LIMIT 1
+		       ), 0),
+		       n.id,
+		       COALESCE(NULLIF(n.exit_timezone, ''), NULLIF(p.exit_timezone, ''), NULLIF(c.timezone, ''), 'UTC'),
+		       COALESCE(NULLIF(n.exit_country_code, ''), NULLIF(p.exit_country_code, ''), 'US'),
+		       COALESCE(NULLIF(n.exit_locale, ''), NULLIF(c.locale, ''), '')
+		FROM accounts a
+		JOIN users u ON u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'
+		JOIN proxies p ON p.id = a.proxy_id AND p.deleted_at IS NULL AND p.status = 'active'
+		JOIN berth_edge_nodes n ON n.id = p.edge_node_id AND n.status = 'active'
+		LEFT JOIN account_cages c ON c.account_id = a.id AND c.deleted_at IS NULL
+		WHERE a.deleted_at IS NULL AND a.status = 'active' AND a.schedulable = TRUE
+		  AND a.id <> $4
+		  AND (a.expires_at IS NULL OR a.expires_at > clock_timestamp())
+		  AND (
+		    $2 = ''
+		    OR LOWER(a.platform) = LOWER($2)
+		    OR (LOWER($2) IN ('antigravity','gemini') AND LOWER(a.platform) IN ('antigravity','gemini'))
+		    OR (LOWER($2) IN ('grok','xai') AND LOWER(a.platform) IN ('grok','xai'))
+		  )
+		  AND (
+		    ($3 > 0 AND EXISTS(
+		      SELECT 1 FROM account_groups ag
+		      JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL AND g.status = 'active'
+		      WHERE ag.account_id = a.id AND ag.group_id = $3
+		        AND (
+		          u.role = 'admin'
+		          OR NOT EXISTS(SELECT 1 FROM berth_account_groups bg WHERE bg.group_id = g.id)
+		          OR EXISTS(
+		            SELECT 1 FROM berth_account_groups bg
+		            JOIN account_stewards st ON st.account_id = bg.account_id AND st.user_id = u.id
+		            WHERE bg.group_id = g.id AND bg.owner_user_id = u.id
+		          )
+		          OR EXISTS(
+		            SELECT 1 FROM berth_marketplace_orders o
+		            WHERE o.group_id = g.id AND o.buyer_id = u.id AND o.status = 'active'
+		              AND o.starts_at <= clock_timestamp()
+		              AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+		              AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+		          )
+		        )
+		    ))
+		    OR ($3 = 0 AND (
+		      u.role = 'admin'
+		      OR EXISTS(SELECT 1 FROM account_stewards st WHERE st.account_id = a.id AND st.user_id = u.id)
+		      OR EXISTS(
+		        SELECT 1 FROM berth_account_groups bg
+		        JOIN berth_marketplace_orders o ON o.group_id = bg.group_id
+		        WHERE bg.account_id = a.id AND o.buyer_id = u.id AND o.status = 'active'
+		          AND o.starts_at <= clock_timestamp()
+		          AND (o.expires_at IS NULL OR o.expires_at > clock_timestamp())
+		          AND (o.quota_limit_usd IS NULL OR o.quota_used_usd < o.quota_limit_usd)
+		      )
+		    ))
+		  )
+		ORDER BY a.priority ASC, a.id ASC`, userID, platform, keyGroupID, excludeAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []FailoverCandidate
+	for rows.Next() {
+		var c FailoverCandidate
+		if err := rows.Scan(
+			&c.AccountID, &c.CageID, &c.CageEpoch, &c.GrantID,
+			&c.LandingNodeID, &c.CohortTimezone, &c.CohortCountryCode, &c.CohortLocale,
+		); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(c.CohortLocale) == "" {
+			c.CohortLocale = DeriveGeoIdentity(c.CohortCountryCode, c.CohortTimezone).Locale
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func (s *sqlEdgeLeaseStore) BumpRevSeq(ctx context.Context) (int64, error) {

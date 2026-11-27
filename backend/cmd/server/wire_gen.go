@@ -381,6 +381,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		paymentService:       paymentService,
 		paymentConfigService: paymentConfigService,
 		stewardStore:         stewardStore,
+		billingService:       billingService,
 		cnProviderHandler:    cnProviderHandler,
 		handlers:             handlers,
 	})

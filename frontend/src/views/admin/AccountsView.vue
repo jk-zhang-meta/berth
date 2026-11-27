@@ -961,7 +961,7 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
   }, 0)
 }
 
-const refreshTodayStatsBatch = async () => {
+const refreshTodayStatsBatch = async (options?: { force?: boolean }) => {
   // Why this checks both columns:
   // - today_stats column shows dedicated today's metrics.
   // - usage column also embeds today's stats for Key/Bedrock rows.
@@ -985,7 +985,9 @@ const refreshTodayStatsBatch = async () => {
   todayStatsError.value = null
 
   try {
-    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs)
+    const result = options?.force
+      ? await adminAPI.accounts.getBatchTodayStats(accountIDs, { force: true })
+      : await adminAPI.accounts.getBatchTodayStats(accountIDs)
     if (reqSeq !== todayStatsReqSeq.value) return
     const serverStats = result.stats ?? {}
     const nextStats: Record<string, WindowStats> = {}
@@ -1219,6 +1221,7 @@ const resetAutoRefreshCache = () => {
 
 type AccountLoadOptions = {
   refreshTodayStats?: boolean
+  forceTodayStats?: boolean
 }
 
 const load = async (options: AccountLoadOptions = {}) => {
@@ -1230,7 +1233,9 @@ const load = async (options: AccountLoadOptions = {}) => {
   requestParams.lite = '1'
   void refreshProxies()
   await baseLoad()
-  if (options.refreshTodayStats !== false) await refreshTodayStatsBatch()
+  if (options.refreshTodayStats !== false) {
+    await refreshTodayStatsBatch(options.forceTodayStats ? { force: true } : undefined)
+  }
 }
 
 const reload = async () => {
@@ -1562,7 +1567,7 @@ const refreshAccountsIncrementally = async () => {
 
 const handleManualRefresh = async () => {
   await Promise.all([
-    load(),
+    load({ forceTodayStats: true }),
     authStore.isAdmin ? loadUpstreamBillingProbeGlobalState() : Promise.resolve()
   ])
   // Force usage cells to refetch /usage on explicit user refresh.
@@ -2271,7 +2276,11 @@ const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Accou
   ...updatedAccount,
   current_concurrency: updatedAccount.current_concurrency ?? oldAccount.current_concurrency,
   current_window_cost: updatedAccount.current_window_cost ?? oldAccount.current_window_cost,
-  active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions
+  active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions,
+  first_token_ms: updatedAccount.first_token_ms ?? oldAccount.first_token_ms,
+  duration_ms: updatedAccount.duration_ms ?? oldAccount.duration_ms,
+  owner_user_id: updatedAccount.owner_user_id ?? oldAccount.owner_user_id,
+  owner_label: updatedAccount.owner_label ?? oldAccount.owner_label
 })
 
 const syncPaginationAfterLocalRemoval = () => {

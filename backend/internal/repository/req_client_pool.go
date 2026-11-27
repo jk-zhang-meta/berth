@@ -9,6 +9,7 @@ import (
 
 	"github.com/jk-zhang-meta/berth/internal/pkg/proxyurl"
 	"github.com/jk-zhang-meta/berth/internal/pkg/servertiming"
+	"github.com/jk-zhang-meta/berth/internal/service"
 
 	"github.com/imroc/req/v3"
 )
@@ -59,7 +60,11 @@ func getSharedReqClient(opts reqClientOptions) (*req.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if trimmed != "" {
+	if edgeRT := service.NewEdgeLandingRoundTripper(trimmed); edgeRT != nil {
+		client.GetTransport().WrapRoundTripFunc(func(_ http.RoundTripper) req.HttpRoundTripFunc {
+			return edgeRT.RoundTrip
+		})
+	} else if trimmed != "" {
 		client.SetProxyURL(trimmed)
 	}
 	client = instrumentReqClient(client)

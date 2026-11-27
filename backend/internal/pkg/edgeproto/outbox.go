@@ -14,24 +14,34 @@ import (
 // UsageReceipt is the immutable idempotent usage/TTFT/status receipt emitted by
 // Landing nodes to Berth Central (Codex Blocker #1.1).
 type UsageReceipt struct {
-	ReceiptID     string `json:"receipt_id"`
-	NodeID        int64  `json:"node_id"`
-	LeaseID       string `json:"lease_id"`
-	GrantID       int64  `json:"grant_id"`
-	UserID        int64  `json:"user_id"`
-	APIKeyID      int64  `json:"api_key_id"`
-	AccountID     int64  `json:"account_id"`
-	WorkSessionID int64  `json:"work_session_id"`
-	Platform      string `json:"platform"`
-	Model         string `json:"model,omitempty"`
-	IngressBytes  int64  `json:"ingress_bytes"`
-	EgressBytes   int64  `json:"egress_bytes"`
-	TotalBytes    int64  `json:"total_bytes"`
-	RequestCount  int    `json:"request_count"`
-	StatusCode    int    `json:"status_code"`
-	TTFTMs        int64  `json:"ttft_ms"`
-	DurationMs    int64  `json:"duration_ms"`
-	CreatedAtUnix int64  `json:"created_at"`
+	ReceiptID           string  `json:"receipt_id"`
+	NodeID              int64   `json:"node_id"`
+	LeaseID             string  `json:"lease_id"`
+	GrantID             int64   `json:"grant_id"`
+	UserID              int64   `json:"user_id"`
+	APIKeyID            int64   `json:"api_key_id"`
+	AccountID           int64   `json:"account_id"`
+	WorkSessionID       int64   `json:"work_session_id"`
+	Platform            string  `json:"platform"`
+	Model               string  `json:"model,omitempty"`
+	InputTokens         int     `json:"input_tokens,omitempty"`
+	OutputTokens        int     `json:"output_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	Stream              bool    `json:"stream,omitempty"`
+	IngressBytes        int64   `json:"ingress_bytes"`
+	EgressBytes         int64   `json:"egress_bytes"`
+	TotalBytes          int64   `json:"total_bytes"`
+	RequestCount        int     `json:"request_count"`
+	StatusCode          int     `json:"status_code"`
+	TTFTMs              int64   `json:"ttft_ms"`
+	DurationMs          int64   `json:"duration_ms"`
+	CreatedAtUnix       int64   `json:"created_at"`
+	// Server-side settlement telemetry populated by Berth Central during outbox ingestion.
+	TotalCost        float64 `json:"-"`
+	ActualCost       float64 `json:"-"`
+	AccountStatsCost float64 `json:"-"`
+	UsageLogID       int64   `json:"-"`
 }
 
 type outboxEntry struct {

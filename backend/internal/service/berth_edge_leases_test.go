@@ -152,3 +152,91 @@ func TestBerthEdgeLeaseService_MintRenewRevokeFailoverAndStrictEgress(t *testing
 	require.Equal(t, "completed", doneTask.Status)
 	require.Empty(t, leaseSvc.ListPendingOAuthTasks(landingJP1.ID))
 }
+
+type failoverAutoStore struct {
+	*MemoryEdgeLeaseStore
+	candidates []FailoverCandidate
+}
+
+func (f *failoverAutoStore) ListAuthorizedFailoverCandidates(_ context.Context, _, _ int64, _ string, excludeAccountID int64) ([]FailoverCandidate, error) {
+	var out []FailoverCandidate
+	for _, c := range f.candidates {
+		if c.AccountID != excludeAccountID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func TestBerthEdgeLeaseService_CoordinateFailoverAutoResolvesCandidatesFromStore(t *testing.T) {
+	ctx := context.Background()
+	pub, priv, kid, err := LoadOrGenerateEdgeSigningKey("", filepath.Join(t.TempDir(), "k.pem"))
+	require.NoError(t, err)
+
+	revSeq := int64(1)
+	zoneStore := NewMemoryZoneStore(true)
+	zoneSvc := NewBerthZoneServiceWithStore(zoneStore)
+	grantStore := NewMemoryLandingGrantStore(zoneStore, &revSeq)
+	grantSvc := NewBerthLandingGrantServiceWithStore(grantStore)
+	autoStore := &failoverAutoStore{MemoryEdgeLeaseStore: NewMemoryEdgeLeaseStore(&revSeq)}
+	leaseSvc := NewBerthEdgeLeaseServiceWithStore(autoStore, zoneSvc, grantSvc, pub, priv, kid)
+
+	zones, err := zoneSvc.ListZones(ctx)
+	require.NoError(t, err)
+	zoneBySlug := map[string]int64{}
+	for _, z := range zones {
+		zoneBySlug[z.Slug] = z.ID
+	}
+	relay, err := zoneSvc.CreateNode(ctx, EdgeNode{Name: "relay-1", ZoneID: zoneBySlug["overseas"], Roles: []string{EdgeRoleIngressRelay}, TunnelAddr: "10.1.0.1:9443", Status: EdgeNodeStatusActive})
+	require.NoError(t, err)
+	sg1, err := zoneSvc.CreateNode(ctx, EdgeNode{Name: "sg-1", ZoneID: zoneBySlug["overseas"], Roles: []string{EdgeRoleLanding}, TunnelAddr: "10.1.1.1:9443", Status: EdgeNodeStatusActive, ExitCountryCode: "SG", ExitTimezone: "Asia/Singapore", ExitLocale: "en_SG.UTF-8"})
+	require.NoError(t, err)
+	sg2, err := zoneSvc.CreateNode(ctx, EdgeNode{Name: "sg-2", ZoneID: zoneBySlug["overseas"], Roles: []string{EdgeRoleLanding}, TunnelAddr: "10.1.1.2:9443", Status: EdgeNodeStatusActive, ExitCountryCode: "SG", ExitTimezone: "Asia/Singapore", ExitLocale: "en_SG.UTF-8"})
+	require.NoError(t, err)
+	us1, err := zoneSvc.CreateNode(ctx, EdgeNode{Name: "us-1", ZoneID: zoneBySlug["overseas"], Roles: []string{EdgeRoleLanding}, TunnelAddr: "10.1.2.1:9443", Status: EdgeNodeStatusActive, ExitCountryCode: "US", ExitTimezone: "America/Los_Angeles", ExitLocale: "en_US.UTF-8"})
+	require.NoError(t, err)
+	for _, dst := range []*EdgeNode{sg1, sg2, us1} {
+		_, err = zoneSvc.CreateLink(ctx, ServerLink{SrcNodeID: relay.ID, DstNodeID: dst.ID, Direction: LinkDirectionOneWay, LinkClass: LinkClassDirect, Weight: 10, RTTMs: 25, Enabled: true})
+		require.NoError(t, err)
+	}
+
+	gSG1, err := grantSvc.CreateGrant(ctx, CreateLandingGrantInput{NodeID: sg1.ID, GranteeUserID: 7, MaxBytes: 1024 * 1024})
+	require.NoError(t, err)
+	gSG2, err := grantSvc.CreateGrant(ctx, CreateLandingGrantInput{NodeID: sg2.ID, GranteeUserID: 7, MaxBytes: 1024 * 1024})
+	require.NoError(t, err)
+	gUS1, err := grantSvc.CreateGrant(ctx, CreateLandingGrantInput{NodeID: us1.ID, GranteeUserID: 7, MaxBytes: 1024 * 1024})
+	require.NoError(t, err)
+
+	minted, err := leaseSvc.MintLease(ctx, MintLeaseInput{
+		UserID: 7, APIKeyID: 9, WorkSessionID: 101, Platform: "anthropic",
+		AccountID: 23, CageID: 23, CageEpoch: 1, GrantID: gSG1.ID, LandingNodeID: sg1.ID,
+	})
+	require.NoError(t, err)
+
+	// 1. Edge sends empty Candidates -> Central auto-discovers same-cohort sg2 account #29 -> Action="switched"!
+	autoStore.candidates = []FailoverCandidate{
+		{AccountID: 24, CageID: 24, CageEpoch: 1, GrantID: gUS1.ID, LandingNodeID: us1.ID, CohortTimezone: "America/Los_Angeles", CohortCountryCode: "US", CohortLocale: "en_US.UTF-8"},
+		{AccountID: 29, CageID: 29, CageEpoch: 1, GrantID: gSG2.ID, LandingNodeID: sg2.ID, CohortTimezone: "Asia/Singapore", CohortCountryCode: "SG", CohortLocale: "en_SG.UTF-8"},
+	}
+	foSame, err := leaseSvc.CoordinateFailover(ctx, EdgeFailoverRequest{
+		LeaseID: minted.LeaseID, FailedAccountID: 23, StatusCode: 429,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "switched", foSame.Action)
+	require.NotNil(t, foSame.Lease)
+	require.Equal(t, int64(29), foSame.Lease.AccountID)
+
+	// 2. When only cross-cohort US account #24 remains -> returns cage_rebind_required WITH RecommendedCohort!
+	autoStore.candidates = []FailoverCandidate{
+		{AccountID: 24, CageID: 24, CageEpoch: 1, GrantID: gUS1.ID, LandingNodeID: us1.ID, CohortTimezone: "America/Los_Angeles", CohortCountryCode: "US", CohortLocale: "en_US.UTF-8"},
+	}
+	foCross, err := leaseSvc.CoordinateFailover(ctx, EdgeFailoverRequest{
+		LeaseID: minted.LeaseID, FailedAccountID: 23, StatusCode: 429,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "cage_rebind_required", foCross.Action)
+	require.Nil(t, foCross.Lease)
+	require.NotNil(t, foCross.RecommendedCohort)
+	require.Equal(t, int64(24), foCross.RecommendedCohort.AccountID)
+	require.Equal(t, "America/Los_Angeles", foCross.RecommendedCohort.CohortTimezone)
+}

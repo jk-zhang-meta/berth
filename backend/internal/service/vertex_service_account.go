@@ -222,6 +222,9 @@ func newVertexServiceAccountHTTPClient(proxyURL string) (*http.Client, error) {
 		return servertiming.InstrumentClient(&http.Client{Timeout: 15 * time.Second}), nil
 	}
 
+	if edgeRT := NewEdgeLandingRoundTripper(proxyURL); edgeRT != nil {
+		return servertiming.InstrumentClient(&http.Client{Timeout: 30 * time.Second, Transport: edgeRT}), nil
+	}
 	_, parsedProxy, err := proxyurl.Parse(proxyURL)
 	if err != nil {
 		return nil, err

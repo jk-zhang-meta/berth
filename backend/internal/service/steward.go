@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jk-zhang-meta/berth/internal/pkg/timezone"
 )
 
 type StewardStore struct {
@@ -133,19 +136,45 @@ func (s *StewardStore) TodayLatencies(ctx context.Context, ids []int64) map[int6
 	if s == nil || s.db == nil || len(ids) == 0 {
 		return out
 	}
-	placeholders, args := idPlaceholders(ids)
-	if len(args) == 0 {
+	today := timezone.Today()
+	placeholders, idArgs := idPlaceholdersOffset(ids, 2)
+	if len(idArgs) == 0 {
 		return out
 	}
+	args := make([]any, 0, len(idArgs)+1)
+	args = append(args, today)
+	args = append(args, idArgs...)
+
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT account_id, ROUND(AVG(first_token_ms))::bigint, ROUND(AVG(duration_ms))::bigint
-		FROM usage_logs
-		WHERE account_id IN (`+placeholders+`)
-		  AND created_at >= date_trunc('day', now())
+		SELECT account_id, ROUND(AVG(NULLIF(first_token_ms, 0)))::bigint, ROUND(AVG(NULLIF(duration_ms, 0)))::bigint
+		FROM (
+			SELECT account_id, first_token_ms, duration_ms
+			FROM usage_logs
+			WHERE account_id IN (`+placeholders+`)
+			  AND created_at >= $1
+			UNION ALL
+			SELECT g.account_id, g.ttft_ms AS first_token_ms, g.duration_ms
+			FROM berth_landing_node_grant_usage g
+			WHERE g.account_id IN (`+placeholders+`)
+			  AND g.created_at >= $1
+			  AND COALESCE(g.status_code, 200) > 0
+			  AND COALESCE(g.status_code, 200) < 400
+			  AND (g.usage_log_id IS NULL OR NOT EXISTS (SELECT 1 FROM usage_logs ul WHERE ul.id = g.usage_log_id))
+		) combined
 		GROUP BY account_id
 	`, args...)
 	if err != nil {
-		return out
+		// Fallback for minimal test databases that do not include berth_landing_node_grant_usage.
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT account_id, ROUND(AVG(NULLIF(first_token_ms, 0)))::bigint, ROUND(AVG(NULLIF(duration_ms, 0)))::bigint
+			FROM usage_logs
+			WHERE account_id IN (`+placeholders+`)
+			  AND created_at >= $1
+			GROUP BY account_id
+		`, args...)
+		if err != nil {
+			return out
+		}
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
@@ -156,6 +185,24 @@ func (s *StewardStore) TodayLatencies(ctx context.Context, ids []int64) map[int6
 		}
 	}
 	return out
+}
+
+func idPlaceholdersOffset(ids []int64, startIdx int) (string, []any) {
+	seen := make(map[int64]struct{}, len(ids))
+	args := make([]any, 0, len(ids))
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		args = append(args, id)
+		parts = append(parts, "$"+strconv.Itoa(startIdx+len(args)-1))
+	}
+	return strings.Join(parts, ","), args
 }
 
 func (s *StewardStore) owns(ctx context.Context, query string, objectID, userID int64) bool {

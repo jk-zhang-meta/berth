@@ -165,6 +165,9 @@ func extractUpstreamAuth(acc *Account) (map[string]string, string, error) {
 			headers["Authorization"] = "Bearer " + tok
 			headers["anthropic-beta"] = "oauth-2025-04-20"
 			base := strings.TrimRight(strings.TrimSpace(acc.GetBaseURL()), "/")
+			if base == "" {
+				base = "https://api.anthropic.com"
+			}
 			return headers, base, nil
 		}
 		key := firstNonEmpty("api_key", "key")
@@ -173,6 +176,9 @@ func extractUpstreamAuth(acc *Account) (map[string]string, string, error) {
 		}
 		headers["x-api-key"] = key
 		base := strings.TrimRight(strings.TrimSpace(acc.GetBaseURL()), "/")
+		if base == "" {
+			base = "https://api.anthropic.com"
+		}
 		return headers, base, nil
 
 	case PlatformAntigravity, PlatformGemini:
@@ -182,8 +188,15 @@ func extractUpstreamAuth(acc *Account) (map[string]string, string, error) {
 				return nil, "", fmt.Errorf("%w: gemini/antigravity oauth token missing", ErrEdgeCredentialUnavailable)
 			}
 			headers["Authorization"] = "Bearer " + tok
-			base := firstNonEmpty("base_url")
-			return headers, strings.TrimRight(base, "/"), nil
+			base := strings.TrimRight(firstNonEmpty("base_url"), "/")
+			if base == "" {
+				if platform == PlatformGemini && strings.EqualFold(firstNonEmpty("oauth_type"), "ai_studio") {
+					base = "https://generativelanguage.googleapis.com"
+				} else {
+					base = "https://cloudcode-pa.googleapis.com"
+				}
+			}
+			return headers, base, nil
 		}
 		key := firstNonEmpty("api_key", "key")
 		if key == "" {

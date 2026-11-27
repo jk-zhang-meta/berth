@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jk-zhang-meta/berth/internal/pkg/oauth"
@@ -146,6 +147,15 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found or expired")
+	}
+
+	// Validate embedded "#state" (if present) before contacting Anthropic so a stale
+	// or mismatched authorization code fails fast with an actionable message.
+	if idx := strings.Index(input.Code, "#"); idx != -1 {
+		codeState := strings.TrimSpace(input.Code[idx+1:])
+		if codeState != "" && session.State != "" && codeState != session.State {
+			return nil, fmt.Errorf("OAuth state mismatch: the authorization code does not belong to the current authorization URL; please open the latest generated link and paste its code")
+		}
 	}
 
 	// Get proxy URL (fail-closed when input.ProxyID > 0)

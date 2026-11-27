@@ -301,6 +301,7 @@ func (r *usageLogRepository) GetAccountTodayStats(ctx context.Context, accountID
 	); err != nil {
 		return nil, err
 	}
+	r.mergeEdgeGrantWindowStats(ctx, accountID, today, stats)
 	return stats, nil
 }
 
@@ -331,6 +332,7 @@ func (r *usageLogRepository) GetAccountWindowStats(ctx context.Context, accountI
 	); err != nil {
 		return nil, err
 	}
+	r.mergeEdgeGrantWindowStats(ctx, accountID, startTime, stats)
 	return stats, nil
 }
 
@@ -384,6 +386,7 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 			result[accountID] = &usagestats.AccountStats{}
 		}
 	}
+	r.mergeEdgeGrantWindowStatsBatch(ctx, accountIDs, startTime, result)
 	return result, nil
 }
 
