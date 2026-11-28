@@ -232,20 +232,31 @@ fn prepare_anthropic_oauth_http(
     let final_ua = format!("claude-cli/{effective_ver} {ua_suffix}");
     insert_header_str(&mut dst, "user-agent", &final_ua);
 
-    // Pin virtual workstation x-stainless-* headers to the Account Cage so switching
-    // client devices (MacBook <-> Windows/Linux) NEVER causes OS/arch/runtime jump.
+    // Align x-stainless-* OS/arch/runtime headers with the real execution client so
+    // HTTP headers NEVER contradict the CLI prompt body (platform, shell, paths).
+    // Preserve genuine client-sent x-stainless-* headers; only backfill missing fields
+    // from Berth's internal X-Berth-Exec-* hint and then Account Cage defaults.
+    let exec_hint = resolve_exec_os_hint(client_headers);
     insert_header_str(&mut dst, "x-stainless-lang", "js");
-    if let Some(c) = cage {
-        if !c.client_os.is_empty() {
+    if !dst.contains_key("x-stainless-os") {
+        if let Some(os) = exec_hint.os_family {
+            insert_header_str(&mut dst, "x-stainless-os", os);
+        } else if let Some(c) = cage.filter(|c| !c.client_os.is_empty()) {
             insert_header_str(&mut dst, "x-stainless-os", &c.client_os);
         }
-        if !c.client_arch.is_empty() {
+    }
+    if !dst.contains_key("x-stainless-arch") {
+        if let Some(arch) = exec_hint.arch {
+            insert_header_str(&mut dst, "x-stainless-arch", arch);
+        } else if let Some(c) = cage.filter(|c| !c.client_arch.is_empty()) {
             insert_header_str(&mut dst, "x-stainless-arch", &c.client_arch);
         }
-        if !c.client_runtime.is_empty() {
+    }
+    if let Some(c) = cage {
+        if !dst.contains_key("x-stainless-runtime") && !c.client_runtime.is_empty() {
             insert_header_str(&mut dst, "x-stainless-runtime", &c.client_runtime);
         }
-        if !c.client_runtime_version.is_empty() {
+        if !dst.contains_key("x-stainless-runtime-version") && !c.client_runtime_version.is_empty() {
             insert_header_str(
                 &mut dst,
                 "x-stainless-runtime-version",
@@ -394,8 +405,9 @@ fn prepare_openai_codex_oauth_http(
         insert_header_str(&mut dst, "content-type", "application/json");
     }
 
-    // Paired originator + User-Agent + version (never below 0.144.0, never downgrade local CLI,
-    // OS/Arch pinned to Account Cage so device switches never jump OS/Arch).
+    // Paired originator + User-Agent + version (never below 0.144.0, never downgrade local CLI).
+    // Align OS/Arch and turn-metadata sandbox with the real execution client so HTTP headers
+    // NEVER contradict the CLI prompt body (`<environment_context>`, shell, paths).
     let client_orig = header_str(client_headers, "originator").unwrap_or_default();
     let originator = if client_orig.eq_ignore_ascii_case("codex_exec") {
         "codex_exec"
@@ -410,7 +422,7 @@ fn prepare_openai_codex_oauth_http(
         .map(|c| c.client_app_version.as_str())
         .unwrap_or_default();
     let effective_ver = max_semver(&[&client_ver, cage_ver, CODEX_MIN_UPSTREAM_VERSION]);
-    let (codex_os, codex_arch) = cage_codex_os_arch(cage);
+    let (codex_os, codex_arch) = resolve_codex_os_arch(&client_ua, client_headers, cage);
     let final_ua = if originator == "codex_exec" {
         format!("{originator}/{effective_ver} ({codex_os}; {codex_arch}) xterm-256color ({originator}; {effective_ver})")
     } else {
@@ -440,14 +452,14 @@ fn prepare_openai_codex_oauth_http(
     if fp_mode != "off" {
         if let Some(iid) = install_id {
             insert_header_str(&mut dst, "x-codex-installation-id", iid);
-            let cage_sandbox = cage_codex_sandbox(cage);
+            let exec_sandbox = codex_sandbox_for_os(&codex_os);
             if let Some(raw_tm) = dst
                 .get("x-codex-turn-metadata")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string)
             {
                 if let Some(rewritten_tm) =
-                    rewrite_codex_turn_metadata_json(&raw_tm, iid, cage_sandbox)
+                    rewrite_codex_turn_metadata_json(&raw_tm, iid, exec_sandbox)
                 {
                     insert_header_str(&mut dst, "x-codex-turn-metadata", &rewritten_tm);
                 }
@@ -455,7 +467,7 @@ fn prepare_openai_codex_oauth_http(
             if !body.is_empty() && method == Method::POST {
                 let mut raw = body.to_vec();
                 if let Some(patched) =
-                    rewrite_codex_body_client_metadata_surgical(&raw, iid, cage_sandbox)
+                    rewrite_codex_body_client_metadata_surgical(&raw, iid, exec_sandbox)
                 {
                     raw = patched;
                 }
@@ -488,7 +500,7 @@ fn prepare_openai_codex_oauth_http(
 fn prepare_antigravity_oauth_http(
     method: Method,
     up_url: &str,
-    _client_headers: &HeaderMap,
+    client_headers: &HeaderMap,
     body: Bytes,
     claims: &SessionLeaseClaims,
     cred: Option<&UpstreamCredentialDto>,
@@ -496,13 +508,13 @@ fn prepare_antigravity_oauth_http(
 ) -> PreparedUpstreamRequest {
     // Strict minimal allowlist matching official Antigravity Cloud Code client.
     // Deliberately strips `X-Goog-Ext-525006001-Bin` (`cli_gateway` leak!), `x-goog-api-key`,
-    // cookies, and all extraneous headers.
+    // cookies, `x-berth-*`, and all extraneous headers.
     let mut dst = HeaderMap::new();
     insert_header_str(&mut dst, "content-type", "application/json");
     // Request identity encoding so v1internal JSON / SSE unwrapping is guaranteed clean.
     insert_header_str(&mut dst, "accept-encoding", "identity");
 
-    let ua = build_antigravity_user_agent(cage);
+    let ua = build_antigravity_user_agent(client_headers, cage);
     insert_header_str(&mut dst, "user-agent", &ua);
     set_accept_language(&mut dst, cage, claims);
     if let Some(c) = cred {
@@ -815,26 +827,117 @@ fn derive_antigravity_session_id(req_obj: &Map<String, Value>) -> String {
     format!("-{n}")
 }
 
-fn build_antigravity_user_agent(cage: Option<&CageIdentityDto>) -> String {
+#[derive(Debug, Default)]
+struct ExecOsHint {
+    os_family: Option<&'static str>, // "MacOS" | "Linux" | "Windows"
+    os_version: Option<String>,
+    arch: Option<&'static str>, // "arm64" | "x64"
+}
+
+fn normalize_os_family(raw: &str) -> Option<&'static str> {
+    let lc = raw.trim().to_ascii_lowercase();
+    if lc.is_empty() {
+        return None;
+    }
+    if lc.contains("mac") || lc.contains("darwin") || lc.contains("osx") {
+        Some("MacOS")
+    } else if lc.contains("win") {
+        Some("Windows")
+    } else if lc.contains("linux")
+        || lc.contains("ubuntu")
+        || lc.contains("debian")
+        || lc.contains("fedora")
+        || lc.contains("arch")
+        || lc.contains("alpine")
+    {
+        Some("Linux")
+    } else {
+        None
+    }
+}
+
+fn normalize_arch_stainless(raw: &str) -> Option<&'static str> {
+    let lc = raw.trim().to_ascii_lowercase();
+    match lc.as_str() {
+        "arm64" | "aarch64" => Some("arm64"),
+        "x64" | "x86_64" | "amd64" => Some("x64"),
+        _ => None,
+    }
+}
+
+fn sanitize_os_token(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .filter(|c| !matches!(c, '(' | ')' | ';'))
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed.len() > 48 {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn resolve_exec_os_hint(client_headers: &HeaderMap) -> ExecOsHint {
+    let os_family = header_str(client_headers, "x-berth-exec-os")
+        .as_deref()
+        .and_then(normalize_os_family);
+    let os_version = header_str(client_headers, "x-berth-exec-os-version")
+        .as_deref()
+        .and_then(sanitize_os_token);
+    let arch = header_str(client_headers, "x-berth-exec-arch")
+        .as_deref()
+        .and_then(normalize_arch_stainless);
+    ExecOsHint {
+        os_family,
+        os_version,
+        arch,
+    }
+}
+
+fn build_antigravity_user_agent(
+    client_headers: &HeaderMap,
+    cage: Option<&CageIdentityDto>,
+) -> String {
     let ver = cage
         .map(|c| c.client_app_version.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("2.23.0");
-    let os_tok = match cage
-        .map(|c| c.client_os.trim().to_ascii_lowercase())
+    let exec_hint = resolve_exec_os_hint(client_headers);
+    let client_ua_lc = header_str(client_headers, "user-agent")
         .unwrap_or_default()
-        .as_str()
-    {
-        "macos" | "darwin" | "osx" => "darwin",
-        "linux" => "linux",
-        _ => "windows",
+        .to_ascii_lowercase();
+
+    let os_family = exec_hint
+        .os_family
+        .or_else(|| normalize_os_family(&client_ua_lc))
+        .or_else(|| cage.and_then(|c| normalize_os_family(&c.client_os)))
+        .unwrap_or("Linux");
+    let os_tok = match os_family {
+        "MacOS" => "darwin",
+        "Windows" => "windows",
+        _ => "linux",
     };
-    let arch_tok = match cage
-        .map(|c| c.client_arch.trim().to_ascii_lowercase())
-        .unwrap_or_default()
-        .as_str()
+
+    let arch_from_ua = if client_ua_lc.contains("arm64") || client_ua_lc.contains("aarch64") {
+        Some("arm64")
+    } else if client_ua_lc.contains("amd64")
+        || client_ua_lc.contains("x86_64")
+        || client_ua_lc.contains("x64")
     {
-        "arm64" | "aarch64" => "arm64",
+        Some("x64")
+    } else {
+        None
+    };
+    let arch_tok = match exec_hint
+        .arch
+        .or(arch_from_ua)
+        .or_else(|| cage.and_then(|c| normalize_arch_stainless(&c.client_arch)))
+        .unwrap_or("arm64")
+    {
+        "arm64" => "arm64",
         _ => "amd64",
     };
     format!("antigravity/hub/{ver} {os_tok}/{arch_tok}")
@@ -1084,6 +1187,59 @@ fn split_cc_version_and_fp(token: &str) -> (&str, bool) {
 
 // ---------- Codex Surgical Body & Header Helpers ----------
 
+fn parse_codex_ua_os_arch(client_ua: &str) -> Option<(String, String)> {
+    let open = client_ua.find('(')?;
+    let close_rel = client_ua[open + 1..].find(')')?;
+    let inside = &client_ua[open + 1..open + 1 + close_rel];
+    let (raw_os, raw_arch) = inside.split_once(';')?;
+    let os_clean = sanitize_os_token(raw_os)?;
+    // Verify the parsed OS token actually looks like an OS rather than junk.
+    normalize_os_family(&os_clean)?;
+    let arch_clean = match normalize_arch_stainless(raw_arch)? {
+        "arm64" => "arm64".to_string(),
+        _ => "x86_64".to_string(),
+    };
+    Some((os_clean, arch_clean))
+}
+
+fn resolve_codex_os_arch(
+    client_ua: &str,
+    client_headers: &HeaderMap,
+    cage: Option<&CageIdentityDto>,
+) -> (String, String) {
+    // 1) Real execution CLI User-Agent (matches prompt body `<environment_context>` & shell).
+    if let Some((os_str, arch_str)) = parse_codex_ua_os_arch(client_ua) {
+        return (os_str, arch_str);
+    }
+    // 2) Authoritative internal execution-OS hint from Berth CageShim (e.g. macOS Seatbelt
+    //    vs Apple Silicon ARM64 Linux Micro-VM vs WSL bwrap).
+    let hint = resolve_exec_os_hint(client_headers);
+    if let Some(os_fam) = hint.os_family {
+        let os_str = match os_fam {
+            "MacOS" => match hint.os_version.as_deref() {
+                Some(v) if v.to_ascii_lowercase().starts_with("mac") => v.to_string(),
+                Some(v) => format!("Mac OS {v}"),
+                None => "Mac OS 15.3.1".to_string(),
+            },
+            "Windows" => match hint.os_version.as_deref() {
+                Some(v) if v.to_ascii_lowercase().starts_with("win") => v.to_string(),
+                Some(v) => format!("Windows {v}"),
+                None => "Windows 11".to_string(),
+            },
+            _ => hint
+                .os_version
+                .unwrap_or_else(|| "Ubuntu 24.04".to_string()),
+        };
+        let arch_str = match hint.arch.unwrap_or("x64") {
+            "arm64" => "arm64".to_string(),
+            _ => "x86_64".to_string(),
+        };
+        return (os_str, arch_str);
+    }
+    // 3) Fallback to Account Cage defaults when no client OS signal is present.
+    cage_codex_os_arch(cage)
+}
+
 fn cage_codex_os_arch(cage: Option<&CageIdentityDto>) -> (String, String) {
     let Some(c) = cage else {
         return ("Mac OS 15.3.1".to_string(), "arm64".to_string());
@@ -1110,11 +1266,8 @@ fn cage_codex_os_arch(cage: Option<&CageIdentityDto>) -> (String, String) {
     (os_str, arch_str)
 }
 
-fn cage_codex_sandbox(cage: Option<&CageIdentityDto>) -> &'static str {
-    let Some(c) = cage else {
-        return "seatbelt";
-    };
-    let os_lc = c.client_os.trim().to_ascii_lowercase();
+fn codex_sandbox_for_os(os_str: &str) -> &'static str {
+    let os_lc = os_str.trim().to_ascii_lowercase();
     if os_lc.contains("mac") || os_lc.contains("darwin") {
         "seatbelt"
     } else if os_lc.contains("win") {
@@ -1493,8 +1646,9 @@ mod tests {
         assert!(out.headers.get("x-api-key").is_none());
         assert!(out.headers.get("cookie").is_none());
         assert!(out.headers.get("x-forwarded-for").is_none());
-        assert_eq!(out.headers.get("x-stainless-os").unwrap(), "MacOS");
-        assert_eq!(out.headers.get("x-stainless-arch").unwrap(), "arm64");
+        // Real client x-stainless-os/arch are preserved so headers match prompt body OS!
+        assert_eq!(out.headers.get("x-stainless-os").unwrap(), "Windows");
+        assert_eq!(out.headers.get("x-stainless-arch").unwrap(), "x64");
         assert_eq!(out.headers.get("user-agent").unwrap(), "claude-cli/2.1.321 (external, sdk-cli)");
         let beta = out.headers.get("anthropic-beta").unwrap().to_str().unwrap();
         assert!(beta.contains("oauth-2025-04-20"));
@@ -1510,6 +1664,25 @@ mod tests {
         let hdr_sid = out.headers.get("x-claude-code-session-id").unwrap().to_str().unwrap();
         assert_ne!(hdr_sid, "144d2ca6-29f0-46df-9d92-1487a6888e60");
         assert!(out_str.contains(hdr_sid));
+
+        // When client omits x-stainless-os/arch, X-Berth-Exec-OS/Arch backfill cleanly without leaking x-berth-* upstream.
+        let mut minimal_hdrs = HeaderMap::new();
+        minimal_hdrs.insert("user-agent", HeaderValue::from_static("claude-cli/2.1.321 (external, cli)"));
+        minimal_hdrs.insert("x-berth-exec-os", HeaderValue::from_static("Linux"));
+        minimal_hdrs.insert("x-berth-exec-arch", HeaderValue::from_static("arm64"));
+        let out_min = prepare_landing_http_request(
+            Method::POST,
+            "https://api.anthropic.com/v1/messages",
+            &minimal_hdrs,
+            Bytes::from_static(body),
+            &dummy_claims("anthropic"),
+            Some(&cred),
+            false,
+        );
+        assert_eq!(out_min.headers.get("x-stainless-os").unwrap(), "Linux");
+        assert_eq!(out_min.headers.get("x-stainless-arch").unwrap(), "arm64");
+        assert!(out_min.headers.get("x-berth-exec-os").is_none());
+        assert!(out_min.headers.get("x-berth-exec-arch").is_none());
     }
 
     #[test]
@@ -1564,26 +1737,50 @@ mod tests {
         assert!(out.headers.get("x-codex-turn-state").is_none());
         assert_eq!(out.headers.get("originator").unwrap(), "codex_exec");
         assert_eq!(out.headers.get("version").unwrap(), "0.172.0");
-        assert!(out.headers.get("user-agent").unwrap().to_str().unwrap().contains("Windows 11; x86_64"));
+        // Aligns User-Agent OS/arch and turn-metadata sandbox to real client execution OS (Mac OS 27.0.1; arm64 -> seatbelt),
+        // eliminating contradiction with prompt body while still converging installation_id to Cage!
+        assert!(out.headers.get("user-agent").unwrap().to_str().unwrap().contains("Mac OS 27.0.1; arm64"));
         assert_eq!(
             out.headers.get("x-codex-installation-id").unwrap(),
             "6878c0a3-a067-423e-9c9f-aebd007eb6a6"
         );
         let tm = out.headers.get("x-codex-turn-metadata").unwrap().to_str().unwrap();
         assert!(tm.contains("6878c0a3-a067-423e-9c9f-aebd007eb6a6"));
-        assert!(tm.contains("windows-restricted-token"));
+        assert!(tm.contains("seatbelt"));
         assert!(!tm.contains("/root"));
 
         let out_str = std::str::from_utf8(&out.body).unwrap();
         assert!(out_str.contains("6878c0a3-a067-423e-9c9f-aebd007eb6a6"));
         assert!(out_str.contains(r#""prompt_cache_key":"sess-1""#));
         assert!(out_str.contains(r#""store":false"#));
+
+        // Linux ARM64 Micro-VM execution aligns to Ubuntu/arm64 + linux-sandbox.
+        let mut vm_hdrs = HeaderMap::new();
+        vm_hdrs.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+        vm_hdrs.insert("user-agent", HeaderValue::from_static("codex_cli_rs/0.172.0 (Ubuntu 24.04; aarch64) xterm-256color"));
+        vm_hdrs.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_static(r#"{"installation_id":"vm-id","sandbox":"linux-sandbox"}"#),
+        );
+        let out_vm = prepare_landing_http_request(
+            Method::POST,
+            "https://chatgpt.com/backend-api/codex/responses",
+            &vm_hdrs,
+            Bytes::from_static(body),
+            &dummy_claims("openai"),
+            Some(&cred),
+            false,
+        );
+        assert!(out_vm.headers.get("user-agent").unwrap().to_str().unwrap().contains("Ubuntu 24.04; arm64"));
+        assert!(out_vm.headers.get("x-codex-turn-metadata").unwrap().to_str().unwrap().contains("linux-sandbox"));
     }
 
     #[test]
     fn antigravity_oauth_bridges_v1beta_to_v1internal_and_unwraps_sse() {
         let mut client_hdrs = HeaderMap::new();
         client_hdrs.insert("x-goog-ext-525006001-bin", HeaderValue::from_static("gateway-leak"));
+        client_hdrs.insert("x-berth-exec-os", HeaderValue::from_static("Linux"));
+        client_hdrs.insert("x-berth-exec-arch", HeaderValue::from_static("arm64"));
         let mut cred_hdrs = HashMap::new();
         cred_hdrs.insert("Authorization".into(), "Bearer goog-tok".into());
         let cred = UpstreamCredentialDto {
@@ -1617,7 +1814,21 @@ mod tests {
         assert_eq!(models_req.method, Method::POST);
         assert_eq!(models_req.url, "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
         assert!(models_req.headers.get("x-goog-ext-525006001-bin").is_none());
-        assert_eq!(models_req.headers.get("user-agent").unwrap(), "antigravity/hub/2.23.0 windows/amd64");
+        assert!(models_req.headers.get("x-berth-exec-os").is_none());
+        assert_eq!(models_req.headers.get("user-agent").unwrap(), "antigravity/hub/2.23.0 linux/arm64");
+
+        // Without X-Berth-Exec-* headers, falls back to Account Cage OS/arch.
+        let empty_hdrs = HeaderMap::new();
+        let fallback_req = prepare_landing_http_request(
+            Method::GET,
+            "https://daily-cloudcode-pa.googleapis.com/v1beta/models",
+            &empty_hdrs,
+            Bytes::new(),
+            &dummy_claims("antigravity"),
+            Some(&cred),
+            false,
+        );
+        assert_eq!(fallback_req.headers.get("user-agent").unwrap(), "antigravity/hub/2.23.0 windows/amd64");
 
         let gen_req = prepare_landing_http_request(
             Method::POST,

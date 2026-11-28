@@ -485,36 +485,22 @@ impl EdgeServer {
             .ok()?;
         let res = fo_res?;
         if res.action == "switched" {
-            if let Some(lease) = res.lease {
+            if let Some(ref lease) = res.lease {
                 if !lease.token.is_empty() {
                     let next_claims = self
                         .gate
                         .central_pub_key()
                         .and_then(|pk| verify_lease(pk, &lease.token, now_unix()).ok());
                     return Some(FailoverAction::Switched {
-                        token: lease.token,
-                        route: lease.route_chain,
+                        token: lease.token.clone(),
+                        route: lease.route_chain.clone(),
                         claims: next_claims,
                     });
                 }
             }
         }
         if fo_code == 409 || res.action == "cage_rebind_required" {
-            let mut resp = json_response(
-                409,
-                &serde_json::json!({
-                    "error": {
-                        "code": "cage_rebind_required",
-                        "message": res.message,
-                        "recommended_cohort": res.recommended_cohort,
-                    }
-                }),
-            );
-            resp.headers_mut().insert(
-                HeaderName::from_static("x-berth-action"),
-                HeaderValue::from_static("cage_rebind_required"),
-            );
-            return Some(FailoverAction::RebindRequired(resp));
+            return build_rebind_failover_action(&res);
         }
         None
     }
@@ -969,8 +955,12 @@ impl EdgeServer {
         let conn_nominated = connection_nominated_headers(orig_headers);
         for (k, v) in orig_headers {
             let lk = k.as_str().to_ascii_lowercase();
+            let preserve_exec_hint = matches!(
+                lk.as_str(),
+                "x-berth-exec-os" | "x-berth-exec-os-version" | "x-berth-exec-arch"
+            );
             if is_hop_by_hop(&lk)
-                || lk.starts_with("x-berth-")
+                || (lk.starts_with("x-berth-") && !preserve_exec_hint)
                 || conn_nominated.contains(lk.as_str())
             {
                 continue;
@@ -2470,5 +2460,74 @@ impl IncomingFrameReader {
             self.read_exact(len).await?
         };
         Ok((op, payload))
+    }
+}
+
+/// Converts a Central `409 cage_rebind_required` failover reply into a client-facing
+/// `FailoverAction::RebindRequired` ONLY when Central actually offers an alternative
+/// cross-cohort target (`recommended_cohort.is_some()`). When no healthy alternative
+/// exists in ANY cohort, returns `None` so Edge preserves the genuine upstream `429`/`529`
+/// response and `Retry-After` header.
+fn build_rebind_failover_action(res: &crate::central::FailoverResult) -> Option<FailoverAction> {
+    if res.recommended_cohort.is_none() {
+        return None;
+    }
+    let mut resp = json_response(
+        409,
+        &serde_json::json!({
+            "error": {
+                "code": "cage_rebind_required",
+                "message": res.message,
+                "recommended_cohort": res.recommended_cohort,
+            }
+        }),
+    );
+    resp.headers_mut().insert(
+        HeaderName::from_static("x-berth-action"),
+        HeaderValue::from_static("cage_rebind_required"),
+    );
+    Some(FailoverAction::RebindRequired(resp))
+}
+
+#[cfg(test)]
+mod failover_tests {
+    use super::*;
+    use crate::central::FailoverResult;
+
+    #[test]
+    fn rebind_action_is_suppressed_when_no_cross_cohort_target_exists() {
+        let res = FailoverResult {
+            action: "cage_rebind_required".into(),
+            code: "cage_rebind_required".into(),
+            message: "No healthy accounts remain in cohort US/America/Chicago".into(),
+            lease: None,
+            recommended_cohort: None,
+        };
+        assert!(build_rebind_failover_action(&res).is_none());
+    }
+
+    #[test]
+    fn rebind_action_emits_409_when_cross_cohort_target_is_offered() {
+        let res = FailoverResult {
+            action: "cage_rebind_required".into(),
+            code: "cage_rebind_required".into(),
+            message: "No healthy accounts remain; switch cohort".into(),
+            lease: None,
+            recommended_cohort: Some(serde_json::json!({
+                "account_id": 26,
+                "cohort_timezone": "Asia/Singapore",
+                "cohort_country_code": "SG"
+            })),
+        };
+        match build_rebind_failover_action(&res) {
+            Some(FailoverAction::RebindRequired(resp)) => {
+                assert_eq!(resp.status(), StatusCode::CONFLICT);
+                assert_eq!(
+                    resp.headers().get("x-berth-action").and_then(|v| v.to_str().ok()),
+                    Some("cage_rebind_required")
+                );
+            }
+            _ => panic!("expected RebindRequired(409)"),
+        }
     }
 }
