@@ -33,7 +33,7 @@ use crate::config::{
 };
 use crate::identity::{
     AntigravityBridgeMode, AntigravitySseUnwrapper, is_blocked_upstream_response_header,
-    prepare_landing_http_request, prepare_landing_ws_headers,
+    normalize_codex_ws_client_frame, prepare_landing_http_request, prepare_landing_ws_session,
     transform_v1internal_models_response, unwrap_v1internal_unary_response,
 };
 use crate::proto::{
@@ -362,7 +362,20 @@ impl EdgeServer {
         .await
         {
             Ok(Ok(b)) => b,
-            Ok(Err(e)) => return text_response(400, format!("failed reading request body: {e}")),
+            Ok(Err(CollectCappedError::TooLarge(limit))) => {
+                return json_response(
+                    413,
+                    &serde_json::json!({
+                        "error": {
+                            "code": "request_body_too_large",
+                            "message": format!("request body exceeds limit ({limit} bytes)"),
+                        }
+                    }),
+                );
+            }
+            Ok(Err(CollectCappedError::Read(e))) => {
+                return text_response(400, format!("failed reading request body: {e}"));
+            }
             Err(_) => return text_response(408, "request body read timed out"),
         };
 
@@ -688,7 +701,8 @@ impl EdgeServer {
                     }
                 }
             }
-            let up_headers = prepare_landing_ws_headers(&headers, &claims, cred.as_ref());
+            let (up_headers, codex_ws_ctx) =
+                prepare_landing_ws_session(&headers, &claims, cred.as_ref());
             let up_ws = match self
                 .upstream
                 .dial_websocket(&up_url, &up_headers, Some(&claims))
@@ -721,14 +735,23 @@ impl EdgeServer {
                 let ttft_ms = AtomicI64::new(0);
                 let sniffer = Mutex::new(UsageStreamSniffer::new_ws(extract_request_meta(&up_url, &[])));
 
+                let mut policy_abort_tx = Some(tokio::sync::oneshot::channel::<()>());
+                let (pa_tx, pa_rx) = policy_abort_tx.take().unwrap();
+                let pa_tx = Mutex::new(Some(pa_tx));
                 let c2u = async {
+                    let mut frag_text_buf: Option<Vec<u8>> = None;
                     loop {
                         let Ok((op, payload)) =
                             read_rfc6455_frame(&mut client_br, DEFAULT_MAX_WS_FRAME_BYTES).await
                         else {
                             break;
                         };
-                        if !payload.is_empty() && (op & 0x0F) != WS_OP_CLOSE {
+                        let opcode = op & 0x0F;
+                        // Match proto::write_rfc6455_frame FIN contract: bare opcodes (`<= 0x0F`,
+                        // e.g. Go ingress) AND `0x80` frames are final; only `0x40` without `0x80`
+                        // marks a non-final RFC 6455 fragment.
+                        let is_fin = !((op & 0x40) != 0 && (op & 0x80) == 0);
+                        if !payload.is_empty() && opcode != WS_OP_CLOSE {
                             if landing_admitted.pre_debit(payload.len() as i64).await.is_err() {
                                 let mut cw = client_w.lock().await;
                                 let _ = write_rfc6455_close(
@@ -738,20 +761,116 @@ impl EdgeServer {
                                     false,
                                 )
                                 .await;
+                                let _ = write_rfc6455_close(
+                                    &mut ws_w,
+                                    1000,
+                                    "landing_grant_exhausted",
+                                    true,
+                                )
+                                .await;
+                                if let Some(tx) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                    let _ = tx.send(());
+                                }
                                 break;
                             }
                             in_b.fetch_add(payload.len() as i64, Ordering::Relaxed);
-                            if (op & 0x0F) == 1 {
-                                sniffer
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .feed_ws_client_text(&payload);
+                        }
+                        // Normalize Codex WebSocket `response.create` client_metadata (both
+                        // single-frame and fragmented RFC 6455 text messages) so WS frames
+                        // always match the handshake's Per-OS slot `installation_id` & sandbox.
+                        let mut out_op = op;
+                        let mut out_payload = payload;
+                        if let Some(ref ws_ctx) = codex_ws_ctx {
+                            if opcode == 1 {
+                                if is_fin {
+                                    frag_text_buf = None;
+                                    match normalize_codex_ws_client_frame(&out_payload, ws_ctx) {
+                                        Ok(Some(patched)) => out_payload = patched,
+                                        Ok(None) => {}
+                                        Err(_) => {
+                                            let mut cw = client_w.lock().await;
+                                            let _ = write_rfc6455_close(
+                                                &mut *cw,
+                                                1008,
+                                                "invalid_client_metadata",
+                                                false,
+                                            )
+                                            .await;
+                                            let _ = write_rfc6455_close(
+                                                &mut ws_w,
+                                                1000,
+                                                "policy_violation",
+                                                true,
+                                            )
+                                            .await;
+                                            if let Some(tx) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                                let _ = tx.send(());
+                                            }
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    frag_text_buf = Some(out_payload);
+                                    continue;
+                                }
+                            } else if opcode == 0 {
+                                if let Some(mut buf) = frag_text_buf.take() {
+                                    if buf.len().saturating_add(out_payload.len())
+                                        > DEFAULT_MAX_WS_FRAME_BYTES
+                                    {
+                                        if let Some(tx) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                            let _ = tx.send(());
+                                        }
+                                        break;
+                                    }
+                                    buf.extend_from_slice(&out_payload);
+                                    if is_fin {
+                                        out_op = 0x80 | 1;
+                                        match normalize_codex_ws_client_frame(&buf, ws_ctx) {
+                                            Ok(Some(patched)) => out_payload = patched,
+                                            Ok(None) => out_payload = buf,
+                                            Err(_) => {
+                                                let mut cw = client_w.lock().await;
+                                                let _ = write_rfc6455_close(
+                                                    &mut *cw,
+                                                    1008,
+                                                    "invalid_client_metadata",
+                                                    false,
+                                                )
+                                                .await;
+                                                let _ = write_rfc6455_close(
+                                                    &mut ws_w,
+                                                    1000,
+                                                    "policy_violation",
+                                                    true,
+                                                )
+                                                .await;
+                                                if let Some(tx) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                                    let _ = tx.send(());
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        frag_text_buf = Some(buf);
+                                        continue;
+                                    }
+                                }
                             }
                         }
-                        if write_rfc6455_frame(&mut ws_w, op, &payload, true).await.is_err() {
+                        if (out_op & 0x0F) == 1 && !out_payload.is_empty() {
+                            sniffer
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .feed_ws_client_text(&out_payload);
+                        }
+                        if write_rfc6455_frame(&mut ws_w, out_op, &out_payload, true)
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
-                        if (op & 0x0F) == WS_OP_CLOSE {
+                        if opcode == WS_OP_CLOSE {
                             break;
                         }
                     }
@@ -808,6 +927,7 @@ impl EdgeServer {
                     _ = wait_revoked(&mut cancel_rx) => {
                         revoked = true;
                     }
+                    _ = pa_rx => {}
                     _ = async { tokio::join!(c2u, u2c) } => {}
                 }
                 if revoked {
@@ -1078,7 +1198,20 @@ impl EdgeServer {
         .await
         {
             Ok(Ok(b)) => b,
-            Ok(Err(e)) => return text_response(400, format!("failed reading request stream: {e}")),
+            Ok(Err(CollectCappedError::TooLarge(limit))) => {
+                return json_response(
+                    413,
+                    &serde_json::json!({
+                        "error": {
+                            "code": "request_body_too_large",
+                            "message": format!("request stream exceeds limit ({limit} bytes)"),
+                        }
+                    }),
+                );
+            }
+            Ok(Err(CollectCappedError::Read(e))) => {
+                return text_response(400, format!("failed reading request stream: {e}"));
+            }
             Err(_) => return text_response(408, "request stream read timed out"),
         };
         self.execute_landing_http_admitted(admitted, &up_method, &up_url, &headers, body_bytes, false)
@@ -1173,9 +1306,8 @@ impl EdgeServer {
             }
         }
 
-        let req_meta = extract_request_meta(&up_url, &body_bytes);
         let raw_method = Method::from_bytes(up_method_str.as_bytes()).unwrap_or(Method::POST);
-        let prepared = prepare_landing_http_request(
+        let prepared = match prepare_landing_http_request(
             raw_method,
             &up_url,
             orig_headers,
@@ -1183,7 +1315,18 @@ impl EdgeServer {
             &claims,
             cred.as_ref(),
             is_failover_retry,
-        );
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                let sc = e.status_code();
+                self.record_receipt(&claims, ingress_bytes, 0, sc, 0, start.elapsed());
+                return json_response(
+                    sc,
+                    &serde_json::json!({ "error": { "code": e.code(), "message": e.to_string() } }),
+                );
+            }
+        };
+        let req_meta = extract_request_meta(&up_url, &prepared.body);
         let agy_bridge = prepared.agy_bridge;
 
         let up_resp = match self
@@ -1604,7 +1747,8 @@ impl EdgeServer {
                 }
             }
         }
-        let up_headers = prepare_landing_ws_headers(&headers, &claims, cred.as_ref());
+        let (up_headers, codex_ws_ctx) =
+            prepare_landing_ws_session(&headers, &claims, cred.as_ref());
 
         let up_ws = match self
             .upstream
@@ -1635,12 +1779,20 @@ impl EdgeServer {
             let ttft_ms = AtomicI64::new(0);
             let sniffer = Mutex::new(UsageStreamSniffer::new_ws(extract_request_meta(&up_url, &[])));
 
+            let (pa_tx, pa_rx) = tokio::sync::oneshot::channel::<()>();
+            let pa_tx = Mutex::new(Some(pa_tx));
             let c2u = async {
+                let mut frag_text_buf: Option<Vec<u8>> = None;
                 loop {
                     let Ok((op, payload)) = in_reader.read_ws_h2_frame().await else {
                         break;
                     };
-                    if !payload.is_empty() && (op & 0x0F) != WS_OP_CLOSE {
+                    let opcode = op & 0x0F;
+                    // Match proto::write_rfc6455_frame FIN contract so bare opcodes (`0x01`)
+                    // from Go ingress peers are treated as final messages immediately instead
+                    // of buffering forever for a continuation frame!
+                    let is_fin = !((op & 0x40) != 0 && (op & 0x80) == 0);
+                    if !payload.is_empty() && opcode != WS_OP_CLOSE {
                         if admitted.pre_debit(payload.len() as i64).await.is_err() {
                             let mut close_p = WS_CLOSE_CAGE_REBIND.to_be_bytes().to_vec();
                             close_p.extend_from_slice(b"landing_grant_exhausted");
@@ -1650,23 +1802,115 @@ impl EdgeServer {
                                     &close_p,
                                 )))))
                                 .await;
+                            let _ = write_rfc6455_close(
+                                &mut ws_w,
+                                1000,
+                                "landing_grant_exhausted",
+                                true,
+                            )
+                            .await;
+                            if let Some(t) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                let _ = t.send(());
+                            }
                             break;
                         }
                         in_b.fetch_add(payload.len() as i64, Ordering::Relaxed);
-                        if (op & 0x0F) == 1 {
-                            sniffer
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .feed_ws_client_text(&payload);
+                    }
+                    let mut out_op = op;
+                    let mut out_payload = payload;
+                    if let Some(ref ws_ctx) = codex_ws_ctx {
+                        if opcode == 1 {
+                            if is_fin {
+                                frag_text_buf = None;
+                                match normalize_codex_ws_client_frame(&out_payload, ws_ctx) {
+                                    Ok(Some(patched)) => out_payload = patched,
+                                    Ok(None) => {}
+                                    Err(_) => {
+                                        let mut close_p = 1008u16.to_be_bytes().to_vec();
+                                        close_p.extend_from_slice(b"invalid_client_metadata");
+                                        let _ = tx
+                                            .send(Ok(Frame::data(Bytes::from(encode_ws_h2_frame(
+                                                0x80 | WS_OP_CLOSE,
+                                                &close_p,
+                                            )))))
+                                            .await;
+                                        let _ = write_rfc6455_close(
+                                            &mut ws_w,
+                                            1000,
+                                            "policy_violation",
+                                            true,
+                                        )
+                                        .await;
+                                        if let Some(t) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                            let _ = t.send(());
+                                        }
+                                        break;
+                                    }
+                                }
+                            } else {
+                                frag_text_buf = Some(out_payload);
+                                continue;
+                            }
+                        } else if opcode == 0 {
+                            if let Some(mut buf) = frag_text_buf.take() {
+                                if buf.len().saturating_add(out_payload.len())
+                                    > DEFAULT_MAX_WS_FRAME_BYTES
+                                {
+                                    if let Some(t) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                        let _ = t.send(());
+                                    }
+                                    break;
+                                }
+                                buf.extend_from_slice(&out_payload);
+                                if is_fin {
+                                    out_op = 0x80 | 1;
+                                    match normalize_codex_ws_client_frame(&buf, ws_ctx) {
+                                        Ok(Some(patched)) => out_payload = patched,
+                                        Ok(None) => out_payload = buf,
+                                        Err(_) => {
+                                            let mut close_p = 1008u16.to_be_bytes().to_vec();
+                                            close_p.extend_from_slice(b"invalid_client_metadata");
+                                            let _ = tx
+                                                .send(Ok(Frame::data(Bytes::from(
+                                                    encode_ws_h2_frame(
+                                                        0x80 | WS_OP_CLOSE,
+                                                        &close_p,
+                                                    ),
+                                                ))))
+                                                .await;
+                                            let _ = write_rfc6455_close(
+                                                &mut ws_w,
+                                                1000,
+                                                "policy_violation",
+                                                true,
+                                            )
+                                            .await;
+                                            if let Some(t) = pa_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                                let _ = t.send(());
+                                            }
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    frag_text_buf = Some(buf);
+                                    continue;
+                                }
+                            }
                         }
                     }
-                    if write_rfc6455_frame(&mut ws_w, op, &payload, true)
+                    if (out_op & 0x0F) == 1 && !out_payload.is_empty() {
+                        sniffer
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .feed_ws_client_text(&out_payload);
+                    }
+                    if write_rfc6455_frame(&mut ws_w, out_op, &out_payload, true)
                         .await
                         .is_err()
                     {
                         break;
                     }
-                    if (op & 0x0F) == WS_OP_CLOSE {
+                    if opcode == WS_OP_CLOSE {
                         break;
                     }
                 }
@@ -1729,6 +1973,7 @@ impl EdgeServer {
                     let _ = tx.send(Ok(Frame::data(Bytes::from(encode_ws_h2_frame(0x80 | WS_OP_CLOSE, &close_p))))).await;
                     let _ = write_rfc6455_close(&mut ws_w, WS_CLOSE_CAGE_REBIND, "stream_revoked", true).await;
                 }
+                _ = pa_rx => {}
                 _ = async { tokio::join!(c2u, u2c) } => {}
             }
             let extracted = sniffer.into_inner().unwrap_or_else(|e| e.into_inner()).finish();
@@ -2339,13 +2584,27 @@ fn stream_incoming_with_revocation_mode(
     builder.body(channel_body(rx)).unwrap()
 }
 
-async fn collect_capped(mut body: Incoming, max_bytes: usize) -> anyhow::Result<Bytes> {
+enum CollectCappedError {
+    TooLarge(usize),
+    Read(String),
+}
+
+impl std::fmt::Display for CollectCappedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(limit) => write!(f, "body exceeds limit ({limit} bytes)"),
+            Self::Read(msg) => f.write_str(msg),
+        }
+    }
+}
+
+async fn collect_capped(mut body: Incoming, max_bytes: usize) -> Result<Bytes, CollectCappedError> {
     let mut out = Vec::new();
     while let Some(frame_res) = body.frame().await {
-        let frame = frame_res?;
+        let frame = frame_res.map_err(|e| CollectCappedError::Read(e.to_string()))?;
         if let Some(data) = frame.data_ref() {
             if out.len().saturating_add(data.len()) > max_bytes {
-                anyhow::bail!("request body exceeds limit ({max_bytes} bytes)");
+                return Err(CollectCappedError::TooLarge(max_bytes));
             }
             out.extend_from_slice(data);
         }
@@ -2529,5 +2788,19 @@ mod failover_tests {
             }
             _ => panic!("expected RebindRequired(409)"),
         }
+    }
+
+    #[test]
+    fn ws_fin_interpretation_handles_go_bare_opcodes_and_rust_fragments() {
+        let is_fin = |op: u8| !((op & 0x40) != 0 && (op & 0x80) == 0);
+        // Go ingress bare complete text frame (0x01) MUST be treated as final immediately!
+        assert!(is_fin(0x01));
+        assert!(is_fin(0x02));
+        // Rust RFC 6455 FIN=1 frames (0x81, 0x80 continuation final) MUST be final!
+        assert!(is_fin(0x81));
+        assert!(is_fin(0x80));
+        // Rust RFC 6455 FIN=0 non-final fragment (0x41, 0x40) MUST buffer until final!
+        assert!(!is_fin(0x41));
+        assert!(!is_fin(0x40));
     }
 }

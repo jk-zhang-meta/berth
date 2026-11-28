@@ -3,8 +3,10 @@
 //! Gemini-REST <-> Cloud Code `v1internal` wire bridging on Landing Edge nodes.
 
 use std::collections::HashMap;
+use std::io::Read;
 
 use bytes::Bytes;
+use flate2::read::MultiGzDecoder;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -17,9 +19,107 @@ use crate::proto::SessionLeaseClaims;
 
 const CLAUDE_FINGERPRINT_SALT: &str = "59cf53e54c78";
 const CODEX_MIN_UPSTREAM_VERSION: &str = "0.144.0";
+const MAX_DECODED_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const BERTH_SESSION_UUID_NS: Uuid = Uuid::from_bytes([
     0x6b, 0x1e, 0x9f, 0x41, 0x7c, 0x2d, 0x4a, 0x8b, 0x91, 0x5c, 0x3e, 0x77, 0xa2, 0xd4, 0x56, 0x09,
 ]);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityError {
+    BadRequest(String),
+    PayloadTooLarge(String),
+    UnsupportedMediaType(String),
+}
+
+impl IdentityError {
+    pub fn status_code(&self) -> u16 {
+        match self {
+            Self::BadRequest(_) => 400,
+            Self::PayloadTooLarge(_) => 413,
+            Self::UnsupportedMediaType(_) => 415,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "invalid_request_body",
+            Self::PayloadTooLarge(_) => "request_body_too_large",
+            Self::UnsupportedMediaType(_) => "unsupported_content_encoding",
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadRequest(m) | Self::PayloadTooLarge(m) | Self::UnsupportedMediaType(m) => {
+                f.write_str(m)
+            }
+        }
+    }
+}
+
+/// Decodes a single `gzip` Content-Encoding under bounded expanded limits for JSON-inspected
+/// OAuth routes. Rejects stacked encodings, unsupported encodings, corrupt gzip, or oversize
+/// expanded bodies locally so compressed bytes are NEVER mislabeled or silently replaced.
+pub fn decode_request_body_if_encoded(
+    headers: &HeaderMap,
+    body: Bytes,
+    max_decoded_bytes: usize,
+) -> Result<Bytes, IdentityError> {
+    let mut encodings: Vec<String> = Vec::new();
+    for val in headers.get_all(http::header::CONTENT_ENCODING) {
+        let Ok(s) = val.to_str() else {
+            return Err(IdentityError::BadRequest(
+                "non-ASCII Content-Encoding header".into(),
+            ));
+        };
+        for part in s.split(',') {
+            let tok = part.trim().to_ascii_lowercase();
+            if !tok.is_empty() {
+                encodings.push(tok);
+            }
+        }
+    }
+    if encodings.is_empty() || (encodings.len() == 1 && encodings[0] == "identity") {
+        if body.len() > max_decoded_bytes {
+            return Err(IdentityError::PayloadTooLarge(format!(
+                "request body exceeds {max_decoded_bytes} bytes"
+            )));
+        }
+        return Ok(body);
+    }
+    if encodings.len() > 1 {
+        return Err(IdentityError::UnsupportedMediaType(format!(
+            "stacked Content-Encoding `{}` is not supported",
+            encodings.join(", ")
+        )));
+    }
+    match encodings[0].as_str() {
+        "gzip" | "x-gzip" => {
+            if body.is_empty() {
+                return Err(IdentityError::BadRequest(
+                    "invalid gzip request body: empty payload".into(),
+                ));
+            }
+            let mut decoder = MultiGzDecoder::new(body.as_ref());
+            let mut limited = (&mut decoder).take((max_decoded_bytes as u64).saturating_add(1));
+            let mut decoded = Vec::new();
+            limited.read_to_end(&mut decoded).map_err(|e| {
+                IdentityError::BadRequest(format!("invalid gzip request body: {e}"))
+            })?;
+            if decoded.len() > max_decoded_bytes {
+                return Err(IdentityError::PayloadTooLarge(format!(
+                    "decoded gzip request body exceeds {max_decoded_bytes} bytes"
+                )));
+            }
+            Ok(Bytes::from(decoded))
+        }
+        other => Err(IdentityError::UnsupportedMediaType(format!(
+            "unsupported request Content-Encoding `{other}`"
+        ))),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AntigravityBridgeMode {
@@ -55,7 +155,7 @@ pub fn prepare_landing_http_request(
     claims: &SessionLeaseClaims,
     cred: Option<&UpstreamCredentialDto>,
     is_failover_retry: bool,
-) -> PreparedUpstreamRequest {
+) -> Result<PreparedUpstreamRequest, IdentityError> {
     let platform = cred
         .map(|c| c.platform.as_str())
         .filter(|s| !s.is_empty())
@@ -69,31 +169,78 @@ pub fn prepare_landing_http_request(
 
     match (platform.as_str(), acc_type.as_str()) {
         ("anthropic" | "claude", "oauth" | "setup-token" | "setup_token") => {
-            prepare_anthropic_oauth_http(method, up_url, client_headers, body, claims, cred, cage)
+            let body =
+                decode_request_body_if_encoded(client_headers, body, MAX_DECODED_REQUEST_BODY_BYTES)?;
+            prepare_anthropic_oauth_http(
+                method,
+                up_url,
+                client_headers,
+                body,
+                claims,
+                cred,
+                cage,
+            )
         }
-        ("openai" | "codex", "oauth") => prepare_openai_codex_oauth_http(
+        ("openai" | "codex", "oauth") => {
+            let body =
+                decode_request_body_if_encoded(client_headers, body, MAX_DECODED_REQUEST_BODY_BYTES)?;
+            prepare_openai_codex_oauth_http(
+                method,
+                up_url,
+                client_headers,
+                body,
+                claims,
+                cred,
+                cage,
+                is_failover_retry,
+            )
+        }
+        ("antigravity", "oauth") => {
+            let body =
+                decode_request_body_if_encoded(client_headers, body, MAX_DECODED_REQUEST_BODY_BYTES)?;
+            prepare_antigravity_oauth_http(method, up_url, client_headers, body, claims, cred, cage)
+        }
+        _ => Ok(prepare_generic_allowlisted_http(
             method,
             up_url,
             client_headers,
             body,
             claims,
             cred,
-            cage,
-            is_failover_retry,
-        ),
-        ("antigravity", "oauth") => {
-            prepare_antigravity_oauth_http(method, up_url, client_headers, body, claims, cred, cage)
-        }
-        _ => prepare_generic_allowlisted_http(method, up_url, client_headers, body, claims, cred),
+        )),
     }
 }
 
-/// Builds strictly allowlisted, Cage-converged WebSocket upgrade headers for Landing execution.
-pub fn prepare_landing_ws_headers(
+/// Authoritative Codex WebSocket session normalization context shared between
+/// the HTTP Upgrade handshake and every subsequent client `response.create` text frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexWsContext {
+    pub install_id: String,
+    pub sandbox: String,
+}
+
+/// Normalizes a Codex WebSocket client text message (e.g., `response.create`) so
+/// embedded `client_metadata` and `x-codex-turn-metadata` match the upgraded socket's
+/// per-(os, arch) `installation_id` and OS-aligned `sandbox`.
+/// Fails closed (`Err(IdentityError::BadRequest)`) if `client_metadata` is duplicated
+/// or unparseable so unnormalized identity fields can never be forwarded upstream.
+pub fn normalize_codex_ws_client_frame(
+    payload: &[u8],
+    ctx: &CodexWsContext,
+) -> Result<Option<Vec<u8>>, IdentityError> {
+    if payload.is_empty() || ctx.install_id.is_empty() {
+        return Ok(None);
+    }
+    rewrite_codex_body_client_metadata_surgical(payload, &ctx.install_id, &ctx.sandbox)
+}
+
+/// Builds strictly allowlisted, Cage-converged WebSocket upgrade headers AND optional
+/// Codex frame-normalization context for Landing execution.
+pub fn prepare_landing_ws_session(
     client_headers: &HeaderMap,
     claims: &SessionLeaseClaims,
     cred: Option<&UpstreamCredentialDto>,
-) -> HeaderMap {
+) -> (HeaderMap, Option<CodexWsContext>) {
     let platform = cred
         .map(|c| c.platform.as_str())
         .filter(|s| !s.is_empty())
@@ -116,7 +263,10 @@ pub fn prepare_landing_ws_headers(
             cage,
             false,
         );
-        let mut h = prepared.headers;
+        let mut h = match prepared {
+            Ok(p) => p.headers,
+            Err(_) => HeaderMap::new(),
+        };
         // Preserve RFC 6455 subprotocol header if the client requested one.
         if let Some(proto) = client_headers.get("sec-websocket-protocol") {
             h.insert(
@@ -124,7 +274,22 @@ pub fn prepare_landing_ws_headers(
                 proto.clone(),
             );
         }
-        return h;
+        let ws_ctx = h
+            .get("x-codex-installation-id")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.trim().is_empty())
+            .map(|iid| {
+                let ua = h
+                    .get("user-agent")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default();
+                let (codex_os, _, _) = resolve_codex_os_arch(ua, client_headers, cage);
+                CodexWsContext {
+                    install_id: iid.to_string(),
+                    sandbox: codex_sandbox_for_os(&codex_os).to_string(),
+                }
+            });
+        return (h, ws_ctx);
     }
 
     let mut dst = HeaderMap::new();
@@ -147,7 +312,16 @@ pub fn prepare_landing_ws_headers(
         apply_credential_headers(&mut dst, &c.headers);
     }
     set_accept_language(&mut dst, cage, claims);
-    dst
+    (dst, None)
+}
+
+/// Builds strictly allowlisted, Cage-converged WebSocket upgrade headers for Landing execution.
+pub fn prepare_landing_ws_headers(
+    client_headers: &HeaderMap,
+    claims: &SessionLeaseClaims,
+    cred: Option<&UpstreamCredentialDto>,
+) -> HeaderMap {
+    prepare_landing_ws_session(client_headers, claims, cred).0
 }
 
 // ---------- Anthropic / Claude OAuth Convergence ----------
@@ -160,7 +334,7 @@ fn prepare_anthropic_oauth_http(
     claims: &SessionLeaseClaims,
     cred: Option<&UpstreamCredentialDto>,
     cage: Option<&CageIdentityDto>,
-) -> PreparedUpstreamRequest {
+) -> Result<PreparedUpstreamRequest, IdentityError> {
     let mut dst = HeaderMap::new();
 
     // Strict allowlist of legitimate Claude Code client headers (never forward cookies,
@@ -234,23 +408,43 @@ fn prepare_anthropic_oauth_http(
 
     // Align x-stainless-* OS/arch/runtime headers with the real execution client so
     // HTTP headers NEVER contradict the CLI prompt body (platform, shell, paths).
-    // Preserve genuine client-sent x-stainless-* headers; only backfill missing fields
-    // from Berth's internal X-Berth-Exec-* hint and then Account Cage defaults.
+    // Deduplicate x-stainless-os and x-stainless-arch to single canonical values so
+    // repeated client headers cannot disagree with the chosen Per-OS device slot.
     let exec_hint = resolve_exec_os_hint(client_headers);
     insert_header_str(&mut dst, "x-stainless-lang", "js");
-    if !dst.contains_key("x-stainless-os") {
-        if let Some(os) = exec_hint.os_family {
-            insert_header_str(&mut dst, "x-stainless-os", os);
-        } else if let Some(c) = cage.filter(|c| !c.client_os.is_empty()) {
-            insert_header_str(&mut dst, "x-stainless-os", &c.client_os);
-        }
+    let resolved_os = dst
+        .get("x-stainless-os")
+        .and_then(|v| v.to_str().ok())
+        .and_then(normalize_os_family)
+        .or(exec_hint.os_family)
+        .or_else(|| {
+            cage.map(|c| c.client_os.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(normalize_os_family)
+        });
+    if let Some(os) = resolved_os {
+        insert_header_str(&mut dst, "x-stainless-os", os);
+    } else if let Some(c) = cage.filter(|c| !c.client_os.is_empty()) {
+        insert_header_str(&mut dst, "x-stainless-os", &c.client_os);
+    } else {
+        dst.remove("x-stainless-os");
     }
-    if !dst.contains_key("x-stainless-arch") {
-        if let Some(arch) = exec_hint.arch {
-            insert_header_str(&mut dst, "x-stainless-arch", arch);
-        } else if let Some(c) = cage.filter(|c| !c.client_arch.is_empty()) {
-            insert_header_str(&mut dst, "x-stainless-arch", &c.client_arch);
-        }
+    let resolved_arch = dst
+        .get("x-stainless-arch")
+        .and_then(|v| v.to_str().ok())
+        .and_then(normalize_arch_stainless)
+        .or(exec_hint.arch)
+        .or_else(|| {
+            cage.map(|c| c.client_arch.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(normalize_arch_stainless)
+        });
+    if let Some(arch) = resolved_arch {
+        insert_header_str(&mut dst, "x-stainless-arch", arch);
+    } else if let Some(c) = cage.filter(|c| !c.client_arch.is_empty()) {
+        insert_header_str(&mut dst, "x-stainless-arch", &c.client_arch);
+    } else {
+        dst.remove("x-stainless-arch");
     }
     if let Some(c) = cage {
         if !dst.contains_key("x-stainless-runtime") && !c.client_runtime.is_empty() {
@@ -294,20 +488,34 @@ fn prepare_anthropic_oauth_http(
     set_accept_language(&mut dst, cage, claims);
 
     // Surgical byte-preserving body normalization:
-    // 1) metadata.user_id: inject Cage device_id + real OAuth account_uuid + account-scoped session_id
+    // 1) metadata.user_id: inject per-(os,arch) Cage device_id + real OAuth account_uuid + account-scoped session_id
     // 2) sync X-Claude-Code-Session-Id header to the exact same session_id
-    // 3) sync system[0] x-anthropic-billing-header cc_version ONLY if version differs from final_ua
+    // 3) sync system[0] x-anthropic-billing-header cc_version ONLY if version or 3-hex fp differs
+    let effective_claude_os = dst
+        .get("x-stainless-os")
+        .and_then(|v| v.to_str().ok())
+        .and_then(normalize_os_family);
+    let effective_claude_arch = dst
+        .get("x-stainless-arch")
+        .and_then(|v| v.to_str().ok())
+        .and_then(normalize_arch_stainless);
     if !body.is_empty() && method == Method::POST {
         let mut raw = body.to_vec();
         if let Some(c) = cage {
             if !c.claude_device_id.is_empty() || !c.claude_account_uuid.is_empty() {
+                let slot_device_id = derive_slot_claude_device_id(
+                    &c.claude_device_id,
+                    Some(c),
+                    effective_claude_os,
+                    effective_claude_arch,
+                );
                 let (patched, synced_session) = rewrite_claude_metadata_user_id_surgical(
                     &raw,
-                    &c.claude_device_id,
+                    &slot_device_id,
                     &c.claude_account_uuid,
                     claims.api_key_id,
                     claims.account_id,
-                );
+                )?;
                 if let Some(new_raw) = patched {
                     raw = new_raw;
                 }
@@ -315,6 +523,9 @@ fn prepare_anthropic_oauth_http(
                     if dst.contains_key("x-claude-code-session-id") {
                         insert_header_str(&mut dst, "x-claude-code-session-id", &sid);
                     }
+                } else {
+                    // Never forward an un-isolated client session header when body had no session_id.
+                    dst.remove("x-claude-code-session-id");
                 }
             }
         }
@@ -324,13 +535,13 @@ fn prepare_anthropic_oauth_http(
         body = Bytes::from(raw);
     }
 
-    PreparedUpstreamRequest {
+    Ok(PreparedUpstreamRequest {
         method,
         url: up_url.to_string(),
         headers: dst,
         body,
         agy_bridge: AntigravityBridgeMode::None,
-    }
+    })
 }
 
 // ---------- OpenAI Codex OAuth Convergence ----------
@@ -345,7 +556,7 @@ fn prepare_openai_codex_oauth_http(
     cred: Option<&UpstreamCredentialDto>,
     cage: Option<&CageIdentityDto>,
     is_failover_retry: bool,
-) -> PreparedUpstreamRequest {
+) -> Result<PreparedUpstreamRequest, IdentityError> {
     let mut dst = HeaderMap::new();
 
     // Strict allowlist of genuine Codex CLI headers.
@@ -422,7 +633,8 @@ fn prepare_openai_codex_oauth_http(
         .map(|c| c.client_app_version.as_str())
         .unwrap_or_default();
     let effective_ver = max_semver(&[&client_ver, cage_ver, CODEX_MIN_UPSTREAM_VERSION]);
-    let (codex_os, codex_arch) = resolve_codex_os_arch(&client_ua, client_headers, cage);
+    let (codex_os, codex_os_family, codex_arch) =
+        resolve_codex_os_arch(&client_ua, client_headers, cage);
     let final_ua = if originator == "codex_exec" {
         format!("{originator}/{effective_ver} ({codex_os}; {codex_arch}) xterm-256color ({originator}; {effective_ver})")
     } else {
@@ -446,28 +658,45 @@ fn prepare_openai_codex_oauth_http(
     let fp_mode = cage
         .map(|c| c.codex_fingerprint_mode.trim().to_ascii_lowercase())
         .unwrap_or_else(|| "device".to_string());
-    let install_id = cage
+    let base_install_id = cage
         .map(|c| c.codex_installation_id.trim())
         .filter(|s| !s.is_empty());
+    let effective_codex_os = codex_os_family.or_else(|| normalize_os_family(&codex_os));
+    let effective_codex_arch = normalize_arch_stainless(&codex_arch);
+    let slot_install_id = base_install_id.map(|base| {
+        derive_slot_codex_installation_id(base, cage, effective_codex_os, effective_codex_arch)
+    });
+    // Always scrub undecodable non-UTF-8 or malformed JSON `x-codex-turn-metadata` headers
+    // unconditionally, even when fingerprint convergence is disabled.
+    if dst.contains_key("x-codex-turn-metadata") {
+        let valid_json = dst
+            .get("x-codex-turn-metadata")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| serde_json::from_str::<Map<String, Value>>(raw.trim()).ok())
+            .is_some();
+        if !valid_json {
+            dst.remove("x-codex-turn-metadata");
+        }
+    }
     if fp_mode != "off" {
-        if let Some(iid) = install_id {
+        if let Some(ref iid) = slot_install_id {
             insert_header_str(&mut dst, "x-codex-installation-id", iid);
-            let exec_sandbox = codex_sandbox_for_os(&codex_os);
-            if let Some(raw_tm) = dst
-                .get("x-codex-turn-metadata")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-            {
-                if let Some(rewritten_tm) =
-                    rewrite_codex_turn_metadata_json(&raw_tm, iid, exec_sandbox)
-                {
+            let exec_sandbox = codex_sandbox_for_os(effective_codex_os.unwrap_or(&codex_os));
+            if dst.contains_key("x-codex-turn-metadata") {
+                let rewritten = dst
+                    .get("x-codex-turn-metadata")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|raw_tm| rewrite_codex_turn_metadata_json(raw_tm, iid, exec_sandbox));
+                if let Some(rewritten_tm) = rewritten {
                     insert_header_str(&mut dst, "x-codex-turn-metadata", &rewritten_tm);
+                } else {
+                    dst.remove("x-codex-turn-metadata");
                 }
             }
             if !body.is_empty() && method == Method::POST {
                 let mut raw = body.to_vec();
                 if let Some(patched) =
-                    rewrite_codex_body_client_metadata_surgical(&raw, iid, exec_sandbox)
+                    rewrite_codex_body_client_metadata_surgical(&raw, iid, exec_sandbox)?
                 {
                     raw = patched;
                 }
@@ -486,13 +715,13 @@ fn prepare_openai_codex_oauth_http(
         apply_credential_headers(&mut dst, &c.headers);
     }
 
-    PreparedUpstreamRequest {
+    Ok(PreparedUpstreamRequest {
         method,
         url: up_url.to_string(),
         headers: dst,
         body,
         agy_bridge: AntigravityBridgeMode::None,
-    }
+    })
 }
 
 // ---------- Google Antigravity OAuth Convergence + v1internal Bridge ----------
@@ -505,7 +734,7 @@ fn prepare_antigravity_oauth_http(
     claims: &SessionLeaseClaims,
     cred: Option<&UpstreamCredentialDto>,
     cage: Option<&CageIdentityDto>,
-) -> PreparedUpstreamRequest {
+) -> Result<PreparedUpstreamRequest, IdentityError> {
     // Strict minimal allowlist matching official Antigravity Cloud Code client.
     // Deliberately strips `X-Goog-Ext-525006001-Bin` (`cli_gateway` leak!), `x-goog-api-key`,
     // cookies, `x-berth-*`, and all extraneous headers.
@@ -527,13 +756,13 @@ fn prepare_antigravity_oauth_http(
         .unwrap_or("");
 
     let Ok(parsed) = Url::parse(up_url) else {
-        return PreparedUpstreamRequest {
+        return Ok(PreparedUpstreamRequest {
             method,
             url: up_url.to_string(),
             headers: dst,
             body,
             agy_bridge: AntigravityBridgeMode::None,
-        };
+        });
     };
     let origin = format!(
         "{}://{}{}",
@@ -556,13 +785,13 @@ fn prepare_antigravity_oauth_http(
                     .unwrap_or_else(|_| b"{}".to_vec()),
             )
         };
-        return PreparedUpstreamRequest {
+        return Ok(PreparedUpstreamRequest {
             method: Method::POST,
             url: format!("{origin}/v1internal:fetchAvailableModels"),
             headers: dst,
             body: req_body,
             agy_bridge: AntigravityBridgeMode::ModelsList,
-        };
+        });
     }
 
     // 2) POST /v1beta/models/<model>:streamGenerateContent or :generateContent
@@ -575,8 +804,8 @@ fn prepare_antigravity_oauth_http(
                 } else {
                     format!("{origin}/v1internal:generateContent")
                 };
-                let wrapped = wrap_gemini_body_for_v1internal(&body, &model, project_id);
-                return PreparedUpstreamRequest {
+                let wrapped = wrap_gemini_body_for_v1internal(&body, &model, project_id)?;
+                return Ok(PreparedUpstreamRequest {
                     method: Method::POST,
                     url: target_url,
                     headers: dst,
@@ -586,19 +815,29 @@ fn prepare_antigravity_oauth_http(
                     } else {
                         AntigravityBridgeMode::UnaryGenerate
                     },
-                };
+                });
             }
         }
     }
 
-    // Direct /v1internal:* passthrough with hardened headers.
-    PreparedUpstreamRequest {
+    // Direct /v1internal:* passthrough with hardened headers & strict JSON object validation.
+    if method == Method::POST && path.contains("/v1internal:") {
+        let parsed: Value = serde_json::from_slice(&body).map_err(|e| {
+            IdentityError::BadRequest(format!("invalid v1internal JSON request body: {e}"))
+        })?;
+        if !parsed.is_object() {
+            return Err(IdentityError::BadRequest(
+                "v1internal JSON request body must be a JSON object".into(),
+            ));
+        }
+    }
+    Ok(PreparedUpstreamRequest {
         method,
         url: up_url.to_string(),
         headers: dst,
         body,
         agy_bridge: AntigravityBridgeMode::None,
-    }
+    })
 }
 
 fn prepare_generic_allowlisted_http(
@@ -774,8 +1013,19 @@ fn parse_gemini_model_action(path: &str) -> Option<(String, String)> {
     Some((model.to_string(), action.to_string()))
 }
 
-fn wrap_gemini_body_for_v1internal(raw: &[u8], model: &str, project_id: &str) -> Vec<u8> {
-    let mut inner = serde_json::from_slice::<Value>(raw).unwrap_or_else(|_| Value::Object(Map::new()));
+fn wrap_gemini_body_for_v1internal(
+    raw: &[u8],
+    model: &str,
+    project_id: &str,
+) -> Result<Vec<u8>, IdentityError> {
+    let mut inner = serde_json::from_slice::<Value>(raw).map_err(|e| {
+        IdentityError::BadRequest(format!("invalid Gemini/Antigravity JSON request body: {e}"))
+    })?;
+    if !inner.is_object() {
+        return Err(IdentityError::BadRequest(
+            "Gemini/Antigravity request body must be a JSON object".into(),
+        ));
+    }
     if let Some(obj) = inner.as_object_mut() {
         // Compute a stable sessionId from the first user text (matches Berth Go Antigravity client).
         if !obj.contains_key("sessionId") {
@@ -801,7 +1051,9 @@ fn wrap_gemini_body_for_v1internal(raw: &[u8], model: &str, project_id: &str) ->
         "requestId".to_string(),
         Value::String(format!("agent-{}", Uuid::new_v4())),
     );
-    serde_json::to_vec(&Value::Object(envelope)).unwrap_or_else(|_| raw.to_vec())
+    serde_json::to_vec(&Value::Object(envelope)).map_err(|e| {
+        IdentityError::BadRequest(format!("failed to serialize v1internal request envelope: {e}"))
+    })
 }
 
 fn derive_antigravity_session_id(req_obj: &Map<String, Value>) -> String {
@@ -897,6 +1149,82 @@ fn resolve_exec_os_hint(client_headers: &HeaderMap) -> ExecOsHint {
     }
 }
 
+fn primary_cage_os_arch(cage: Option<&CageIdentityDto>) -> (Option<&'static str>, Option<&'static str>) {
+    let Some(c) = cage else {
+        return (None, None);
+    };
+    (
+        normalize_os_family(&c.client_os),
+        normalize_arch_stainless(&c.client_arch),
+    )
+}
+
+/// Derives a stable, deterministic per-(OS, arch) Claude `device_id` (64 lowercase hex) so a
+/// single account used across two real OSes (e.g., macOS arm64 + Linux arm64/x64) presents
+/// distinct fixed devices instead of one device mutating CPU/OS across requests.
+/// Returns `base_id` unchanged when execution (os, arch) matches the Cage primary slot or is unknown.
+fn derive_slot_claude_device_id(
+    base_id: &str,
+    cage: Option<&CageIdentityDto>,
+    exec_os: Option<&str>,
+    exec_arch: Option<&str>,
+) -> String {
+    let base = base_id.trim();
+    if base.is_empty() {
+        return String::new();
+    }
+    let (Some(os), Some(arch)) = (exec_os, exec_arch) else {
+        return base.to_string();
+    };
+    let (prim_os, prim_arch) = primary_cage_os_arch(cage);
+    if prim_os == Some(os) && prim_arch == Some(arch) {
+        return base.to_string();
+    }
+    let mut h = Sha256::new();
+    h.update(b"berth-device-slot-v1:claude:");
+    h.update(base.as_bytes());
+    h.update(b":");
+    h.update(os.as_bytes());
+    h.update(b":");
+    h.update(arch.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// Derives a stable, deterministic RFC 4122 v4-shaped per-(OS, arch) Codex `installation_id`
+/// when execution (os, arch) differs from the Cage primary slot. Returns `base_id` unchanged
+/// when execution (os, arch) matches the Cage primary slot or is unknown.
+fn derive_slot_codex_installation_id(
+    base_id: &str,
+    cage: Option<&CageIdentityDto>,
+    exec_os: Option<&str>,
+    exec_arch: Option<&str>,
+) -> String {
+    let base = base_id.trim();
+    if base.is_empty() {
+        return String::new();
+    }
+    let (Some(os), Some(arch)) = (exec_os, exec_arch) else {
+        return base.to_string();
+    };
+    let (prim_os, prim_arch) = primary_cage_os_arch(cage);
+    if prim_os == Some(os) && prim_arch == Some(arch) {
+        return base.to_string();
+    }
+    let mut h = Sha256::new();
+    h.update(b"berth-device-slot-v1:codex:");
+    h.update(base.as_bytes());
+    h.update(b":");
+    h.update(os.as_bytes());
+    h.update(b":");
+    h.update(arch.as_bytes());
+    let digest = h.finalize();
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&digest[..16]);
+    raw[6] = (raw[6] & 0x0f) | 0x40;
+    raw[8] = (raw[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(raw).to_string()
+}
+
 fn build_antigravity_user_agent(
     client_headers: &HeaderMap,
     cage: Option<&CageIdentityDto>,
@@ -949,7 +1277,11 @@ fn build_antigravity_user_agent(
 /// JS UTF-16 code units at indices `[4, 7, 20]` of the first user text, padded with `'0'`,
 /// decoded as UTF-8, hashed as `SHA256("59cf53e54c78" + sample + version)[..3]`.
 pub fn compute_claude_code_fingerprint(body: &[u8], version: &str) -> String {
-    let first_text = extract_first_claude_user_text(body);
+    let first_text = extract_first_claude_user_text(body).unwrap_or_default();
+    compute_claude_code_fingerprint_from_text(&first_text, version)
+}
+
+fn compute_claude_code_fingerprint_from_text(first_text: &str, version: &str) -> String {
     let mut units: Vec<u16> = Vec::with_capacity(22);
     for ch in first_text.chars() {
         let mut buf = [0u16; 2];
@@ -979,73 +1311,112 @@ pub fn compute_claude_code_fingerprint(body: &[u8], version: &str) -> String {
     hex::encode(&digest[..2])[..3].to_string()
 }
 
-fn extract_first_claude_user_text(body: &[u8]) -> String {
-    let Ok(val) = serde_json::from_slice::<Value>(body) else {
-        return String::new();
-    };
+fn extract_first_claude_user_text(body: &[u8]) -> Option<String> {
+    let val = serde_json::from_slice::<Value>(body).ok()?;
     let Some(msgs) = val.get("messages").and_then(Value::as_array) else {
-        return String::new();
+        return Some(String::new());
     };
     for msg in msgs {
         if msg.get("role").and_then(Value::as_str) != Some("user") {
             continue;
         }
         if let Some(s) = msg.get("content").and_then(Value::as_str) {
-            return s.to_string();
+            return Some(s.to_string());
         }
         if let Some(arr) = msg.get("content").and_then(Value::as_array) {
             for blk in arr {
                 if blk.get("type").and_then(Value::as_str) == Some("text") {
                     if let Some(t) = blk.get("text").and_then(Value::as_str) {
-                        return t.to_string();
+                        return Some(t.to_string());
                     }
                 }
             }
         }
         break;
     }
-    String::new()
+    Some(String::new())
 }
 
-/// Surgically rewrites `metadata.user_id` string value in-place without re-serializing
-/// any other part of the JSON body. Returns `(patched_body_if_changed, final_session_id)`.
+/// Surgically rewrites `metadata.user_id` in O(n) single-pass without re-serializing any
+/// other part of the JSON body. Fails closed (`IdentityError::BadRequest`) on duplicate
+/// `metadata` or `metadata.user_id` keys or unnormalizable `user_id` values, preventing both
+/// conflicting session/device smuggling and quadratic splice amplification.
 pub fn rewrite_claude_metadata_user_id_surgical(
     body: &[u8],
     cage_device_id: &str,
     account_uuid: &str,
     api_key_id: i64,
     account_id: i64,
-) -> (Option<Vec<u8>>, Option<String>) {
-    let Some((meta_start, meta_end)) = find_top_level_field_value_span(body, "metadata") else {
-        return (None, None);
-    };
+) -> Result<(Option<Vec<u8>>, Option<String>), IdentityError> {
+    let meta_spans = find_all_top_level_field_value_spans_strict(body, "metadata")?;
+    if meta_spans.is_empty() {
+        return Ok((None, None));
+    }
+    if meta_spans.len() > 1 {
+        return Err(IdentityError::BadRequest(
+            "duplicate top-level `metadata` key in Anthropic request body".into(),
+        ));
+    }
+    let (meta_start, meta_end) = meta_spans[0];
     let meta_slice = &body[meta_start..meta_end];
-    let Some((uid_rel_start, uid_rel_end)) = find_top_level_field_value_span(meta_slice, "user_id")
-    else {
-        return (None, None);
-    };
+    let uid_spans = find_all_top_level_field_value_spans_strict(meta_slice, "user_id")?;
+    if uid_spans.is_empty() {
+        return Ok((None, None));
+    }
+    if uid_spans.len() > 1 {
+        return Err(IdentityError::BadRequest(
+            "duplicate `metadata.user_id` key in Anthropic request body".into(),
+        ));
+    }
+    let (uid_rel_start, uid_rel_end) = uid_spans[0];
     let uid_start = meta_start + uid_rel_start;
     let uid_end = meta_start + uid_rel_end;
-    let Ok(raw_uid) = serde_json::from_slice::<String>(&body[uid_start..uid_end]) else {
-        return (None, None);
-    };
+    let raw_uid = serde_json::from_slice::<String>(&body[uid_start..uid_end]).map_err(|_| {
+        IdentityError::BadRequest("invalid non-string `metadata.user_id` value".into())
+    })?;
+    let (new_uid, sess_opt) = normalize_single_claude_user_id(
+        &raw_uid,
+        cage_device_id,
+        account_uuid,
+        api_key_id,
+        account_id,
+    )
+    .ok_or_else(|| {
+        IdentityError::BadRequest("unrecognized or malformed `metadata.user_id` format".into())
+    })?;
+    if new_uid == raw_uid {
+        return Ok((None, sess_opt));
+    }
+    let encoded = serde_json::to_vec(&new_uid)
+        .map_err(|e| IdentityError::BadRequest(format!("encode normalized user_id: {e}")))?;
+    let mut out = Vec::with_capacity(body.len() + encoded.len());
+    out.extend_from_slice(&body[..uid_start]);
+    out.extend_from_slice(&encoded);
+    out.extend_from_slice(&body[uid_end..]);
+    Ok((Some(out), sess_opt))
+}
 
-    let (new_uid, final_session) = if raw_uid.trim_start().starts_with('{') {
+fn normalize_single_claude_user_id(
+    raw_uid: &str,
+    cage_device_id: &str,
+    account_uuid: &str,
+    api_key_id: i64,
+    account_id: i64,
+) -> Option<(String, Option<String>)> {
+    if raw_uid.trim_start().starts_with('{') {
         // New JSON-encoded metadata.user_id format (Claude Code 2.1.x):
         // `{"device_id":"...","account_uuid":"...","session_id":"..."}`
-        let Ok(mut obj) = serde_json::from_str::<Map<String, Value>>(&raw_uid) else {
-            return (None, None);
-        };
-        let orig_session = obj
-            .get("session_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let scoped_session = if orig_session.is_empty() {
-            String::new()
-        } else {
-            isolate_session_uuid("claude", api_key_id, account_id, &orig_session)
+        let mut obj = serde_json::from_str::<Map<String, Value>>(raw_uid).ok()?;
+        let scoped_session = match obj.get("session_id") {
+            None => String::new(),
+            Some(val) => {
+                // If `session_id` key is present, it MUST be a non-empty string (reject blank/non-string!).
+                let s = val.as_str()?.trim();
+                if s.is_empty() {
+                    return None;
+                }
+                isolate_session_uuid("claude", api_key_id, account_id, s)
+            }
         };
         if !cage_device_id.is_empty() {
             obj.insert("device_id".to_string(), Value::String(cage_device_id.to_string()));
@@ -1081,15 +1452,11 @@ pub fn rewrite_claude_metadata_user_id_surgical(
         }
         ordered.push('}');
         let sid_opt = (!scoped_session.is_empty()).then_some(scoped_session);
-        (ordered, sid_opt)
+        Some((ordered, sid_opt))
     } else if let Some(rest) = raw_uid.strip_prefix("user_") {
         // Legacy format: `user_<64hex>_account_<uuid>_session_<uuid>`
-        let Some((orig_dev, after_acct)) = rest.split_once("_account_") else {
-            return (None, None);
-        };
-        let Some((orig_acct, orig_sess)) = after_acct.split_once("_session_") else {
-            return (None, None);
-        };
+        let (orig_dev, after_acct) = rest.split_once("_account_")?;
+        let (orig_acct, orig_sess) = after_acct.split_once("_session_")?;
         let dev = if cage_device_id.is_empty() {
             orig_dev
         } else {
@@ -1101,26 +1468,14 @@ pub fn rewrite_claude_metadata_user_id_surgical(
             account_uuid
         };
         let sess = isolate_session_uuid("claude", api_key_id, account_id, orig_sess);
-        (format!("user_{dev}_account_{acct}_session_{sess}"), Some(sess))
+        Some((format!("user_{dev}_account_{acct}_session_{sess}"), Some(sess)))
     } else {
-        return (None, None);
-    };
-
-    if new_uid == raw_uid {
-        return (None, final_session);
+        None
     }
-    let Ok(encoded) = serde_json::to_vec(&new_uid) else {
-        return (None, final_session);
-    };
-    let mut out = Vec::with_capacity(body.len() + encoded.len());
-    out.extend_from_slice(&body[..uid_start]);
-    out.extend_from_slice(&encoded);
-    out.extend_from_slice(&body[uid_end..]);
-    (Some(out), final_session)
 }
 
 /// Surgically updates `cc_version=X.Y.Z.{fp}` in `system[0]`'s `x-anthropic-billing-header`
-/// text block ONLY when the version differs from `target_version`. Never touches `system[1..]`
+/// text block when the version or 3-hex fingerprint differs. Never touches `system[1..]`
 /// or `cache_control` or injects deprecated `cch=`.
 pub fn sync_claude_billing_header_surgical(body: &[u8], target_version: &str) -> Option<Vec<u8>> {
     if target_version.is_empty() {
@@ -1148,15 +1503,22 @@ pub fn sync_claude_billing_header_surgical(body: &[u8], target_version: &str) ->
         .find(|c: char| c == ';' || c.is_ascii_whitespace())
         .unwrap_or(tail.len());
     let cur_token = &tail[..token_end];
-    let (cur_ver, has_fp) = split_cc_version_and_fp(cur_token);
-    if cur_ver == target_version {
-        return None; // Already synced -> keep 100% byte-identical!
-    }
-
-    let replacement = if has_fp {
-        let fp = compute_claude_code_fingerprint(body, target_version);
-        format!("{target_version}.{fp}")
+    let (cur_ver, cur_fp) = split_cc_version_and_fp(cur_token);
+    let replacement = if let Some(existing_fp) = cur_fp {
+        let Some(first_text) = extract_first_claude_user_text(body) else {
+            // Never fabricate a fingerprint from an empty-text fallback when full JSON
+            // could not be parsed; preserve the existing billing header unchanged.
+            return None;
+        };
+        let expected_fp = compute_claude_code_fingerprint_from_text(&first_text, target_version);
+        if cur_ver == target_version && existing_fp.eq_ignore_ascii_case(&expected_fp) {
+            return None; // Already synced -> keep 100% byte-identical!
+        }
+        format!("{target_version}.{expected_fp}")
     } else {
+        if cur_ver == target_version {
+            return None;
+        }
         target_version.to_string()
     };
     let mut new_text = String::with_capacity(text.len() + 16);
@@ -1172,16 +1534,16 @@ pub fn sync_claude_billing_header_surgical(body: &[u8], target_version: &str) ->
     Some(out)
 }
 
-fn split_cc_version_and_fp(token: &str) -> (&str, bool) {
+fn split_cc_version_and_fp(token: &str) -> (&str, Option<&str>) {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() == 4
         && parts[3].len() == 3
         && parts[3].bytes().all(|b| b.is_ascii_hexdigit())
     {
         let ver_len = token.len() - 4;
-        (&token[..ver_len], true)
+        (&token[..ver_len], Some(parts[3]))
     } else {
-        (token, false)
+        (token, None)
     }
 }
 
@@ -1206,13 +1568,15 @@ fn resolve_codex_os_arch(
     client_ua: &str,
     client_headers: &HeaderMap,
     cage: Option<&CageIdentityDto>,
-) -> (String, String) {
+) -> (String, Option<&'static str>, String) {
     // 1) Real execution CLI User-Agent (matches prompt body `<environment_context>` & shell).
     if let Some((os_str, arch_str)) = parse_codex_ua_os_arch(client_ua) {
-        return (os_str, arch_str);
+        let fam = normalize_os_family(&os_str);
+        return (os_str, fam, arch_str);
     }
     // 2) Authoritative internal execution-OS hint from Berth CageShim (e.g. macOS Seatbelt
-    //    vs Apple Silicon ARM64 Linux Micro-VM vs WSL bwrap).
+    //    vs Apple Silicon ARM64 Linux Micro-VM vs WSL bwrap). Preserves explicit `os_fam`
+    //    directly so unrecognized Linux distro display names never lose their Linux slot.
     let hint = resolve_exec_os_hint(client_headers);
     if let Some(os_fam) = hint.os_family {
         let os_str = match os_fam {
@@ -1234,10 +1598,16 @@ fn resolve_codex_os_arch(
             "arm64" => "arm64".to_string(),
             _ => "x86_64".to_string(),
         };
-        return (os_str, arch_str);
+        return (os_str, Some(os_fam), arch_str);
     }
     // 3) Fallback to Account Cage defaults when no client OS signal is present.
-    cage_codex_os_arch(cage)
+    let (os_str, arch_str) = cage_codex_os_arch(cage);
+    let fam = cage
+        .map(|c| c.client_os.as_str())
+        .filter(|s| !s.is_empty())
+        .and_then(normalize_os_family)
+        .or_else(|| normalize_os_family(&os_str));
+    (os_str, fam, arch_str)
 }
 
 fn cage_codex_os_arch(cage: Option<&CageIdentityDto>) -> (String, String) {
@@ -1304,39 +1674,57 @@ fn rewrite_codex_turn_metadata_json(
     serde_json::to_string(&Value::Object(obj)).ok()
 }
 
-/// Surgically updates ONLY the `client_metadata` JSON object value in a Codex request body
-/// (`x-codex-installation-id` + embedded `x-codex-turn-metadata`), leaving `input`, `tools`,
-/// `prompt_cache_key`, `reasoning`, etc. 100% byte-identical.
+/// Surgically updates `client_metadata` in O(n) single-pass (`x-codex-installation-id` +
+/// embedded `x-codex-turn-metadata`) while leaving `input`, `tools`, `prompt_cache_key`,
+/// and `reasoning` 100% byte-identical. Fails closed (`IdentityError::BadRequest`) on
+/// duplicate `client_metadata` keys or non-object/unparseable `client_metadata` values.
 pub fn rewrite_codex_body_client_metadata_surgical(
     body: &[u8],
     install_id: &str,
     cage_sandbox: &str,
-) -> Option<Vec<u8>> {
-    let (cm_start, cm_end) = find_top_level_field_value_span(body, "client_metadata")?;
-    let mut cm_obj: Map<String, Value> = serde_json::from_slice(&body[cm_start..cm_end]).ok()?;
+) -> Result<Option<Vec<u8>>, IdentityError> {
+    let spans = find_all_top_level_field_value_spans_strict(body, "client_metadata")?;
+    if spans.is_empty() {
+        return Ok(None);
+    }
+    if spans.len() > 1 {
+        return Err(IdentityError::BadRequest(
+            "duplicate top-level `client_metadata` key in Codex payload".into(),
+        ));
+    }
+    let (cm_start, cm_end) = spans[0];
+    let mut cm_obj =
+        serde_json::from_slice::<Map<String, Value>>(&body[cm_start..cm_end]).map_err(|_| {
+            IdentityError::BadRequest("invalid non-object `client_metadata` in Codex payload".into())
+        })?;
     cm_obj.insert(
         "x-codex-installation-id".to_string(),
         Value::String(install_id.to_string()),
     );
-    if let Some(tm_raw) = cm_obj
-        .get("x-codex-turn-metadata")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    {
-        if let Some(rewritten) = rewrite_codex_turn_metadata_json(&tm_raw, install_id, cage_sandbox)
-        {
-            cm_obj.insert(
-                "x-codex-turn-metadata".to_string(),
-                Value::String(rewritten),
-            );
+    if let Some(tm_val) = cm_obj.get("x-codex-turn-metadata").cloned() {
+        if let Some(tm_raw) = tm_val.as_str() {
+            if let Some(rewritten) =
+                rewrite_codex_turn_metadata_json(tm_raw, install_id, cage_sandbox)
+            {
+                cm_obj.insert(
+                    "x-codex-turn-metadata".to_string(),
+                    Value::String(rewritten),
+                );
+            } else {
+                // Scrub malformed turn-metadata instead of forwarding unverified local fields.
+                cm_obj.remove("x-codex-turn-metadata");
+            }
+        } else {
+            cm_obj.remove("x-codex-turn-metadata");
         }
     }
-    let encoded = serde_json::to_vec(&Value::Object(cm_obj)).ok()?;
+    let encoded = serde_json::to_vec(&Value::Object(cm_obj))
+        .map_err(|e| IdentityError::BadRequest(format!("encode client_metadata: {e}")))?;
     let mut out = Vec::with_capacity(body.len() + encoded.len());
     out.extend_from_slice(&body[..cm_start]);
     out.extend_from_slice(&encoded);
     out.extend_from_slice(&body[cm_end..]);
-    Some(out)
+    Ok(Some(out))
 }
 
 fn ensure_json_store_false_surgical(body: &[u8]) -> Option<Vec<u8>> {
@@ -1428,36 +1816,95 @@ fn skip_json_value(b: &[u8], start: usize) -> Option<usize> {
     }
 }
 
-/// Finds the exact `(value_start, value_end)` byte span of a top-level JSON object key.
+/// Finds the exact `(value_start, value_end)` byte span of the first top-level JSON object key.
 fn find_top_level_field_value_span(b: &[u8], target_key: &str) -> Option<(usize, usize)> {
+    find_all_top_level_field_value_spans(b, target_key).into_iter().next()
+}
+
+/// Finds ALL `(value_start, value_end)` byte spans matching a top-level JSON object key,
+/// strictly distinguishing JSON syntax errors (`Err(IdentityError::BadRequest)`) from field
+/// absence (`Ok(vec![])`) so malformed JSON before protected identity fields can NEVER bypass
+/// surgical normalization.
+fn find_all_top_level_field_value_spans_strict(
+    b: &[u8],
+    target_key: &str,
+) -> Result<Vec<(usize, usize)>, IdentityError> {
+    let mut spans = Vec::new();
     let mut i = skip_ws(b, 0);
     if b.get(i) != Some(&b'{') {
-        return None;
+        return Err(IdentityError::BadRequest(
+            "expected JSON object in request payload".into(),
+        ));
     }
     i = skip_ws(b, i + 1);
-    while i < b.len() {
-        if b[i] == b'}' {
-            return None;
+    if b.get(i) == Some(&b'}') {
+        let rest = skip_ws(b, i + 1);
+        if rest != b.len() {
+            return Err(IdentityError::BadRequest(
+                "trailing bytes after JSON object".into(),
+            ));
         }
-        let key_end = skip_json_string(b, i)?;
-        let key_str = serde_json::from_slice::<String>(&b[i..key_end]).ok()?;
+        return Ok(spans);
+    }
+    while i < b.len() {
+        let Some(key_end) = skip_json_string(b, i) else {
+            return Err(IdentityError::BadRequest(
+                "malformed JSON object key".into(),
+            ));
+        };
+        let Ok(key_str) = serde_json::from_slice::<String>(&b[i..key_end]) else {
+            return Err(IdentityError::BadRequest(
+                "invalid UTF-8/escape in JSON object key".into(),
+            ));
+        };
         i = skip_ws(b, key_end);
         if b.get(i) != Some(&b':') {
-            return None;
+            return Err(IdentityError::BadRequest(
+                "expected ':' after JSON object key".into(),
+            ));
         }
         let val_start = skip_ws(b, i + 1);
-        let val_end = skip_json_value(b, val_start)?;
+        let Some(val_end) = skip_json_value(b, val_start) else {
+            return Err(IdentityError::BadRequest(
+                "malformed JSON object value".into(),
+            ));
+        };
         if key_str == target_key {
-            return Some((val_start, val_end));
+            spans.push((val_start, val_end));
         }
         i = skip_ws(b, val_end);
         match b.get(i) {
-            Some(&b',') => i = skip_ws(b, i + 1),
-            Some(&b'}') => return None,
-            _ => return None,
+            Some(&b',') => {
+                i = skip_ws(b, i + 1);
+                if i >= b.len() || b[i] == b'}' {
+                    return Err(IdentityError::BadRequest(
+                        "trailing comma or truncated JSON object".into(),
+                    ));
+                }
+            }
+            Some(&b'}') => {
+                let rest = skip_ws(b, i + 1);
+                if rest != b.len() {
+                    return Err(IdentityError::BadRequest(
+                        "trailing bytes after JSON object".into(),
+                    ));
+                }
+                return Ok(spans);
+            }
+            _ => {
+                return Err(IdentityError::BadRequest(
+                    "malformed separator in JSON object".into(),
+                ));
+            }
         }
     }
-    None
+    Err(IdentityError::BadRequest("unterminated JSON object".into()))
+}
+
+/// Finds ALL `(value_start, value_end)` byte spans matching a top-level JSON object key
+/// (non-failing helper used for best-effort auxiliary fields such as `system`/`store`).
+fn find_all_top_level_field_value_spans(b: &[u8], target_key: &str) -> Vec<(usize, usize)> {
+    find_all_top_level_field_value_spans_strict(b, target_key).unwrap_or_default()
 }
 
 fn find_first_array_element_span(b: &[u8]) -> Option<(usize, usize)> {
@@ -1640,7 +2087,8 @@ mod tests {
             &dummy_claims("anthropic"),
             Some(&cred),
             false,
-        );
+        )
+        .unwrap();
 
         assert_eq!(out.headers.get("authorization").unwrap(), "Bearer real-oauth-tok");
         assert!(out.headers.get("x-api-key").is_none());
@@ -1656,7 +2104,16 @@ mod tests {
 
         let out_str = std::str::from_utf8(&out.body).unwrap();
         assert!(out_str.contains(r#"{"type":"text","text":"PROMPT_KEEP_EXACT","cache_control":{"type":"ephemeral"}}"#));
-        assert!(out_str.contains("4937ce527342c18de8a9da49d7dd77527e65c334407f92245fef2413b6aac79e"));
+        // Secondary OS slot (Windows/x64 vs Cage primary MacOS/arm64) derives a distinct stable 64-hex device_id!
+        let win_slot = derive_slot_claude_device_id(
+            "4937ce527342c18de8a9da49d7dd77527e65c334407f92245fef2413b6aac79e",
+            cred.cage_identity.as_ref(),
+            Some("Windows"),
+            Some("x64"),
+        );
+        assert_eq!(win_slot.len(), 64);
+        assert_ne!(win_slot, "4937ce527342c18de8a9da49d7dd77527e65c334407f92245fef2413b6aac79e");
+        assert!(out_str.contains(&win_slot));
         assert!(out_str.contains("03be3d17-1731-44d3-9c30-13f93416e404"));
         let expected_fp = compute_claude_code_fingerprint(body, "2.1.321");
         assert!(out_str.contains(&format!("cc_version=2.1.321.{expected_fp}")));
@@ -1665,24 +2122,56 @@ mod tests {
         assert_ne!(hdr_sid, "144d2ca6-29f0-46df-9d92-1487a6888e60");
         assert!(out_str.contains(hdr_sid));
 
-        // When client omits x-stainless-os/arch, X-Berth-Exec-OS/Arch backfill cleanly without leaking x-berth-* upstream.
-        let mut minimal_hdrs = HeaderMap::new();
-        minimal_hdrs.insert("user-agent", HeaderValue::from_static("claude-cli/2.1.321 (external, cli)"));
-        minimal_hdrs.insert("x-berth-exec-os", HeaderValue::from_static("Linux"));
-        minimal_hdrs.insert("x-berth-exec-arch", HeaderValue::from_static("arm64"));
-        let out_min = prepare_landing_http_request(
+        // Primary OS slot (MacOS/arm64 == Cage primary) preserves exact base claude_device_id!
+        let mut mac_hdrs = HeaderMap::new();
+        mac_hdrs.insert("user-agent", HeaderValue::from_static("claude-cli/2.1.321 (external, cli)"));
+        mac_hdrs.insert("x-stainless-os", HeaderValue::from_static("MacOS"));
+        mac_hdrs.insert("x-stainless-arch", HeaderValue::from_static("arm64"));
+        let out_mac = prepare_landing_http_request(
             Method::POST,
             "https://api.anthropic.com/v1/messages",
-            &minimal_hdrs,
+            &mac_hdrs,
             Bytes::from_static(body),
             &dummy_claims("anthropic"),
             Some(&cred),
             false,
+        )
+        .unwrap();
+        assert!(
+            std::str::from_utf8(&out_mac.body)
+                .unwrap()
+                .contains("4937ce527342c18de8a9da49d7dd77527e65c334407f92245fef2413b6aac79e")
         );
+
+        // When client omits x-stainless-os/arch, X-Berth-Exec-OS/Arch backfill cleanly without leaking x-berth-* upstream,
+        // and derive a distinct deterministic Linux/arm64 slot device_id (for legacy user_id too!).
+        let mut minimal_hdrs = HeaderMap::new();
+        minimal_hdrs.insert("user-agent", HeaderValue::from_static("claude-cli/2.1.321 (external, cli)"));
+        minimal_hdrs.insert("x-berth-exec-os", HeaderValue::from_static("Linux"));
+        minimal_hdrs.insert("x-berth-exec-arch", HeaderValue::from_static("arm64"));
+        let legacy_body = br#"{"model":"claude-opus-5-5","metadata":{"user_id":"user_deadbeef_account_0000_session_144d2ca6-29f0-46df-9d92-1487a6888e60"},"messages":[{"role":"user","content":"Hello"}]}"#;
+        let out_min = prepare_landing_http_request(
+            Method::POST,
+            "https://api.anthropic.com/v1/messages",
+            &minimal_hdrs,
+            Bytes::from_static(legacy_body),
+            &dummy_claims("anthropic"),
+            Some(&cred),
+            false,
+        )
+        .unwrap();
         assert_eq!(out_min.headers.get("x-stainless-os").unwrap(), "Linux");
         assert_eq!(out_min.headers.get("x-stainless-arch").unwrap(), "arm64");
         assert!(out_min.headers.get("x-berth-exec-os").is_none());
         assert!(out_min.headers.get("x-berth-exec-arch").is_none());
+        let linux_slot = derive_slot_claude_device_id(
+            "4937ce527342c18de8a9da49d7dd77527e65c334407f92245fef2413b6aac79e",
+            cred.cage_identity.as_ref(),
+            Some("Linux"),
+            Some("arm64"),
+        );
+        assert_ne!(linux_slot, win_slot);
+        assert!(std::str::from_utf8(&out_min.body).unwrap().contains(&format!("user_{linux_slot}_account_")));
     }
 
     #[test]
@@ -1711,8 +2200,8 @@ mod tests {
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             expires_at_unix: 9999999999,
             cage_identity: Some(CageIdentityDto {
-                client_os: "Windows".into(),
-                client_arch: "x64".into(),
+                client_os: "MacOS".into(),
+                client_arch: "arm64".into(),
                 client_app_version: "0.146.0".into(),
                 originator: "codex_cli_rs".into(),
                 accept_language: "en-US,en;q=0.9".into(),
@@ -1731,14 +2220,14 @@ mod tests {
             &dummy_claims("openai"),
             Some(&cred),
             true,
-        );
+        )
+        .unwrap();
 
         assert_eq!(out.headers.get("chatgpt-account-id").unwrap(), "real-acct-24");
         assert!(out.headers.get("x-codex-turn-state").is_none());
         assert_eq!(out.headers.get("originator").unwrap(), "codex_exec");
         assert_eq!(out.headers.get("version").unwrap(), "0.172.0");
-        // Aligns User-Agent OS/arch and turn-metadata sandbox to real client execution OS (Mac OS 27.0.1; arm64 -> seatbelt),
-        // eliminating contradiction with prompt body while still converging installation_id to Cage!
+        // Primary MacOS/arm64 preserves exact base codex_installation_id.
         assert!(out.headers.get("user-agent").unwrap().to_str().unwrap().contains("Mac OS 27.0.1; arm64"));
         assert_eq!(
             out.headers.get("x-codex-installation-id").unwrap(),
@@ -1754,7 +2243,8 @@ mod tests {
         assert!(out_str.contains(r#""prompt_cache_key":"sess-1""#));
         assert!(out_str.contains(r#""store":false"#));
 
-        // Linux ARM64 Micro-VM execution aligns to Ubuntu/arm64 + linux-sandbox.
+        // Linux ARM64 Micro-VM execution aligns to Ubuntu/arm64 + linux-sandbox and derives a distinct
+        // deterministic RFC 4122 UUID installation_id consistently across HTTP AND WebSocket handshake!
         let mut vm_hdrs = HeaderMap::new();
         vm_hdrs.insert("originator", HeaderValue::from_static("codex_cli_rs"));
         vm_hdrs.insert("user-agent", HeaderValue::from_static("codex_cli_rs/0.172.0 (Ubuntu 24.04; aarch64) xterm-256color"));
@@ -1770,9 +2260,19 @@ mod tests {
             &dummy_claims("openai"),
             Some(&cred),
             false,
-        );
+        )
+        .unwrap();
+        let vm_iid = out_vm.headers.get("x-codex-installation-id").unwrap().to_str().unwrap();
+        assert_ne!(vm_iid, "6878c0a3-a067-423e-9c9f-aebd007eb6a6");
+        let parsed_uuid = Uuid::parse_str(vm_iid).expect("derived slot id must be valid UUID");
+        assert_eq!(parsed_uuid.get_version_num(), 4);
         assert!(out_vm.headers.get("user-agent").unwrap().to_str().unwrap().contains("Ubuntu 24.04; arm64"));
         assert!(out_vm.headers.get("x-codex-turn-metadata").unwrap().to_str().unwrap().contains("linux-sandbox"));
+        assert!(out_vm.headers.get("x-codex-turn-metadata").unwrap().to_str().unwrap().contains(vm_iid));
+        assert!(std::str::from_utf8(&out_vm.body).unwrap().contains(vm_iid));
+
+        let ws_hdrs = prepare_landing_ws_headers(&vm_hdrs, &dummy_claims("openai"), Some(&cred));
+        assert_eq!(ws_hdrs.get("x-codex-installation-id").unwrap().to_str().unwrap(), vm_iid);
     }
 
     #[test]
@@ -1809,7 +2309,8 @@ mod tests {
             &dummy_claims("antigravity"),
             Some(&cred),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(models_req.agy_bridge, AntigravityBridgeMode::ModelsList);
         assert_eq!(models_req.method, Method::POST);
         assert_eq!(models_req.url, "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
@@ -1827,7 +2328,8 @@ mod tests {
             &dummy_claims("antigravity"),
             Some(&cred),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(fallback_req.headers.get("user-agent").unwrap(), "antigravity/hub/2.23.0 windows/amd64");
 
         let gen_req = prepare_landing_http_request(
@@ -1838,13 +2340,26 @@ mod tests {
             &dummy_claims("antigravity"),
             Some(&cred),
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(gen_req.agy_bridge, AntigravityBridgeMode::StreamGenerate);
         assert_eq!(gen_req.url, "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse");
         let parsed_body: Value = serde_json::from_slice(&gen_req.body).unwrap();
         assert_eq!(parsed_body["project"], "aicode-consumers");
         assert_eq!(parsed_body["model"], "gemini-2.5-pro");
         assert_eq!(parsed_body["userAgent"], "antigravity");
+
+        // Malformed JSON must fail visibly (400) rather than silently substituting `{}`!
+        let bad_gen = prepare_landing_http_request(
+            Method::POST,
+            "https://daily-cloudcode-pa.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+            &client_hdrs,
+            Bytes::from_static(b"{not-valid-json"),
+            &dummy_claims("antigravity"),
+            Some(&cred),
+            false,
+        );
+        assert_eq!(bad_gen.unwrap_err().status_code(), 400);
 
         let mut unwrapper = AntigravitySseUnwrapper::default();
         let part1 = unwrapper.push_chunk(b"data: {\"response\":{\"cand");
@@ -1856,5 +2371,345 @@ mod tests {
             out_sse,
             "data: {\"candidates\":[{\"index\":0}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}]}}]}\n\n"
         );
+    }
+
+    #[test]
+    fn gzip_request_decoding_and_claude_billing_fp_resync_work_strictly() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let plain = br#"{"contents":[{"role":"user","parts":[{"text":"gzipped ok"}]}]}"#;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plain).unwrap();
+        let gz = enc.finish().unwrap();
+
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert(http::header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        let decoded = decode_request_body_if_encoded(&hdrs, Bytes::from(gz.clone()), 1024).unwrap();
+        assert_eq!(decoded.as_ref(), plain);
+
+        // Oversize expanded gzip is rejected with 413.
+        let too_small = decode_request_body_if_encoded(&hdrs, Bytes::from(gz), 8);
+        assert_eq!(too_small.unwrap_err().status_code(), 413);
+
+        // Stacked or unsupported Content-Encoding is rejected with 415.
+        let mut stacked = HeaderMap::new();
+        stacked.insert(http::header::CONTENT_ENCODING, HeaderValue::from_static("gzip, gzip"));
+        assert_eq!(
+            decode_request_body_if_encoded(&stacked, Bytes::from_static(b"abc"), 1024)
+                .unwrap_err()
+                .status_code(),
+            415
+        );
+        let mut br = HeaderMap::new();
+        br.insert(http::header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+        assert_eq!(
+            decode_request_body_if_encoded(&br, Bytes::from_static(b"abc"), 1024)
+                .unwrap_err()
+                .status_code(),
+            415
+        );
+
+        // Billing header resyncs stale 3-hex fp even when version matches, and is no-op once synced.
+        let stale = br#"{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.321.000; cc_entrypoint=cli;"}],"messages":[{"role":"user","content":"Hello world this is a long test message"}]}"#;
+        let expected_fp = compute_claude_code_fingerprint(stale, "2.1.321");
+        assert_ne!(expected_fp, "000");
+        let fixed = sync_claude_billing_header_surgical(stale, "2.1.321").expect("must resync stale fp");
+        assert!(std::str::from_utf8(&fixed).unwrap().contains(&format!("cc_version=2.1.321.{expected_fp}")));
+        assert!(
+            sync_claude_billing_header_surgical(&fixed, "2.1.321").is_none(),
+            "already-synced billing header must remain byte-identical"
+        );
+    }
+
+    #[test]
+    fn adversarial_gzip_multimember_trailing_garbage_empty_and_identity_limits() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        // Concatenated two-member gzip stream spanning JSON across member boundary.
+        let part_a = br#"{"contents":[{"role":"user","#;
+        let part_b = br#""parts":[{"text":"multi-member ok"}]}]}"#;
+        let mut e1 = GzEncoder::new(Vec::new(), Compression::default());
+        e1.write_all(part_a).unwrap();
+        let mut combined = e1.finish().unwrap();
+        let mut e2 = GzEncoder::new(Vec::new(), Compression::default());
+        e2.write_all(part_b).unwrap();
+        combined.extend_from_slice(&e2.finish().unwrap());
+
+        let mut gz_hdrs = HeaderMap::new();
+        gz_hdrs.insert(http::header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        let decoded = decode_request_body_if_encoded(&gz_hdrs, Bytes::from(combined.clone()), 1024).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(part_a);
+        expected.extend_from_slice(part_b);
+        assert_eq!(decoded.as_ref(), expected.as_slice());
+
+        // Cumulative multi-member size exceeding limit -> 413.
+        assert_eq!(
+            decode_request_body_if_encoded(&gz_hdrs, Bytes::from(combined.clone()), expected.len() - 1)
+                .unwrap_err()
+                .status_code(),
+            413
+        );
+        // Exact boundary -> OK.
+        assert!(decode_request_body_if_encoded(&gz_hdrs, Bytes::from(combined.clone()), expected.len()).is_ok());
+
+        // Trailing garbage after a valid gzip member -> 400 (never silent truncation!).
+        let mut corrupt = combined;
+        corrupt.extend_from_slice(b"NOT_GZIP_TRAILING_GARBAGE");
+        assert_eq!(
+            decode_request_body_if_encoded(&gz_hdrs, Bytes::from(corrupt), 1024)
+                .unwrap_err()
+                .status_code(),
+            400
+        );
+
+        // Empty wire payload with Content-Encoding: gzip -> 400.
+        assert_eq!(
+            decode_request_body_if_encoded(&gz_hdrs, Bytes::new(), 1024)
+                .unwrap_err()
+                .status_code(),
+            400
+        );
+
+        // Identity / absent encoding respects max_decoded_bytes -> 413 on overflow.
+        let empty_hdrs = HeaderMap::new();
+        assert_eq!(
+            decode_request_body_if_encoded(&empty_hdrs, Bytes::from_static(b"123456789"), 8)
+                .unwrap_err()
+                .status_code(),
+            413
+        );
+    }
+
+    #[test]
+    fn adversarial_four_os_slots_ws_frames_duplicate_json_keys_and_direct_v1internal() {
+        let base_claude_dev = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let base_codex_iid = "11111111-2222-4333-8444-555555555555";
+        let cage = CageIdentityDto {
+            client_os: "MacOS".into(),
+            client_arch: "arm64".into(),
+            client_app_version: "2.1.330".into(),
+            claude_device_id: base_claude_dev.into(),
+            claude_account_uuid: "acct-uuid-99".into(),
+            codex_installation_id: base_codex_iid.into(),
+            codex_fingerprint_mode: "device".into(),
+            ..Default::default()
+        };
+
+        // All 4 OS/arch pairs produce deterministic, distinct slots; primary preserves base ID.
+        let matrix = [
+            ("MacOS", "arm64", true),
+            ("Linux", "arm64", false),
+            ("Linux", "x64", false),
+            ("Windows", "x64", false),
+        ];
+        let mut claude_ids = std::collections::HashSet::new();
+        let mut codex_ids = std::collections::HashSet::new();
+        for (os, arch, is_primary) in matrix {
+            let c_id = derive_slot_claude_device_id(base_claude_dev, Some(&cage), Some(os), Some(arch));
+            let o_id = derive_slot_codex_installation_id(base_codex_iid, Some(&cage), Some(os), Some(arch));
+            if is_primary {
+                assert_eq!(c_id, base_claude_dev);
+                assert_eq!(o_id, base_codex_iid);
+            } else {
+                assert_ne!(c_id, base_claude_dev);
+                assert_ne!(o_id, base_codex_iid);
+            }
+            assert!(claude_ids.insert(c_id), "duplicate Claude slot for {os}/{arch}");
+            assert!(codex_ids.insert(o_id), "duplicate Codex slot for {os}/{arch}");
+        }
+
+        // Unrecognized Linux distro display name still maps to Linux slot (never falls back to MacOS primary!).
+        let mut cred_hdrs = HashMap::new();
+        cred_hdrs.insert("Authorization".into(), "Bearer tok".into());
+        let codex_cred = UpstreamCredentialDto {
+            account_id: 24,
+            platform: "openai".into(),
+            account_type: "oauth".into(),
+            headers: cred_hdrs.clone(),
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
+            expires_at_unix: 9999999999,
+            cage_identity: Some(cage.clone()),
+        };
+        let mut custom_linux_hdrs = HeaderMap::new();
+        custom_linux_hdrs.insert("x-berth-exec-os", HeaderValue::from_static("Linux"));
+        custom_linux_hdrs.insert("x-berth-exec-os-version", HeaderValue::from_static("NixOS 25.05"));
+        custom_linux_hdrs.insert("x-berth-exec-arch", HeaderValue::from_static("arm64"));
+        let (ws_hdrs, ws_ctx) =
+            prepare_landing_ws_session(&custom_linux_hdrs, &dummy_claims("openai"), Some(&codex_cred));
+        let ws_ctx = ws_ctx.expect("codex oauth WS must return normalization context");
+        assert_eq!(ws_ctx.sandbox, "linux-sandbox");
+        assert_ne!(ws_ctx.install_id, base_codex_iid);
+        assert_eq!(
+            ws_hdrs.get("x-codex-installation-id").unwrap().to_str().unwrap(),
+            ws_ctx.install_id
+        );
+
+        // Codex WS `response.create` frame normalization: single valid `client_metadata` normalizes
+        // installation_id, sandbox, and scrubs malformed turn-metadata / path-like agent_name.
+        let ws_frame = br#"{"type":"response.create","client_metadata":{"x-codex-installation-id":"local-2","x-codex-turn-metadata":"{\"sandbox\":\"seatbelt\",\"agent_name\":\"/Users/me/proj\"}"}}"#;
+        let normalized_ws = normalize_codex_ws_client_frame(ws_frame, &ws_ctx)
+            .expect("valid ws frame must succeed")
+            .expect("ws frame must normalize");
+        let normalized_str = std::str::from_utf8(&normalized_ws).unwrap();
+        assert!(!normalized_str.contains("local-2"));
+        assert!(!normalized_str.contains("seatbelt"));
+        assert!(!normalized_str.contains("/Users/me/proj"));
+        assert_eq!(normalized_str.matches(&ws_ctx.install_id).count(), 2);
+
+        // Duplicate `client_metadata` or non-object `client_metadata` MUST fail closed with 400!
+        let dup_ws_frame = br#"{"type":"response.create","client_metadata":{"x-codex-installation-id":"a"},"client_metadata":{"x-codex-installation-id":"b"}}"#;
+        assert_eq!(
+            normalize_codex_ws_client_frame(dup_ws_frame, &ws_ctx)
+                .unwrap_err()
+                .status_code(),
+            400
+        );
+        let bad_cm_frame = br#"{"type":"response.create","client_metadata":"not-an-object"}"#;
+        assert_eq!(
+            normalize_codex_ws_client_frame(bad_cm_frame, &ws_ctx)
+                .unwrap_err()
+                .status_code(),
+            400
+        );
+
+        // Non-UTF-8 `x-codex-turn-metadata` header MUST be scrubbed (never forwarded raw!).
+        let mut raw_tm_hdrs = HeaderMap::new();
+        raw_tm_hdrs.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_bytes(&[0xFF, 0xFE, b'{']).unwrap(),
+        );
+        let prep_codex = prepare_landing_http_request(
+            Method::POST,
+            "https://chatgpt.com/backend-api/codex/responses",
+            &raw_tm_hdrs,
+            Bytes::from_static(br#"{"input":"hi"}"#),
+            &dummy_claims("openai"),
+            Some(&codex_cred),
+            false,
+        )
+        .unwrap();
+        assert!(!prep_codex.headers.contains_key("x-codex-turn-metadata"));
+
+        // Claude duplicate `metadata.user_id` or duplicate `metadata` keys MUST fail closed with 400!
+        let dup_claude = br#"{"metadata":{"user_id":"user_deadbeef_account_old_session_sess-1","user_id":"{\"device_id\":\"raw-local-dev\",\"account_uuid\":\"old\",\"session_id\":\"sess-2\"}"},"messages":[]}"#;
+        assert_eq!(
+            rewrite_claude_metadata_user_id_surgical(
+                dup_claude,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "acct-uuid-99",
+                1,
+                26,
+            )
+            .unwrap_err()
+            .status_code(),
+            400
+        );
+        let dup_meta = br#"{"metadata":{"user_id":"user_deadbeef_account_old_session_sess-1"},"metadata":{"user_id":"user_deadbeef_account_old_session_sess-2"}}"#;
+        assert_eq!(
+            rewrite_claude_metadata_user_id_surgical(
+                dup_meta,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "acct-uuid-99",
+                1,
+                26,
+            )
+            .unwrap_err()
+            .status_code(),
+            400
+        );
+        // Unnormalizable `metadata.user_id` must also fail closed with 400!
+        let bad_uid = br#"{"metadata":{"user_id":"opaque-unrecognized-id"},"messages":[]}"#;
+        assert_eq!(
+            rewrite_claude_metadata_user_id_surgical(
+                bad_uid,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "acct-uuid-99",
+                1,
+                26,
+            )
+            .unwrap_err()
+            .status_code(),
+            400
+        );
+
+        // Malformed JSON before `client_metadata` MUST fail closed with 400 (never look absent!).
+        let malformed_cm = br#"{"broken": [1,2 "client_metadata":{"x-codex-installation-id":"leak"}}"#;
+        assert_eq!(
+            normalize_codex_ws_client_frame(malformed_cm, &ws_ctx)
+                .unwrap_err()
+                .status_code(),
+            400
+        );
+
+        // Blank or non-string present Claude `session_id` MUST fail closed with 400!
+        for bad_sess_body in [
+            br#"{"metadata":{"user_id":"{\"device_id\":\"d\",\"account_uuid\":\"a\",\"session_id\":\"\"}"},"messages":[]}"#.as_slice(),
+            br#"{"metadata":{"user_id":"{\"device_id\":\"d\",\"account_uuid\":\"a\",\"session_id\":123}"},"messages":[]}"#.as_slice(),
+        ] {
+            assert_eq!(
+                rewrite_claude_metadata_user_id_surgical(
+                    bad_sess_body,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "acct-uuid-99",
+                    1,
+                    26,
+                )
+                .unwrap_err()
+                .status_code(),
+                400
+            );
+        }
+
+        // Unresolved duplicate `x-stainless-os` headers must not survive when unresolvable.
+        let mut bad_stainless_hdrs = HeaderMap::new();
+        bad_stainless_hdrs.append("x-stainless-os", HeaderValue::from_static("WeirdOS1"));
+        bad_stainless_hdrs.append("x-stainless-os", HeaderValue::from_static("WeirdOS2"));
+        let empty_cage_cred = UpstreamCredentialDto {
+            account_id: 26,
+            platform: "anthropic".into(),
+            account_type: "oauth".into(),
+            headers: cred_hdrs.clone(),
+            base_url: "https://api.anthropic.com".into(),
+            expires_at_unix: 9999999999,
+            cage_identity: None,
+        };
+        let prep_claude = prepare_landing_http_request(
+            Method::POST,
+            "https://api.anthropic.com/v1/messages",
+            &bad_stainless_hdrs,
+            Bytes::from_static(br#"{"messages":[]}"#),
+            &dummy_claims("anthropic"),
+            Some(&empty_cage_cred),
+            false,
+        )
+        .unwrap();
+        assert!(!prep_claude.headers.contains_key("x-stainless-os"));
+
+        // Direct `/v1internal:*` rejects malformed JSON or non-object JSON with 400!
+        let agy_cred = UpstreamCredentialDto {
+            account_id: 25,
+            platform: "antigravity".into(),
+            account_type: "oauth".into(),
+            headers: cred_hdrs,
+            base_url: "https://daily-cloudcode-pa.googleapis.com".into(),
+            expires_at_unix: 9999999999,
+            cage_identity: Some(cage),
+        };
+        for bad_body in [b"{bad".as_slice(), b"[1,2,3]".as_slice(), b"\"scalar\"".as_slice(), b"".as_slice()] {
+            let err = prepare_landing_http_request(
+                Method::POST,
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
+                &HeaderMap::new(),
+                Bytes::from_static(bad_body),
+                &dummy_claims("antigravity"),
+                Some(&agy_cred),
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(err.status_code(), 400);
+        }
     }
 }

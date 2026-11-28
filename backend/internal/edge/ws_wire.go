@@ -45,10 +45,16 @@ func IsWebSocketUpgrade(r *http.Request) bool {
 	return false
 }
 
-// WriteRFC6455Frame writes a single unfragmented RFC 6455 WebSocket frame.
+// WriteRFC6455Frame writes an RFC 6455 WebSocket frame.
+// Bit 7 (0x80) carries FIN=1; bit 6 (0x40) without bit 7 marks a non-final fragment (FIN=0),
+// matching Rust berth-edge `proto::write_rfc6455_frame` while keeping legacy bare opcodes final.
 func WriteRFC6455Frame(w io.Writer, opcode byte, payload []byte, masked bool) error {
 	var hdr [14]byte
-	hdr[0] = 0x80 | (opcode & 0x0F)
+	finBit := byte(0x80)
+	if (opcode&0x40) != 0 && (opcode&0x80) == 0 {
+		finBit = 0x00
+	}
+	hdr[0] = finBit | (opcode & 0x0F)
 	n := len(payload)
 	pos := 2
 	var maskBit byte
@@ -110,7 +116,13 @@ func ReadRFC6455Frame(r io.Reader, maxPayload int) (byte, []byte, error) {
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return 0, nil, err
 	}
+	fin := (hdr[0] & 0x80) != 0
 	opcode := hdr[0] & 0x0F
+	if fin {
+		opcode |= 0x80
+	} else {
+		opcode |= 0x40
+	}
 	masked := (hdr[1] & 0x80) != 0
 	length := uint64(hdr[1] & 0x7F)
 	switch length {
